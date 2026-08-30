@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Any
+
+import numpy as np
+
+from agent_orch.action_decoder import ActionDecoder
+from agent_orch.performance import AnalyticalBackend
+from agent_orch.performance.workflow import WorkflowEvaluator
+from agent_orch.schema.models import (
+    DeploymentDecision,
+    RoutingDecision,
+    Scenario,
+    SlotMetrics,
+    Transition,
+)
+from agent_orch.workload import ArrivalTrace
+
+
+class Simulator:
+    def __init__(self, scenario: Scenario, llm_profile_backend: Any | None = None):
+        self.scenario = scenario
+        self.backend = AnalyticalBackend(scenario, llm_profile_backend)
+        self.workflow = WorkflowEvaluator(scenario, self.backend)
+        self.decoder = ActionDecoder(scenario)
+        self.slot = 0
+        self.rng = np.random.default_rng(0)
+        self.previous_deployment = self._empty_deployment()
+        self.last_metrics: SlotMetrics | None = None
+        self.arrival_trace: ArrivalTrace | None = None
+
+    def _empty_deployment(self) -> DeploymentDecision:
+        return DeploymentDecision(
+            llm_active={candidate_id: 0 for candidate_id in self.scenario.candidates},
+            tool_replicas={
+                (tool_id, server_id): 0
+                for tool_id in self.scenario.tools
+                for server_id in self.scenario.servers
+            },
+        )
+
+    def reset(self, seed: int = 0) -> dict[str, Any]:
+        self.slot = 0
+        self.rng = np.random.default_rng(seed)
+        self.previous_deployment = self._empty_deployment()
+        self.last_metrics = None
+        return self.observation()
+
+    def set_arrival_trace(self, trace: ArrivalTrace | None) -> None:
+        self.arrival_trace = trace
+
+    def current_arrival_rates(self) -> dict[tuple[str, str], float]:
+        if self.arrival_trace is None:
+            return {
+                (app.id, ingress): rate
+                for app in self.scenario.applications.values()
+                for ingress, rate in app.ingress_rates.items()
+            }
+        return self.arrival_trace.at(self.slot, self.scenario)
+
+    def step(
+        self,
+        deployment: DeploymentDecision,
+        routing: RoutingDecision,
+    ) -> Transition:
+        self.decoder.validate_deployment(deployment)
+        self.decoder.validate_routing(deployment, routing)
+        arrival_rates = self.current_arrival_rates()
+        analytical = self.backend.evaluate(deployment, routing, arrival_rates)
+        workflow = self.workflow.evaluate(
+            deployment, routing, analytical, arrival_rates
+        )
+        cost = self._cost(deployment, analytical.link_loads_mbit)
+        violations = len(set(analytical.violations))
+        attainment = (
+            workflow.goodput_rps / workflow.total_arrival_rps
+            if workflow.total_arrival_rps > 0.0
+            else 0.0
+        )
+        metrics = SlotMetrics(
+            slot=self.slot,
+            cost=cost,
+            mean_latency_s=workflow.mean_latency_s,
+            goodput_rps=workflow.goodput_rps,
+            quality=workflow.quality,
+            total_arrival_rps=workflow.total_arrival_rps,
+            slo_attainment=attainment,
+            violations=violations,
+            app_latency_s=workflow.app_latency_s,
+            llm_utilization=analytical.llm_utilization,
+            tool_utilization={f"{h}@{n}": value for (h, n), value in analytical.tool_utilization.items()},
+            link_utilization=self.backend.network.utilization(analytical.link_loads_mbit),
+            diagnostics={
+                "violation_labels": sorted(set(analytical.violations)),
+                "kv_stable": analytical.llm_kv_stable,
+                "flow_metrics": workflow.flow_metrics,
+            },
+        )
+        reward_components = {
+            "cost": -cost,
+            "latency": -workflow.mean_latency_s,
+            "goodput": workflow.goodput_rps,
+            "quality": workflow.quality,
+            "constraint": -10.0 * violations,
+        }
+        self.previous_deployment = deployment.copy()
+        self.last_metrics = metrics
+        self.slot += 1
+        return Transition(
+            observation=self.observation(deployment, analytical),
+            reward_components=reward_components,
+            metrics=metrics,
+        )
+
+    def observation(
+        self,
+        deployment: DeploymentDecision | None = None,
+        analytical: Any | None = None,
+    ) -> dict[str, Any]:
+        deployment = deployment or self.previous_deployment
+        return {
+            "slot": self.slot,
+            "deployment": {
+                "llm_active": dict(deployment.llm_active),
+                "tool_replicas": {
+                    f"{tool}@{server}": value
+                    for (tool, server), value in deployment.tool_replicas.items()
+                },
+            },
+            "workload": {
+                app.id: {
+                    ingress: self.current_arrival_rates().get((app.id, ingress), base_rate)
+                    for ingress, base_rate in app.ingress_rates.items()
+                }
+                for app in self.scenario.applications.values()
+            },
+            "runtime": {
+                "llm_utilization": dict(analytical.llm_utilization) if analytical else {},
+                "tool_utilization": {
+                    f"{h}@{n}": value
+                    for (h, n), value in analytical.tool_utilization.items()
+                }
+                if analytical
+                else {},
+                "link_utilization": self.backend.network.utilization(
+                    analytical.link_loads_mbit
+                )
+                if analytical
+                else {},
+            },
+        }
+
+    def _cost(
+        self,
+        deployment: DeploymentDecision,
+        link_loads_mbit: dict[tuple[str, str], float],
+    ) -> float:
+        cost = 0.0
+        for candidate_id, active in deployment.llm_active.items():
+            if not active:
+                continue
+            candidate = self.scenario.candidates[candidate_id]
+            config = self.scenario.llm_configs[candidate.config]
+            cost += config.running_cost_per_slot
+            if not self.previous_deployment.llm_active.get(candidate_id, 0):
+                cost += config.load_cost
+        for pool, replicas in deployment.tool_replicas.items():
+            tool_id, _ = pool
+            tool = self.scenario.tools[tool_id]
+            cost += replicas * tool.running_cost_per_slot
+            started = max(0, replicas - self.previous_deployment.tool_replicas.get(pool, 0))
+            cost += started * tool.start_cost
+        cost += self.backend.network.traffic_cost(link_loads_mbit)
+        return cost
+
+
+def metrics_to_dict(metrics: SlotMetrics) -> dict[str, Any]:
+    return asdict(metrics)

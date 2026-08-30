@@ -1,0 +1,161 @@
+id: toy-agent-network
+
+simulation:
+  slot_seconds: 1.0
+  prefill_chunk_tokens: 512
+  overload_delay_s: 60.0
+  deployment_period_slots: 10
+  max_tool_replicas_per_server: 4
+
+servers:
+  - {id: n0, cpu_cores: 32, memory_gb: 128, gpu_count: 1, gpu_memory_gb: 24}
+  - {id: n1, cpu_cores: 48, memory_gb: 192, gpu_count: 1, gpu_memory_gb: 48}
+  - {id: n2, cpu_cores: 32, memory_gb: 128, gpu_count: 1, gpu_memory_gb: 24}
+  - {id: n3, cpu_cores: 64, memory_gb: 256, gpu_count: 1, gpu_memory_gb: 80}
+
+links:
+  - {source: n0, target: n1, capacity_mbps: 10000, propagation_ms: 2.0, cost_per_mb: 0.00001}
+  - {source: n1, target: n0, capacity_mbps: 10000, propagation_ms: 2.0, cost_per_mb: 0.00001}
+  - {source: n1, target: n2, capacity_mbps: 10000, propagation_ms: 2.5, cost_per_mb: 0.00001}
+  - {source: n2, target: n1, capacity_mbps: 10000, propagation_ms: 2.5, cost_per_mb: 0.00001}
+  - {source: n2, target: n3, capacity_mbps: 20000, propagation_ms: 1.5, cost_per_mb: 0.00001}
+  - {source: n3, target: n2, capacity_mbps: 20000, propagation_ms: 1.5, cost_per_mb: 0.00001}
+  - {source: n3, target: n0, capacity_mbps: 10000, propagation_ms: 3.0, cost_per_mb: 0.00001}
+  - {source: n0, target: n3, capacity_mbps: 10000, propagation_ms: 3.0, cost_per_mb: 0.00001}
+  - {source: n0, target: n2, capacity_mbps: 8000, propagation_ms: 4.0, cost_per_mb: 0.00001}
+  - {source: n2, target: n0, capacity_mbps: 8000, propagation_ms: 4.0, cost_per_mb: 0.00001}
+
+models:
+  - id: small
+    parameter_count: 1000000000
+    layers: 24
+    hidden_size: 2048
+    weight_bytes: 2000000000
+    kv_bytes_per_token: 98304
+  - id: large
+    parameter_count: 3000000000
+    layers: 32
+    hidden_size: 3072
+    weight_bytes: 6000000000
+    kv_bytes_per_token: 196608
+
+llm_configs:
+  - id: small-edge
+    model: small
+    gpu_count: 1
+    gpu_share: 1.0
+    reserved_memory_gb_per_gpu: 16
+    effective_flops: 80000000000000
+    effective_bandwidth_bytes_s: 700000000000
+    effective_concurrency: 8
+    kv_token_capacity: 65536
+    running_cost_per_slot: 1.0
+    load_cost: 2.0
+  - id: large-fast
+    model: large
+    gpu_count: 1
+    gpu_share: 1.0
+    reserved_memory_gb_per_gpu: 40
+    effective_flops: 180000000000000
+    effective_bandwidth_bytes_s: 1500000000000
+    effective_concurrency: 8
+    kv_token_capacity: 131072
+    running_cost_per_slot: 2.5
+    load_cost: 5.0
+
+candidates:
+  - {id: small-n0, model: small, config: small-edge, server: n0}
+  - {id: small-n2, model: small, config: small-edge, server: n2}
+  - {id: large-n1, model: large, config: large-fast, server: n1}
+  - {id: large-n3, model: large, config: large-fast, server: n3}
+
+tools:
+  - id: search
+    cpu_cores: 2
+    memory_gb: 2
+    service_rate: {n0: 30, n1: 35, n2: 30, n3: 40}
+    arrival_scv: 1.2
+    running_cost_per_slot: 0.08
+    start_cost: 0.1
+  - id: database
+    cpu_cores: 2
+    memory_gb: 4
+    service_rate: {n0: 25, n1: 30, n2: 28, n3: 32}
+    arrival_scv: 1.0
+    running_cost_per_slot: 0.10
+    start_cost: 0.15
+  - id: verify
+    cpu_cores: 1
+    memory_gb: 1
+    service_rate: {n0: 40, n1: 45, n2: 42, n3: 48}
+    arrival_scv: 0.8
+    running_cost_per_slot: 0.05
+    start_cost: 0.08
+
+applications:
+  - id: chat-search
+    ingress_rates: {n0: 1.2}
+    slo: {type: lat, ttft_s: 2.0, tbt_s: 0.20}
+    quality: {small: 0.72, large: 0.90}
+    entry_data_mb: {small: 0.020, large: 0.020}
+    exit_data_mb: {small: 0.030, large: 0.035}
+    edge_data_mb:
+      small:llm0->search0: 0.010
+      large:llm0->search0: 0.010
+      small:search0->llm1: 0.050
+      large:search0->llm1: 0.050
+    nodes:
+      - id: llm0
+        type: llm
+        prompt_tokens: {small: 256, large: 256}
+        output_tokens: {small: 24, large: 28}
+      - {id: search0, type: tool, tool: search}
+      - id: llm1
+        type: llm
+        prompt_tokens: {small: 512, large: 512}
+        output_tokens: {small: 48, large: 56}
+    pattern_flows:
+      - id: search-flow
+        probability: 1.0
+        final_node: llm1
+        chains:
+          - [llm0, search0, llm1]
+
+  - id: research-agent
+    ingress_rates: {n2: 0.7}
+    slo: {type: cmp, ttft_s: 4.0, tbt_s: 0.25, deadline_s: 8.0}
+    quality: {small: 0.64, large: 0.92}
+    entry_data_mb: {small: 0.030, large: 0.030}
+    exit_data_mb: {small: 0.040, large: 0.045}
+    edge_data_mb:
+      small:plan->search1: 0.012
+      large:plan->search1: 0.012
+      small:search1->final: 0.060
+      large:search1->final: 0.060
+      small:plan->database0: 0.015
+      large:plan->database0: 0.015
+      small:database0->verify0: 0.040
+      large:database0->verify0: 0.040
+      small:verify0->final: 0.025
+      large:verify0->final: 0.025
+    nodes:
+      - id: plan
+        type: llm
+        prompt_tokens: {small: 384, large: 384}
+        output_tokens: {small: 32, large: 36}
+        stage_deadline_s: 2.5
+      - {id: search1, type: tool, tool: search}
+      - {id: database0, type: tool, tool: database}
+      - {id: verify0, type: tool, tool: verify}
+      - id: final
+        type: llm
+        prompt_tokens: {small: 768, large: 768}
+        output_tokens: {small: 64, large: 72}
+    pattern_flows:
+      - id: parallel-research
+        probability: 1.0
+        final_node: final
+        chains:
+          - [plan, search1, final]
+          - [plan, database0, verify0, final]
+
