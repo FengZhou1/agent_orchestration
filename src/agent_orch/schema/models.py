@@ -23,6 +23,7 @@ class ServerSpec:
     memory_gb: float
     gpu_count: int
     gpu_memory_gb: float
+    gpu_type: str = "generic"
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,14 @@ class LLMConfigSpec:
     kv_token_capacity: float
     running_cost_per_slot: float
     load_cost: float = 0.0
+    gpu_type: str = "generic"
+    dtype: str = "bfloat16"
+    gpu_memory_utilization: float = 0.9
+    max_model_len: int = 32768
+    max_num_batched_tokens: int = 8192
+    max_num_seqs: int = 128
+    chunked_prefill: bool = True
+    prefix_cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,7 @@ class ToolSpec:
     memory_gb: float
     service_rate: dict[str, float]
     arrival_scv: float = 1.0
+    service_scv: float = 1.0
     running_cost_per_slot: float = 0.0
     start_cost: float = 0.0
 
@@ -123,6 +133,9 @@ class ApplicationSpec:
     entry_data_mb: dict[str, float]
     exit_data_mb: dict[str, float]
     edge_data_mb: dict[tuple[str, str, str], float]
+    family: str = "unspecified"
+    template_id: str = "unspecified"
+    length_class: str = "unspecified"
 
     def visit_probability(self, node_id: str) -> float:
         return sum(
@@ -145,8 +158,16 @@ class SimulationSpec:
     slot_seconds: float = 1.0
     prefill_chunk_tokens: int = 512
     overload_delay_s: float = 60.0
-    deployment_period_slots: int = 10
+    deployment_period_slots: int = 60
     max_tool_replicas_per_server: int = 4
+
+
+@dataclass(frozen=True)
+class RewardSpec:
+    cost_weight: float = 0.25
+    latency_weight: float = 0.25
+    goodput_weight: float = 0.25
+    quality_weight: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -159,7 +180,9 @@ class Scenario:
     tools: dict[str, ToolSpec]
     candidates: dict[str, CandidateInstance]
     applications: dict[str, ApplicationSpec]
+    metadata: dict[str, Any] = field(default_factory=dict)
     simulation: SimulationSpec = field(default_factory=SimulationSpec)
+    reward: RewardSpec = field(default_factory=RewardSpec)
 
 
 @dataclass
@@ -212,4 +235,3 @@ class Transition:
     metrics: SlotMetrics
     terminated: bool = False
     truncated: bool = False
-

@@ -32,7 +32,7 @@ class AnalyticalResult:
     llm_kv_stable: dict[str, bool]
     tool_delay: dict[ToolPool, float]
     tool_utilization: dict[ToolPool, float]
-    link_loads_mbit: dict[Edge, float]
+    link_load_mbps: dict[Edge, float]
     node_server_distribution: dict[tuple[str, str, str, str, str], dict[str, float]]
     violations: list[str] = field(default_factory=list)
 
@@ -43,7 +43,11 @@ class AnalyticalBackend:
     ):
         self.scenario = scenario
         self.profile_backend = profile_backend
-        self.network = NetworkBackend(scenario.links, scenario.simulation.slot_seconds)
+        self.network = NetworkBackend(
+            scenario.links,
+            scenario.simulation.slot_seconds,
+            scenario.simulation.overload_delay_s,
+        )
 
     def evaluate(
         self,
@@ -219,9 +223,15 @@ class AnalyticalBackend:
                     service_s=demand.service_s,
                     prefill_s=demand.prefill_s,
                     decode_s=demand.decode_s,
-                    ttft_s=wait + demand.prefill_s,
+                    ttft_s=(
+                        wait + demand.prefill_s
+                        + (self.scenario.simulation.overload_delay_s if not stable else 0.0)
+                    ),
                     tbt_s=tbt,
-                    response_s=wait + demand.service_s,
+                    response_s=(
+                        wait + demand.service_s
+                        + (self.scenario.simulation.overload_delay_s if not stable else 0.0)
+                    ),
                 )
 
         for key, rate in arrivals.items():
@@ -269,6 +279,22 @@ class AnalyticalBackend:
                 )
             )
             long_fraction = long_rate / total_rate if total_rate > 0.0 else 0.0
+            composition = {
+                family: sum(
+                    arrivals[key]
+                    for key in keys
+                    if self.scenario.applications[key[0]].family == family
+                )
+                / total_rate
+                if total_rate > 0.0
+                else 0.0
+                for family in (
+                    "interactive_retrieval",
+                    "transactional_tool",
+                    "deep_research",
+                    "coding_agent",
+                )
+            }
             capacities = []
             kv_values = []
             for key in keys:
@@ -281,6 +307,7 @@ class AnalyticalBackend:
                     node.output_tokens[candidate.model],
                     total_rate,
                     long_fraction,
+                    composition,
                 )
                 capacities.append(estimate.stable_capacity_rps)
                 kv_values.append(estimate.kv_tokens)
@@ -300,6 +327,18 @@ class AnalyticalBackend:
                 violations.append(f"llm_queue_overload:{candidate_id}")
             if max(kv_values, default=0.0) >= config.kv_token_capacity:
                 violations.append(f"llm_kv_overload:{candidate_id}")
+            if total_rate >= capacity or not stable:
+                penalty = self.scenario.simulation.overload_delay_s
+                for key in keys:
+                    value = perf[key]
+                    perf[key] = LLMClassPerformance(
+                        service_s=value.service_s,
+                        prefill_s=value.prefill_s,
+                        decode_s=value.decode_s,
+                        ttft_s=value.ttft_s + penalty,
+                        tbt_s=value.tbt_s,
+                        response_s=value.response_s + penalty,
+                    )
         return perf, utilization, kv_stable, violations
 
     def node_distributions(
@@ -401,6 +440,7 @@ class AnalyticalBackend:
                 spec.service_rate[server],
                 replicas,
                 spec.arrival_scv,
+                spec.service_scv,
                 self.scenario.simulation.overload_delay_s,
             )
             delays[pool] = wait + process

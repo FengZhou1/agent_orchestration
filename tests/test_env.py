@@ -8,25 +8,23 @@ from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnl
 
 def _blank_routing_action(env):
     return {
-        "deploy": 0,
+        "deploy": env.encode_deployment(env.current_deployment),
         "model": np.ones(env.layout.model_action_size, dtype=np.float32),
-        "llm": np.ones(env.layout.llm_action_size, dtype=np.float32),
-        "tool": np.ones(env.layout.tool_action_size, dtype=np.float32),
     }
 
 
 def test_environment_completes_deployment_and_routing_phases(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, potential_shaping=True, seed=3)
     observation, _ = env.reset(seed=3)
-    while observation["action_type"] == env.DEPLOYMENT:
-        selected = int(observation["deploy_mask"][1] == 1)
-        observation, reward, terminated, truncated, info = env.step(
-            {**_blank_routing_action(env), "deploy": selected}
-        )
-        assert math.isfinite(reward)
-        assert not terminated
-        assert not truncated
-        assert info["discount"] == 1.0
+    assert observation["action_type"] == env.DEPLOYMENT
+    observation, reward, terminated, truncated, info = env.step(
+        _blank_routing_action(env)
+    )
+    assert math.isfinite(reward)
+    assert not terminated
+    assert not truncated
+    assert info["discount"] == 1.0
+    assert observation["action_type"] == env.ROUTING
     observation, reward, _, _, info = env.step(_blank_routing_action(env))
     assert math.isfinite(reward)
     assert info["phase"] == "routing"
@@ -49,7 +47,7 @@ def test_ppo_smoke_update(scenario):
     _, history = train_ppo(
         env,
         updates=1,
-        rollout_steps=len(env.layout.deployment_items) + 2,
+        rollout_steps=scenario.simulation.deployment_period_slots + 2,
         seed=9,
         config=config,
     )
@@ -64,7 +62,7 @@ def test_ppo_icm_smoke_update(scenario):
     _, history = train_ppo(
         env,
         updates=1,
-        rollout_steps=len(env.layout.deployment_items) + 2,
+        rollout_steps=scenario.simulation.deployment_period_slots + 2,
         seed=10,
         config=config,
         use_icm=True,
@@ -84,14 +82,44 @@ def test_routing_only_environment_never_enters_deployment(scenario):
 def test_deployment_only_environment_evaluates_internal_interval(scenario):
     env = DeploymentOnlyEnv(scenario, max_slots=2, seed=14)
     observation, _ = env.reset(seed=14)
-    last_info = {}
-    while not last_info.get("evaluated_slots"):
-        selected = int(observation["deploy_mask"][1] == 1)
-        observation, reward, terminated, _, last_info = env.step(
-            {**_blank_routing_action(env), "deploy": selected}
-        )
+    observation, reward, terminated, _, last_info = env.step(
+        _blank_routing_action(env)
+    )
     assert terminated
     assert last_info["evaluated_slots"] == 2
     assert len(last_info["interval_metrics"]) == 2
     assert [metrics.slot for metrics in last_info["interval_metrics"]] == [0, 1]
     assert math.isfinite(reward)
+
+
+def test_normalized_reward_has_separate_constraint_cost(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=2, seed=15)
+    observation, _ = env.reset(seed=15)
+    observation, _, _, _, deployment_info = env.step(_blank_routing_action(env))
+    assert deployment_info["constraint_cost"] == 0.0
+    _, reward, _, _, routing_info = env.step(_blank_routing_action(env))
+    components = routing_info["reward_components"]
+    assert -1.0 <= reward <= 1.0
+    assert set(components) == {
+        "utility",
+        "cost_normalized",
+        "latency_normalized",
+        "goodput_normalized",
+        "quality_normalized",
+    }
+    assert routing_info["constraint_cost"] >= 0.0
+
+
+def test_infeasible_complete_deployment_is_rejected_without_changing_state(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=2, seed=16)
+    env.reset(seed=16)
+    before = env.current_deployment.copy()
+    invalid = {
+        "deploy": np.zeros(len(env.layout.deployment_groups), dtype=np.int64),
+        "model": np.ones(env.layout.model_action_size, dtype=np.float32),
+    }
+    _, reward, _, _, info = env.step(invalid)
+    assert reward == 0.0
+    assert info["invalid_action"]
+    assert info["constraint_cost"] > 0.0
+    assert env.current_deployment == before

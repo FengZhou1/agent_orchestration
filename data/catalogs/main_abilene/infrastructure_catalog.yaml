@@ -1,0 +1,268 @@
+metadata:
+  role: main
+  generated_by: scripts/build_benchmark_scenarios.py
+  generated_on: '2026-09-01'
+  seed: 2026
+  source_catalog_sha256: deb8f6c1c7303aead393505515a92ec6c8ebfef29d0a8e5eb26590611daddd4b
+  data_sources:
+    arrivals:
+      name: BurstGPT v2
+      url: https://github.com/HPMLL/BurstGPT
+      role: request timestamps and burst structure
+    tokens:
+      name: TraceLab v2 and Azure LLM Inference Trace 2024
+      url: https://tracelab.cs.washington.edu/
+      role: paired input-output token features
+    workflows:
+      name: TraceLab v2 and BFCL V3/V4
+      url: https://gorilla.cs.berkeley.edu/leaderboard
+      role: agent execution patterns and quality tasks
+    stateless_services:
+      name: Alibaba Microservices v2021 and DeathStarBench
+      url: https://github.com/alibaba/clusterdata/tree/master/cluster-trace-microservices-v2021
+      role: service-graph structure and low-load processing profiles
+    infrastructure:
+      name: Alibaba GPU Trace v2026
+      url: https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2026
+      role: GPU-server heterogeneity only
+    network:
+      name: SNDlib 1.0
+      url: https://sndlib.put.poznan.pl/networks.overview.action
+      role: Abilene and GEANT topology and coordinates
+  units:
+    arrival_rate: request/s
+    service_rate: request/s
+    application_data: MB/request
+    link_load: Mbit/s
+    latency: s
+  quality_status: reference values; replace with pinned benchmark runs
+  slo_status: reference thresholds; replace with low-load P95 calibration
+  cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
+  default_workload: stable reference; formal runs use capacity-relative arrival traces
+  infrastructure_status: deterministic reference fixture
+  stateless_service_status: reference 2--8 request/s/core range
+  calibration_inputs: {}
+servers:
+- id: ATLAM5
+  cpu_cores: 64
+  memory_gb: 256.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: ATLAng
+  cpu_cores: 56
+  memory_gb: 224.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: CHINng
+  cpu_cores: 32
+  memory_gb: 128.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+- id: DNVRng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: HSTNng
+  cpu_cores: 48
+  memory_gb: 192.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: IPLSng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: KSCYng
+  cpu_cores: 32
+  memory_gb: 128.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+- id: LOSAng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: NYCMng
+  cpu_cores: 48
+  memory_gb: 192.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: SNVAng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: STTLng
+  cpu_cores: 48
+  memory_gb: 192.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: WASHng
+  cpu_cores: 40
+  memory_gb: 160.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+links:
+- source: ATLAng
+  target: ATLAM5
+  capacity_mbps: 400.0
+  propagation_ms: 1.0
+  cost_per_mb: 1.0e-05
+- source: ATLAM5
+  target: ATLAng
+  capacity_mbps: 400.0
+  propagation_ms: 1.0
+  cost_per_mb: 1.0e-05
+- source: HSTNng
+  target: ATLAng
+  capacity_mbps: 150.0
+  propagation_ms: 5.396
+  cost_per_mb: 1.0e-05
+- source: ATLAng
+  target: HSTNng
+  capacity_mbps: 150.0
+  propagation_ms: 5.396
+  cost_per_mb: 1.0e-05
+- source: IPLSng
+  target: ATLAng
+  capacity_mbps: 150.0
+  propagation_ms: 2.95
+  cost_per_mb: 1.0e-05
+- source: ATLAng
+  target: IPLSng
+  capacity_mbps: 150.0
+  propagation_ms: 2.95
+  cost_per_mb: 1.0e-05
+- source: WASHng
+  target: ATLAng
+  capacity_mbps: 150.0
+  propagation_ms: 4.496
+  cost_per_mb: 1.0e-05
+- source: ATLAng
+  target: WASHng
+  capacity_mbps: 150.0
+  propagation_ms: 4.496
+  cost_per_mb: 1.0e-05
+- source: IPLSng
+  target: CHINng
+  capacity_mbps: 400.0
+  propagation_ms: 1.295
+  cost_per_mb: 1.0e-05
+- source: CHINng
+  target: IPLSng
+  capacity_mbps: 400.0
+  propagation_ms: 1.295
+  cost_per_mb: 1.0e-05
+- source: NYCMng
+  target: CHINng
+  capacity_mbps: 150.0
+  propagation_ms: 5.724
+  cost_per_mb: 1.0e-05
+- source: CHINng
+  target: NYCMng
+  capacity_mbps: 150.0
+  propagation_ms: 5.724
+  cost_per_mb: 1.0e-05
+- source: KSCYng
+  target: DNVRng
+  capacity_mbps: 150.0
+  propagation_ms: 3.72
+  cost_per_mb: 1.0e-05
+- source: DNVRng
+  target: KSCYng
+  capacity_mbps: 150.0
+  propagation_ms: 3.72
+  cost_per_mb: 1.0e-05
+- source: SNVAng
+  target: DNVRng
+  capacity_mbps: 50.0
+  propagation_ms: 7.57
+  cost_per_mb: 1.0e-05
+- source: DNVRng
+  target: SNVAng
+  capacity_mbps: 50.0
+  propagation_ms: 7.57
+  cost_per_mb: 1.0e-05
+- source: STTLng
+  target: DNVRng
+  capacity_mbps: 50.0
+  propagation_ms: 7.855
+  cost_per_mb: 1.0e-05
+- source: DNVRng
+  target: STTLng
+  capacity_mbps: 50.0
+  propagation_ms: 7.855
+  cost_per_mb: 1.0e-05
+- source: KSCYng
+  target: HSTNng
+  capacity_mbps: 150.0
+  propagation_ms: 5.134
+  cost_per_mb: 1.0e-05
+- source: HSTNng
+  target: KSCYng
+  capacity_mbps: 150.0
+  propagation_ms: 5.134
+  cost_per_mb: 1.0e-05
+- source: LOSAng
+  target: HSTNng
+  capacity_mbps: 50.0
+  propagation_ms: 10.965
+  cost_per_mb: 1.0e-05
+- source: HSTNng
+  target: LOSAng
+  capacity_mbps: 50.0
+  propagation_ms: 10.965
+  cost_per_mb: 1.0e-05
+- source: KSCYng
+  target: IPLSng
+  capacity_mbps: 150.0
+  propagation_ms: 4.506
+  cost_per_mb: 1.0e-05
+- source: IPLSng
+  target: KSCYng
+  capacity_mbps: 150.0
+  propagation_ms: 4.506
+  cost_per_mb: 1.0e-05
+- source: SNVAng
+  target: LOSAng
+  capacity_mbps: 150.0
+  propagation_ms: 2.518
+  cost_per_mb: 1.0e-05
+- source: LOSAng
+  target: SNVAng
+  capacity_mbps: 150.0
+  propagation_ms: 2.518
+  cost_per_mb: 1.0e-05
+- source: WASHng
+  target: NYCMng
+  capacity_mbps: 400.0
+  propagation_ms: 1.675
+  cost_per_mb: 1.0e-05
+- source: NYCMng
+  target: WASHng
+  capacity_mbps: 400.0
+  propagation_ms: 1.675
+  cost_per_mb: 1.0e-05
+- source: STTLng
+  target: SNVAng
+  capacity_mbps: 150.0
+  propagation_ms: 5.68
+  cost_per_mb: 1.0e-05
+- source: SNVAng
+  target: STTLng
+  capacity_mbps: 150.0
+  propagation_ms: 5.68
+  cost_per_mb: 1.0e-05

@@ -11,9 +11,17 @@ Edge = tuple[str, str]
 
 
 class NetworkBackend:
-    def __init__(self, links: tuple[LinkSpec, ...], slot_seconds: float = 1.0):
+    """Multi-hop network model with Mbps load and per-request serialization delay."""
+
+    def __init__(
+        self,
+        links: tuple[LinkSpec, ...],
+        slot_seconds: float = 1.0,
+        overload_delay_s: float = 60.0,
+    ):
         self.links = {(link.source, link.target): link for link in links}
         self.slot_seconds = slot_seconds
+        self.overload_delay_s = overload_delay_s
         self.adjacency: dict[str, list[tuple[str, float]]] = defaultdict(list)
         for link in links:
             self.adjacency[link.source].append((link.target, link.propagation_ms))
@@ -44,27 +52,30 @@ class NetworkBackend:
 
     def add_traffic(
         self,
-        loads_mbit: dict[Edge, float],
+        loads_mbps: dict[Edge, float],
         source: str,
         target: str,
         request_rate: float,
         data_mb_per_request: float,
     ) -> None:
-        carried_mbit = request_rate * self.slot_seconds * data_mb_per_request * 8.0
+        carried_mbps = request_rate * data_mb_per_request * 8.0
         for edge in self.path(source, target):
-            loads_mbit[edge] = loads_mbit.get(edge, 0.0) + carried_mbit
+            loads_mbps[edge] = loads_mbps.get(edge, 0.0) + carried_mbps
 
     def path_delay(
         self,
         source: str,
         target: str,
-        loads_mbit: dict[Edge, float],
+        data_mb_per_request: float,
+        loads_mbps: dict[Edge, float],
     ) -> float:
         delay = 0.0
         for edge in self.path(source, target):
             link = self.links[edge]
+            if loads_mbps.get(edge, 0.0) >= link.capacity_mbps:
+                return self.overload_delay_s
             delay += link.propagation_ms / 1000.0
-            delay += loads_mbit.get(edge, 0.0) / link.capacity_mbps
+            delay += data_mb_per_request * 8.0 / link.capacity_mbps
         return delay
 
     def first_token_return_delay(
@@ -80,16 +91,17 @@ class NetworkBackend:
             delay += token_data_mb * 8.0 / link.capacity_mbps
         return delay
 
-    def utilization(self, loads_mbit: dict[Edge, float]) -> dict[str, float]:
+    def utilization(self, loads_mbps: dict[Edge, float]) -> dict[str, float]:
         return {
-            f"{u}->{v}": loads_mbit.get((u, v), 0.0)
-            / (link.capacity_mbps * self.slot_seconds)
+            f"{u}->{v}": loads_mbps.get((u, v), 0.0) / link.capacity_mbps
             for (u, v), link in self.links.items()
         }
 
-    def traffic_cost(self, loads_mbit: dict[Edge, float]) -> float:
+    def traffic_cost(self, loads_mbps: dict[Edge, float]) -> float:
         return sum(
-            loads_mbit.get(edge, 0.0) / 8.0 * link.cost_per_mb
+            loads_mbps.get(edge, 0.0)
+            * self.slot_seconds
+            / 8.0
+            * link.cost_per_mb
             for edge, link in self.links.items()
         )
-

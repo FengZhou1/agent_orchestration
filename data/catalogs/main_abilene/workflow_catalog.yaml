@@ -1,0 +1,620 @@
+metadata:
+  role: main
+  generated_by: scripts/build_benchmark_scenarios.py
+  generated_on: '2026-09-01'
+  seed: 2026
+  source_catalog_sha256: deb8f6c1c7303aead393505515a92ec6c8ebfef29d0a8e5eb26590611daddd4b
+  data_sources:
+    arrivals:
+      name: BurstGPT v2
+      url: https://github.com/HPMLL/BurstGPT
+      role: request timestamps and burst structure
+    tokens:
+      name: TraceLab v2 and Azure LLM Inference Trace 2024
+      url: https://tracelab.cs.washington.edu/
+      role: paired input-output token features
+    workflows:
+      name: TraceLab v2 and BFCL V3/V4
+      url: https://gorilla.cs.berkeley.edu/leaderboard
+      role: agent execution patterns and quality tasks
+    stateless_services:
+      name: Alibaba Microservices v2021 and DeathStarBench
+      url: https://github.com/alibaba/clusterdata/tree/master/cluster-trace-microservices-v2021
+      role: service-graph structure and low-load processing profiles
+    infrastructure:
+      name: Alibaba GPU Trace v2026
+      url: https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2026
+      role: GPU-server heterogeneity only
+    network:
+      name: SNDlib 1.0
+      url: https://sndlib.put.poznan.pl/networks.overview.action
+      role: Abilene and GEANT topology and coordinates
+  units:
+    arrival_rate: request/s
+    service_rate: request/s
+    application_data: MB/request
+    link_load: Mbit/s
+    latency: s
+  quality_status: reference values; replace with pinned benchmark runs
+  slo_status: reference thresholds; replace with low-load P95 calibration
+  cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
+  default_workload: stable reference; formal runs use capacity-relative arrival traces
+  infrastructure_status: deterministic reference fixture
+  stateless_service_status: reference 2--8 request/s/core range
+  calibration_inputs: {}
+applications:
+- id: interactive_retrieval-t01
+  family: interactive_retrieval
+  template_id: interactive_retrieval:1
+  length_class: short
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t02
+  family: interactive_retrieval
+  template_id: interactive_retrieval:2
+  length_class: short
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t03
+  family: interactive_retrieval
+  template_id: interactive_retrieval:3
+  length_class: medium
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t04
+  family: interactive_retrieval
+  template_id: interactive_retrieval:4
+  length_class: medium
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t05
+  family: interactive_retrieval
+  template_id: interactive_retrieval:5
+  length_class: long
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: transactional_tool-t01
+  family: transactional_tool
+  template_id: transactional_tool:1
+  length_class: short
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t02
+  family: transactional_tool
+  template_id: transactional_tool:2
+  length_class: short
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t03
+  family: transactional_tool
+  template_id: transactional_tool:3
+  length_class: medium
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t04
+  family: transactional_tool
+  template_id: transactional_tool:4
+  length_class: medium
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t05
+  family: transactional_tool
+  template_id: transactional_tool:5
+  length_class: long
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: deep_research-t01
+  family: deep_research
+  template_id: deep_research:1
+  length_class: short
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t02
+  family: deep_research
+  template_id: deep_research:2
+  length_class: short
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t03
+  family: deep_research
+  template_id: deep_research:3
+  length_class: medium
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t04
+  family: deep_research
+  template_id: deep_research:4
+  length_class: medium
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t05
+  family: deep_research
+  template_id: deep_research:5
+  length_class: long
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: coding_agent-t01
+  family: coding_agent
+  template_id: coding_agent:1
+  length_class: short
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t02
+  family: coding_agent
+  template_id: coding_agent:2
+  length_class: short
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t03
+  family: coding_agent
+  template_id: coding_agent:3
+  length_class: medium
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t04
+  family: coding_agent
+  template_id: coding_agent:4
+  length_class: medium
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t05
+  family: coding_agent
+  template_id: coding_agent:5
+  length_class: long
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final

@@ -25,6 +25,11 @@ class PPOConfig:
     value_coefficient: float = 0.5
     max_grad_norm: float = 0.5
     hidden_size: int = 128
+    constrained: bool = True
+    constraint_limit: float = 0.0
+    lagrangian_learning_rate: float = 0.05
+    initial_lagrange_multiplier: float = 0.0
+    max_lagrange_multiplier: float = 50.0
 
 
 class StructuredActorCritic(nn.Module):
@@ -39,10 +44,8 @@ class StructuredActorCritic(nn.Module):
             nn.Linear(hidden, hidden),
             nn.Tanh(),
         )
-        self.deploy_head = nn.Linear(hidden, 2)
+        self.deploy_head = nn.Linear(hidden, self.layout.deployment_action_size)
         self.model_head = nn.Linear(hidden, self.layout.model_action_size)
-        self.llm_head = nn.Linear(hidden, self.layout.llm_action_size)
-        self.tool_head = nn.Linear(hidden, self.layout.tool_action_size)
         self.value_head = nn.Linear(hidden, 1)
 
     def _encode(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -68,19 +71,21 @@ class StructuredActorCritic(nn.Module):
         value = self.value_head(hidden).squeeze(-1)
         phase = int(observation["action_type"])
         action = {
-            "deploy": 0,
+            "deploy": np.zeros(
+                len(self.layout.deployment_groups), dtype=np.int64
+            ),
             "model": np.zeros(self.layout.model_action_size, dtype=np.float32),
-            "llm": np.zeros(self.layout.llm_action_size, dtype=np.float32),
-            "tool": np.zeros(self.layout.tool_action_size, dtype=np.float32),
         }
         if phase == AgentOrchestrationEnv.DEPLOYMENT:
-            logits = self.deploy_head(hidden).squeeze(0)
-            mask = torch.as_tensor(observation["deploy_mask"], dtype=torch.bool, device=device)
-            logits = logits.masked_fill(~mask, -1.0e9)
-            distribution = Categorical(logits=logits)
-            selected = torch.argmax(logits) if deterministic else distribution.sample()
-            action["deploy"] = int(selected.item())
-            log_prob = distribution.log_prob(selected)
+            selected, log_prob, _ = _sample_variable_categoricals(
+                self.deploy_head(hidden).squeeze(0),
+                torch.as_tensor(
+                    observation["deploy_mask"], dtype=torch.bool, device=device
+                ),
+                self.layout.deployment_widths,
+                deterministic,
+            )
+            action["deploy"] = selected.cpu().numpy().astype(np.int64)
         else:
             model, model_logp, _ = _sample_grouped_dirichlet(
                 self.model_head(hidden).squeeze(0),
@@ -89,24 +94,8 @@ class StructuredActorCritic(nn.Module):
                 len(self.layout.models),
                 deterministic,
             )
-            llm, llm_logp, _ = _sample_grouped_dirichlet(
-                self.llm_head(hidden).squeeze(0),
-                torch.as_tensor(observation["llm_mask"], device=device),
-                len(self.layout.llm_groups),
-                len(self.layout.candidates),
-                deterministic,
-            )
-            tool, tool_logp, _ = _sample_grouped_dirichlet(
-                self.tool_head(hidden).squeeze(0),
-                torch.as_tensor(observation["tool_mask"], device=device),
-                len(self.layout.tool_groups),
-                len(self.layout.servers),
-                deterministic,
-            )
             action["model"] = model.cpu().numpy().astype(np.float32)
-            action["llm"] = llm.cpu().numpy().astype(np.float32)
-            action["tool"] = tool.cpu().numpy().astype(np.float32)
-            log_prob = model_logp + llm_logp + tool_logp
+            log_prob = model_logp
         return action, float(log_prob.item()), float(value.item())
 
     def evaluate_actions(
@@ -121,12 +110,14 @@ class StructuredActorCritic(nn.Module):
         entropies = torch.zeros_like(values)
         for index in range(hidden.shape[0]):
             if int(phases[index].item()) == AgentOrchestrationEnv.DEPLOYMENT:
-                logits = self.deploy_head(hidden[index])
-                mask = observation["deploy_mask"][index].bool()
-                distribution = Categorical(logits=logits.masked_fill(~mask, -1.0e9))
-                selected = actions["deploy"][index].long()
-                log_probs[index] = distribution.log_prob(selected)
-                entropies[index] = distribution.entropy()
+                deploy_logp, deploy_entropy = _evaluate_variable_categoricals(
+                    self.deploy_head(hidden[index]),
+                    observation["deploy_mask"][index],
+                    actions["deploy"][index],
+                    self.layout.deployment_widths,
+                )
+                log_probs[index] = deploy_logp
+                entropies[index] = deploy_entropy
                 continue
             model_logp, model_entropy = _evaluate_grouped_dirichlet(
                 self.model_head(hidden[index]),
@@ -135,22 +126,8 @@ class StructuredActorCritic(nn.Module):
                 len(self.layout.model_groups),
                 len(self.layout.models),
             )
-            llm_logp, llm_entropy = _evaluate_grouped_dirichlet(
-                self.llm_head(hidden[index]),
-                observation["llm_mask"][index],
-                actions["llm"][index],
-                len(self.layout.llm_groups),
-                len(self.layout.candidates),
-            )
-            tool_logp, tool_entropy = _evaluate_grouped_dirichlet(
-                self.tool_head(hidden[index]),
-                observation["tool_mask"][index],
-                actions["tool"][index],
-                len(self.layout.tool_groups),
-                len(self.layout.servers),
-            )
-            log_probs[index] = model_logp + llm_logp + tool_logp
-            entropies[index] = model_entropy + llm_entropy + tool_entropy
+            log_probs[index] = model_logp
+            entropies[index] = model_entropy
         return log_probs, entropies, values
 
 
@@ -170,10 +147,9 @@ def train_ppo(
     policy = StructuredActorCritic(env, config).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate)
     action_vector_size = (
-        4
+        2
+        + env.layout.deployment_action_size
         + env.layout.model_action_size
-        + env.layout.llm_action_size
-        + env.layout.tool_action_size
     )
     icm = (
         ICMModule(env.observation_space["features"].shape[0], action_vector_size).to(device)
@@ -183,6 +159,7 @@ def train_ppo(
     icm_optimizer = torch.optim.Adam(icm.parameters(), lr=config.learning_rate) if icm else None
     observation, _ = env.reset(seed=seed)
     history: list[dict[str, float]] = []
+    lagrange_multiplier = config.initial_lagrange_multiplier
 
     for update in range(updates):
         observations: list[dict[str, Any]] = []
@@ -191,6 +168,7 @@ def train_ppo(
         log_probs: list[float] = []
         values: list[float] = []
         rewards: list[float] = []
+        constraint_costs: list[float] = []
         discounts: list[float] = []
         terminals: list[float] = []
 
@@ -203,6 +181,10 @@ def train_ppo(
             log_probs.append(log_prob)
             values.append(value)
             rewards.append(float(reward))
+            constraint_steps = max(1.0, float(info.get("constraint_steps", 1.0)))
+            constraint_costs.append(
+                float(info.get("constraint_cost", 0.0)) / constraint_steps
+            )
             discounts.append(float(info.get("discount", config.gamma)))
             terminals.append(float(terminated or truncated))
             observation = next_observation
@@ -210,9 +192,14 @@ def train_ppo(
                 observation, _ = env.reset(seed=seed + update + 1)
 
         intrinsic_mean = 0.0
+        utility_rewards = list(rewards)
         action_vectors = np.stack(
             [
-                structured_action_vector(action, int(obs["action_type"]))
+                structured_action_vector(
+                    action,
+                    int(obs["action_type"]),
+                    env.layout.deployment_widths,
+                )
                 for obs, action in zip(observations, actions)
             ]
         )
@@ -237,6 +224,13 @@ def train_ppo(
             rewards = [
                 reward + icm_scale * float(intrinsic[index].item())
                 for index, reward in enumerate(rewards)
+            ]
+        if config.constrained:
+            rewards = [
+                utility
+                - lagrange_multiplier
+                * (constraint - config.constraint_limit)
+                for utility, constraint in zip(utility_rewards, constraint_costs)
             ]
         with torch.no_grad():
             bootstrap = float(
@@ -304,6 +298,9 @@ def train_ppo(
             {
                 "update": float(update),
                 "mean_reward": float(np.mean(rewards)),
+                "mean_utility": float(np.mean(utility_rewards)),
+                "mean_constraint_cost": float(np.mean(constraint_costs)),
+                "lagrange_multiplier": float(lagrange_multiplier),
                 "mean_loss": float(np.mean(losses)),
                 "routing_steps": float(
                     sum(int(obs["action_type"] == AgentOrchestrationEnv.ROUTING) for obs in observations)
@@ -312,11 +309,63 @@ def train_ppo(
                 "mean_icm_loss": float(np.mean(icm_losses)) if icm_losses else 0.0,
             }
         )
+        if config.constrained:
+            lagrange_multiplier = float(
+                np.clip(
+                    lagrange_multiplier
+                    + config.lagrangian_learning_rate
+                    * (float(np.mean(constraint_costs)) - config.constraint_limit),
+                    0.0,
+                    config.max_lagrange_multiplier,
+                )
+            )
     return policy, history
 
 
 def _concentrations(raw: torch.Tensor) -> torch.Tensor:
     return torch.clamp(torch.nn.functional.softplus(raw) + 0.1, 0.1, 100.0)
+
+
+def _sample_variable_categoricals(
+    raw: torch.Tensor,
+    mask: torch.Tensor,
+    widths: tuple[int, ...],
+    deterministic: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    choices: list[torch.Tensor] = []
+    log_prob = raw.new_tensor(0.0)
+    entropy = raw.new_tensor(0.0)
+    offset = 0
+    for width in widths:
+        logits = raw[offset : offset + width]
+        valid = mask[offset : offset + width].bool()
+        distribution = Categorical(logits=logits.masked_fill(~valid, -1.0e9))
+        choice = torch.argmax(logits.masked_fill(~valid, -1.0e9)) if deterministic else distribution.sample()
+        choices.append(choice)
+        log_prob = log_prob + distribution.log_prob(choice)
+        entropy = entropy + distribution.entropy()
+        offset += width
+    return torch.stack(choices), log_prob, entropy
+
+
+def _evaluate_variable_categoricals(
+    raw: torch.Tensor,
+    mask: torch.Tensor,
+    action: torch.Tensor,
+    widths: tuple[int, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    log_prob = raw.new_tensor(0.0)
+    entropy = raw.new_tensor(0.0)
+    offset = 0
+    for group, width in enumerate(widths):
+        logits = raw[offset : offset + width]
+        valid = mask[offset : offset + width].bool()
+        distribution = Categorical(logits=logits.masked_fill(~valid, -1.0e9))
+        choice = action[group].long()
+        log_prob = log_prob + distribution.log_prob(choice)
+        entropy = entropy + distribution.entropy()
+        offset += width
+    return log_prob, entropy
 
 
 def _sample_grouped_dirichlet(
@@ -378,8 +427,6 @@ def _observation_to_tensors(
         "action_type": torch.as_tensor(observation["action_type"], dtype=torch.long, device=device),
         "deploy_mask": torch.as_tensor(observation["deploy_mask"], dtype=torch.bool, device=device),
         "model_mask": torch.as_tensor(observation["model_mask"], dtype=torch.bool, device=device),
-        "llm_mask": torch.as_tensor(observation["llm_mask"], dtype=torch.bool, device=device),
-        "tool_mask": torch.as_tensor(observation["tool_mask"], dtype=torch.bool, device=device),
     }
     if batched:
         return result
@@ -408,16 +455,6 @@ def _stack_observations(
             dtype=torch.bool,
             device=device,
         ),
-        "llm_mask": torch.as_tensor(
-            np.stack([obs["llm_mask"] for obs in observations]),
-            dtype=torch.bool,
-            device=device,
-        ),
-        "tool_mask": torch.as_tensor(
-            np.stack([obs["tool_mask"] for obs in observations]),
-            dtype=torch.bool,
-            device=device,
-        ),
     }
 
 
@@ -426,20 +463,12 @@ def _stack_actions(
 ) -> dict[str, torch.Tensor]:
     return {
         "deploy": torch.as_tensor(
-            [action["deploy"] for action in actions], dtype=torch.long, device=device
+            np.stack([action["deploy"] for action in actions]),
+            dtype=torch.long,
+            device=device,
         ),
         "model": torch.as_tensor(
             np.stack([action["model"] for action in actions]),
-            dtype=torch.float32,
-            device=device,
-        ),
-        "llm": torch.as_tensor(
-            np.stack([action["llm"] for action in actions]),
-            dtype=torch.float32,
-            device=device,
-        ),
-        "tool": torch.as_tensor(
-            np.stack([action["tool"] for action in actions]),
             dtype=torch.float32,
             device=device,
         ),

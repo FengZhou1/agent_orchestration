@@ -54,17 +54,20 @@ class ICMModule(nn.Module):
         return forward_weight * forward_loss + (1.0 - forward_weight) * inverse_loss
 
 
-def structured_action_vector(action: dict, phase: int) -> np.ndarray:
+def structured_action_vector(
+    action: dict,
+    phase: int,
+    deployment_widths: tuple[int, ...],
+) -> np.ndarray:
     phase_one_hot = np.asarray([float(phase == 0), float(phase == 1)], dtype=np.float32)
-    deploy = int(action["deploy"])
-    deploy_one_hot = np.asarray([float(deploy == 0), float(deploy == 1)], dtype=np.float32)
+    deployment = np.asarray(action["deploy"], dtype=np.int64)
+    encoded: list[float] = []
+    for choice, width in zip(deployment, deployment_widths):
+        encoded.extend(float(choice == value) for value in range(width))
     return np.concatenate(
         [
             phase_one_hot,
-            deploy_one_hot,
+            np.asarray(encoded, dtype=np.float32),
             np.asarray(action["model"], dtype=np.float32),
-            np.asarray(action["llm"], dtype=np.float32),
-            np.asarray(action["tool"], dtype=np.float32),
         ]
     )
-

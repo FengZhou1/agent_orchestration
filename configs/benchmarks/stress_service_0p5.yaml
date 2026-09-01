@@ -1,0 +1,3021 @@
+id: agent-abilene-20-service-0p5
+metadata:
+  role: stress-service
+  generated_by: scripts/build_benchmark_scenarios.py
+  generated_on: '2026-09-01'
+  seed: 2026
+  source_catalog_sha256: deb8f6c1c7303aead393505515a92ec6c8ebfef29d0a8e5eb26590611daddd4b
+  data_sources:
+    arrivals:
+      name: BurstGPT v2
+      url: https://github.com/HPMLL/BurstGPT
+      role: request timestamps and burst structure
+    tokens:
+      name: TraceLab v2 and Azure LLM Inference Trace 2024
+      url: https://tracelab.cs.washington.edu/
+      role: paired input-output token features
+    workflows:
+      name: TraceLab v2 and BFCL V3/V4
+      url: https://gorilla.cs.berkeley.edu/leaderboard
+      role: agent execution patterns and quality tasks
+    stateless_services:
+      name: Alibaba Microservices v2021 and DeathStarBench
+      url: https://github.com/alibaba/clusterdata/tree/master/cluster-trace-microservices-v2021
+      role: service-graph structure and low-load processing profiles
+    infrastructure:
+      name: Alibaba GPU Trace v2026
+      url: https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2026
+      role: GPU-server heterogeneity only
+    network:
+      name: SNDlib 1.0
+      url: https://sndlib.put.poznan.pl/networks.overview.action
+      role: Abilene and GEANT topology and coordinates
+  units:
+    arrival_rate: request/s
+    service_rate: request/s
+    application_data: MB/request
+    link_load: Mbit/s
+    latency: s
+  quality_status: reference values; replace with pinned benchmark runs
+  slo_status: reference thresholds; replace with low-load P95 calibration
+  cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
+  default_workload: stable reference; formal runs use capacity-relative arrival traces
+  infrastructure_status: deterministic reference fixture
+  stateless_service_status: reference 2--8 request/s/core range
+  calibration_inputs: {}
+simulation:
+  slot_seconds: 1.0
+  prefill_chunk_tokens: 512
+  overload_delay_s: 60.0
+  deployment_period_slots: 60
+  max_tool_replicas_per_server: 4
+reward:
+  cost_weight: 0.25
+  latency_weight: 0.25
+  goodput_weight: 0.25
+  quality_weight: 0.25
+servers:
+- id: ATLAM5
+  cpu_cores: 64
+  memory_gb: 256.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: ATLAng
+  cpu_cores: 56
+  memory_gb: 224.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: CHINng
+  cpu_cores: 32
+  memory_gb: 128.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+- id: DNVRng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: HSTNng
+  cpu_cores: 48
+  memory_gb: 192.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: IPLSng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: KSCYng
+  cpu_cores: 32
+  memory_gb: 128.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+- id: LOSAng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: NYCMng
+  cpu_cores: 48
+  memory_gb: 192.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: SNVAng
+  cpu_cores: 72
+  memory_gb: 288.0
+  gpu_count: 1
+  gpu_memory_gb: 96.0
+  gpu_type: H20
+- id: STTLng
+  cpu_cores: 48
+  memory_gb: 192.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: WASHng
+  cpu_cores: 40
+  memory_gb: 160.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+links:
+- source: ATLAng
+  target: ATLAM5
+  capacity_mbps: 400.0
+  propagation_ms: 1.0
+  cost_per_mb: 1.0e-05
+- source: ATLAM5
+  target: ATLAng
+  capacity_mbps: 400.0
+  propagation_ms: 1.0
+  cost_per_mb: 1.0e-05
+- source: HSTNng
+  target: ATLAng
+  capacity_mbps: 150.0
+  propagation_ms: 5.396
+  cost_per_mb: 1.0e-05
+- source: ATLAng
+  target: HSTNng
+  capacity_mbps: 150.0
+  propagation_ms: 5.396
+  cost_per_mb: 1.0e-05
+- source: IPLSng
+  target: ATLAng
+  capacity_mbps: 150.0
+  propagation_ms: 2.95
+  cost_per_mb: 1.0e-05
+- source: ATLAng
+  target: IPLSng
+  capacity_mbps: 150.0
+  propagation_ms: 2.95
+  cost_per_mb: 1.0e-05
+- source: WASHng
+  target: ATLAng
+  capacity_mbps: 150.0
+  propagation_ms: 4.496
+  cost_per_mb: 1.0e-05
+- source: ATLAng
+  target: WASHng
+  capacity_mbps: 150.0
+  propagation_ms: 4.496
+  cost_per_mb: 1.0e-05
+- source: IPLSng
+  target: CHINng
+  capacity_mbps: 400.0
+  propagation_ms: 1.295
+  cost_per_mb: 1.0e-05
+- source: CHINng
+  target: IPLSng
+  capacity_mbps: 400.0
+  propagation_ms: 1.295
+  cost_per_mb: 1.0e-05
+- source: NYCMng
+  target: CHINng
+  capacity_mbps: 150.0
+  propagation_ms: 5.724
+  cost_per_mb: 1.0e-05
+- source: CHINng
+  target: NYCMng
+  capacity_mbps: 150.0
+  propagation_ms: 5.724
+  cost_per_mb: 1.0e-05
+- source: KSCYng
+  target: DNVRng
+  capacity_mbps: 150.0
+  propagation_ms: 3.72
+  cost_per_mb: 1.0e-05
+- source: DNVRng
+  target: KSCYng
+  capacity_mbps: 150.0
+  propagation_ms: 3.72
+  cost_per_mb: 1.0e-05
+- source: SNVAng
+  target: DNVRng
+  capacity_mbps: 50.0
+  propagation_ms: 7.57
+  cost_per_mb: 1.0e-05
+- source: DNVRng
+  target: SNVAng
+  capacity_mbps: 50.0
+  propagation_ms: 7.57
+  cost_per_mb: 1.0e-05
+- source: STTLng
+  target: DNVRng
+  capacity_mbps: 50.0
+  propagation_ms: 7.855
+  cost_per_mb: 1.0e-05
+- source: DNVRng
+  target: STTLng
+  capacity_mbps: 50.0
+  propagation_ms: 7.855
+  cost_per_mb: 1.0e-05
+- source: KSCYng
+  target: HSTNng
+  capacity_mbps: 150.0
+  propagation_ms: 5.134
+  cost_per_mb: 1.0e-05
+- source: HSTNng
+  target: KSCYng
+  capacity_mbps: 150.0
+  propagation_ms: 5.134
+  cost_per_mb: 1.0e-05
+- source: LOSAng
+  target: HSTNng
+  capacity_mbps: 50.0
+  propagation_ms: 10.965
+  cost_per_mb: 1.0e-05
+- source: HSTNng
+  target: LOSAng
+  capacity_mbps: 50.0
+  propagation_ms: 10.965
+  cost_per_mb: 1.0e-05
+- source: KSCYng
+  target: IPLSng
+  capacity_mbps: 150.0
+  propagation_ms: 4.506
+  cost_per_mb: 1.0e-05
+- source: IPLSng
+  target: KSCYng
+  capacity_mbps: 150.0
+  propagation_ms: 4.506
+  cost_per_mb: 1.0e-05
+- source: SNVAng
+  target: LOSAng
+  capacity_mbps: 150.0
+  propagation_ms: 2.518
+  cost_per_mb: 1.0e-05
+- source: LOSAng
+  target: SNVAng
+  capacity_mbps: 150.0
+  propagation_ms: 2.518
+  cost_per_mb: 1.0e-05
+- source: WASHng
+  target: NYCMng
+  capacity_mbps: 400.0
+  propagation_ms: 1.675
+  cost_per_mb: 1.0e-05
+- source: NYCMng
+  target: WASHng
+  capacity_mbps: 400.0
+  propagation_ms: 1.675
+  cost_per_mb: 1.0e-05
+- source: STTLng
+  target: SNVAng
+  capacity_mbps: 150.0
+  propagation_ms: 5.68
+  cost_per_mb: 1.0e-05
+- source: SNVAng
+  target: STTLng
+  capacity_mbps: 150.0
+  propagation_ms: 5.68
+  cost_per_mb: 1.0e-05
+models:
+- id: qwen2.5-7b
+  parameter_count: 7610000000.0
+  layers: 28
+  hidden_size: 3584
+  weight_bytes: 15220000000.0
+  kv_bytes_per_token: 114688.0
+- id: qwen2.5-14b
+  parameter_count: 14700000000.0
+  layers: 48
+  hidden_size: 5120
+  weight_bytes: 29400000000.0
+  kv_bytes_per_token: 393216.0
+- id: qwen2.5-32b
+  parameter_count: 32500000000.0
+  layers: 64
+  hidden_size: 5120
+  weight_bytes: 65000000000.0
+  kv_bytes_per_token: 524288.0
+llm_configs:
+- id: qwen2.5-7b-a10
+  model: qwen2.5-7b
+  gpu_type: A10
+  gpu_count: 1
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 20.0
+  effective_flops: 60000000000000.0
+  effective_bandwidth_bytes_s: 600000000000.0
+  effective_concurrency: 24
+  kv_token_capacity: 38190.0
+  running_cost_per_slot: 0.0002777777777777778
+  load_cost: 0.016666666666666666
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+- id: qwen2.5-7b-l20
+  model: qwen2.5-7b
+  gpu_type: L20
+  gpu_count: 1
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 20.0
+  effective_flops: 90000000000000.0
+  effective_bandwidth_bytes_s: 864000000000.0
+  effective_concurrency: 24
+  kv_token_capacity: 226527.0
+  running_cost_per_slot: 0.0005555555555555556
+  load_cost: 0.03333333333333333
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+- id: qwen2.5-7b-h20
+  model: qwen2.5-7b
+  gpu_type: H20
+  gpu_count: 1
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 20.0
+  effective_flops: 120000000000000.0
+  effective_bandwidth_bytes_s: 3500000000000.0
+  effective_concurrency: 24
+  kv_token_capacity: 603201.0
+  running_cost_per_slot: 0.0011111111111111111
+  load_cost: 0.06666666666666667
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+- id: qwen2.5-14b-l20
+  model: qwen2.5-14b
+  gpu_type: L20
+  gpu_count: 1
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 34.0
+  effective_flops: 90000000000000.0
+  effective_bandwidth_bytes_s: 864000000000.0
+  effective_concurrency: 24
+  kv_token_capacity: 30008.0
+  running_cost_per_slot: 0.0005555555555555556
+  load_cost: 0.03333333333333333
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+- id: qwen2.5-14b-h20
+  model: qwen2.5-14b
+  gpu_type: H20
+  gpu_count: 1
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 34.0
+  effective_flops: 120000000000000.0
+  effective_bandwidth_bytes_s: 3500000000000.0
+  effective_concurrency: 24
+  kv_token_capacity: 139872.0
+  running_cost_per_slot: 0.0011111111111111111
+  load_cost: 0.06666666666666667
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+- id: qwen2.5-32b-h20
+  model: qwen2.5-32b
+  gpu_type: H20
+  gpu_count: 1
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 69.0
+  effective_flops: 120000000000000.0
+  effective_bandwidth_bytes_s: 3500000000000.0
+  effective_concurrency: 16
+  kv_token_capacity: 37002.0
+  running_cost_per_slot: 0.0011111111111111111
+  load_cost: 0.06666666666666667
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+- id: qwen2.5-32b-2xl20
+  model: qwen2.5-32b
+  gpu_type: L20
+  gpu_count: 2
+  gpu_share: 1.0
+  reserved_memory_gb_per_gpu: 37.0
+  effective_flops: 180000000000000.0
+  effective_bandwidth_bytes_s: 1728000000000.0
+  effective_concurrency: 16
+  kv_token_capacity: 33187.0
+  running_cost_per_slot: 0.0011111111111111111
+  load_cost: 0.06666666666666667
+  dtype: bfloat16
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  max_num_batched_tokens: 8192
+  max_num_seqs: 128
+  chunked_prefill: true
+  prefix_cache: false
+candidates:
+- id: qwen2.5-7b-h20@ATLAM5
+  model: qwen2.5-7b
+  config: qwen2.5-7b-h20
+  server: ATLAM5
+- id: qwen2.5-14b-h20@ATLAM5
+  model: qwen2.5-14b
+  config: qwen2.5-14b-h20
+  server: ATLAM5
+- id: qwen2.5-32b-h20@ATLAM5
+  model: qwen2.5-32b
+  config: qwen2.5-32b-h20
+  server: ATLAM5
+- id: qwen2.5-7b-l20@ATLAng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-l20
+  server: ATLAng
+- id: qwen2.5-14b-l20@ATLAng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-l20
+  server: ATLAng
+- id: qwen2.5-32b-2xl20@ATLAng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-2xl20
+  server: ATLAng
+- id: qwen2.5-7b-a10@CHINng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-a10
+  server: CHINng
+- id: qwen2.5-7b-h20@DNVRng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-h20
+  server: DNVRng
+- id: qwen2.5-14b-h20@DNVRng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-h20
+  server: DNVRng
+- id: qwen2.5-32b-h20@DNVRng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-h20
+  server: DNVRng
+- id: qwen2.5-7b-l20@HSTNng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-l20
+  server: HSTNng
+- id: qwen2.5-14b-l20@HSTNng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-l20
+  server: HSTNng
+- id: qwen2.5-32b-2xl20@HSTNng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-2xl20
+  server: HSTNng
+- id: qwen2.5-7b-h20@IPLSng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-h20
+  server: IPLSng
+- id: qwen2.5-14b-h20@IPLSng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-h20
+  server: IPLSng
+- id: qwen2.5-32b-h20@IPLSng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-h20
+  server: IPLSng
+- id: qwen2.5-7b-a10@KSCYng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-a10
+  server: KSCYng
+- id: qwen2.5-7b-h20@LOSAng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-h20
+  server: LOSAng
+- id: qwen2.5-14b-h20@LOSAng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-h20
+  server: LOSAng
+- id: qwen2.5-32b-h20@LOSAng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-h20
+  server: LOSAng
+- id: qwen2.5-7b-l20@NYCMng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-l20
+  server: NYCMng
+- id: qwen2.5-14b-l20@NYCMng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-l20
+  server: NYCMng
+- id: qwen2.5-32b-2xl20@NYCMng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-2xl20
+  server: NYCMng
+- id: qwen2.5-7b-h20@SNVAng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-h20
+  server: SNVAng
+- id: qwen2.5-14b-h20@SNVAng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-h20
+  server: SNVAng
+- id: qwen2.5-32b-h20@SNVAng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-h20
+  server: SNVAng
+- id: qwen2.5-7b-l20@STTLng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-l20
+  server: STTLng
+- id: qwen2.5-14b-l20@STTLng
+  model: qwen2.5-14b
+  config: qwen2.5-14b-l20
+  server: STTLng
+- id: qwen2.5-32b-2xl20@STTLng
+  model: qwen2.5-32b
+  config: qwen2.5-32b-2xl20
+  server: STTLng
+- id: qwen2.5-7b-a10@WASHng
+  model: qwen2.5-7b
+  config: qwen2.5-7b-a10
+  server: WASHng
+tools:
+- id: web_search
+  cpu_cores: 2
+  memory_gb: 2.0
+  service_rate:
+    ATLAM5: 4.1695
+    ATLAng: 4.0595
+    CHINng: 3.63
+    DNVRng: 4.269
+    HSTNng: 3.9365
+    IPLSng: 4.269
+    KSCYng: 3.63
+    LOSAng: 4.269
+    NYCMng: 3.9365
+    SNVAng: 4.269
+    STTLng: 3.9365
+    WASHng: 3.7955
+  arrival_scv: 1.0
+  service_scv: 1.5
+  running_cost_per_slot: 2.777777777777778e-05
+  start_cost: 0.0016666666666666668
+- id: information_retrieval
+  cpu_cores: 2
+  memory_gb: 4.0
+  service_rate:
+    ATLAM5: 6.2545
+    ATLAng: 6.0895
+    CHINng: 5.445
+    DNVRng: 6.4035
+    HSTNng: 5.9045
+    IPLSng: 6.4035
+    KSCYng: 5.445
+    LOSAng: 6.4035
+    NYCMng: 5.9045
+    SNVAng: 6.4035
+    STTLng: 5.9045
+    WASHng: 5.6935
+  arrival_scv: 1.0
+  service_scv: 1.1
+  running_cost_per_slot: 2.777777777777778e-05
+  start_cost: 0.0016666666666666668
+- id: code_execution
+  cpu_cores: 4
+  memory_gb: 8.0
+  service_rate:
+    ATLAM5: 4.1695
+    ATLAng: 4.0595
+    CHINng: 3.63
+    DNVRng: 4.269
+    HSTNng: 3.9365
+    IPLSng: 4.269
+    KSCYng: 3.63
+    LOSAng: 4.269
+    NYCMng: 3.9365
+    SNVAng: 4.269
+    STTLng: 3.9365
+    WASHng: 3.7955
+  arrival_scv: 1.0
+  service_scv: 2.0
+  running_cost_per_slot: 5.555555555555556e-05
+  start_cost: 0.0033333333333333335
+- id: file_processing
+  cpu_cores: 2
+  memory_gb: 4.0
+  service_rate:
+    ATLAM5: 5.212
+    ATLAng: 5.0745
+    CHINng: 4.5375
+    DNVRng: 5.336
+    HSTNng: 4.9205
+    IPLSng: 5.336
+    KSCYng: 4.5375
+    LOSAng: 5.336
+    NYCMng: 4.9205
+    SNVAng: 5.336
+    STTLng: 4.9205
+    WASHng: 4.7445
+  arrival_scv: 1.0
+  service_scv: 1.2
+  running_cost_per_slot: 2.777777777777778e-05
+  start_cost: 0.0016666666666666668
+- id: result_verification
+  cpu_cores: 1
+  memory_gb: 2.0
+  service_rate:
+    ATLAM5: 4.1695
+    ATLAng: 4.0595
+    CHINng: 3.63
+    DNVRng: 4.269
+    HSTNng: 3.9365
+    IPLSng: 4.269
+    KSCYng: 3.63
+    LOSAng: 4.269
+    NYCMng: 3.9365
+    SNVAng: 4.269
+    STTLng: 3.9365
+    WASHng: 3.7955
+  arrival_scv: 1.0
+  service_scv: 0.8
+  running_cost_per_slot: 1.388888888888889e-05
+  start_cost: 0.0008333333333333334
+- id: external_api
+  cpu_cores: 1
+  memory_gb: 1.0
+  service_rate:
+    ATLAM5: 1.5635
+    ATLAng: 1.5225
+    CHINng: 1.361
+    DNVRng: 1.601
+    HSTNng: 1.476
+    IPLSng: 1.601
+    KSCYng: 1.361
+    LOSAng: 1.601
+    NYCMng: 1.476
+    SNVAng: 1.601
+    STTLng: 1.476
+    WASHng: 1.4235
+  arrival_scv: 1.0
+  service_scv: 2.5
+  running_cost_per_slot: 1.388888888888889e-05
+  start_cost: 0.0008333333333333334
+applications:
+- id: interactive_retrieval-t01
+  family: interactive_retrieval
+  template_id: interactive_retrieval:1
+  length_class: short
+  ingress_rates:
+    ATLAM5: 0.003
+  slo:
+    type: lat
+    ttft_s: 2.0
+    tbt_s: 0.15
+  quality:
+    qwen2.5-7b: 0.72
+    qwen2.5-14b: 0.81
+    qwen2.5-32b: 0.89
+  entry_data_mb:
+    qwen2.5-7b: 0.000616
+    qwen2.5-14b: 0.000616
+    qwen2.5-32b: 0.000616
+  exit_data_mb:
+    qwen2.5-7b: 0.000172
+    qwen2.5-14b: 0.000172
+    qwen2.5-32b: 0.000172
+  edge_data_mb:
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->final: 0.5
+    qwen2.5-7b:search->final: 0.08
+    qwen2.5-7b:search->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->final: 0.5
+    qwen2.5-14b:search->final: 0.08
+    qwen2.5-14b:search->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->final: 0.5
+    qwen2.5-32b:search->final: 0.08
+    qwen2.5-32b:search->retrieve: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 154
+      qwen2.5-14b: 154
+      qwen2.5-32b: 154
+    output_tokens:
+      qwen2.5-7b: 14
+      qwen2.5-14b: 14
+      qwen2.5-32b: 14
+  - id: search
+    type: tool
+    tool: web_search
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 384
+      qwen2.5-14b: 384
+      qwen2.5-32b: 384
+    output_tokens:
+      qwen2.5-7b: 43
+      qwen2.5-14b: 43
+      qwen2.5-32b: 43
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t02
+  family: interactive_retrieval
+  template_id: interactive_retrieval:2
+  length_class: short
+  ingress_rates:
+    ATLAng: 0.003
+  slo:
+    type: lat
+    ttft_s: 2.0
+    tbt_s: 0.15
+  quality:
+    qwen2.5-7b: 0.72
+    qwen2.5-14b: 0.81
+    qwen2.5-32b: 0.89
+  entry_data_mb:
+    qwen2.5-7b: 0.00082
+    qwen2.5-14b: 0.00082
+    qwen2.5-32b: 0.00082
+  exit_data_mb:
+    qwen2.5-7b: 0.000232
+    qwen2.5-14b: 0.000232
+    qwen2.5-32b: 0.000232
+  edge_data_mb:
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->final: 0.5
+    qwen2.5-7b:search->final: 0.08
+    qwen2.5-7b:search->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->final: 0.5
+    qwen2.5-14b:search->final: 0.08
+    qwen2.5-14b:search->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->final: 0.5
+    qwen2.5-32b:search->final: 0.08
+    qwen2.5-32b:search->retrieve: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 205
+      qwen2.5-14b: 205
+      qwen2.5-32b: 205
+    output_tokens:
+      qwen2.5-7b: 19
+      qwen2.5-14b: 19
+      qwen2.5-32b: 19
+  - id: search
+    type: tool
+    tool: web_search
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 512
+      qwen2.5-14b: 512
+      qwen2.5-32b: 512
+    output_tokens:
+      qwen2.5-7b: 58
+      qwen2.5-14b: 58
+      qwen2.5-32b: 58
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t03
+  family: interactive_retrieval
+  template_id: interactive_retrieval:3
+  length_class: medium
+  ingress_rates:
+    CHINng: 0.003
+  slo:
+    type: lat
+    ttft_s: 2.0
+    tbt_s: 0.15
+  quality:
+    qwen2.5-7b: 0.72
+    qwen2.5-14b: 0.81
+    qwen2.5-32b: 0.89
+  entry_data_mb:
+    qwen2.5-7b: 0.001024
+    qwen2.5-14b: 0.001024
+    qwen2.5-32b: 0.001024
+  exit_data_mb:
+    qwen2.5-7b: 0.000288
+    qwen2.5-14b: 0.000288
+    qwen2.5-32b: 0.000288
+  edge_data_mb:
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->final: 0.5
+    qwen2.5-7b:search->final: 0.08
+    qwen2.5-7b:search->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->final: 0.5
+    qwen2.5-14b:search->final: 0.08
+    qwen2.5-14b:search->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->final: 0.5
+    qwen2.5-32b:search->final: 0.08
+    qwen2.5-32b:search->retrieve: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 256
+      qwen2.5-14b: 256
+      qwen2.5-32b: 256
+    output_tokens:
+      qwen2.5-7b: 24
+      qwen2.5-14b: 24
+      qwen2.5-32b: 24
+  - id: search
+    type: tool
+    tool: web_search
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 640
+      qwen2.5-14b: 640
+      qwen2.5-32b: 640
+    output_tokens:
+      qwen2.5-7b: 72
+      qwen2.5-14b: 72
+      qwen2.5-32b: 72
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t04
+  family: interactive_retrieval
+  template_id: interactive_retrieval:4
+  length_class: medium
+  ingress_rates:
+    DNVRng: 0.003
+  slo:
+    type: lat
+    ttft_s: 2.0
+    tbt_s: 0.15
+  quality:
+    qwen2.5-7b: 0.72
+    qwen2.5-14b: 0.81
+    qwen2.5-32b: 0.89
+  entry_data_mb:
+    qwen2.5-7b: 0.001332
+    qwen2.5-14b: 0.001332
+    qwen2.5-32b: 0.001332
+  exit_data_mb:
+    qwen2.5-7b: 0.000376
+    qwen2.5-14b: 0.000376
+    qwen2.5-32b: 0.000376
+  edge_data_mb:
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->final: 0.5
+    qwen2.5-7b:search->final: 0.08
+    qwen2.5-7b:search->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->final: 0.5
+    qwen2.5-14b:search->final: 0.08
+    qwen2.5-14b:search->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->final: 0.5
+    qwen2.5-32b:search->final: 0.08
+    qwen2.5-32b:search->retrieve: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 333
+      qwen2.5-14b: 333
+      qwen2.5-32b: 333
+    output_tokens:
+      qwen2.5-7b: 31
+      qwen2.5-14b: 31
+      qwen2.5-32b: 31
+  - id: search
+    type: tool
+    tool: web_search
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 832
+      qwen2.5-14b: 832
+      qwen2.5-32b: 832
+    output_tokens:
+      qwen2.5-7b: 94
+      qwen2.5-14b: 94
+      qwen2.5-32b: 94
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: interactive_retrieval-t05
+  family: interactive_retrieval
+  template_id: interactive_retrieval:5
+  length_class: long
+  ingress_rates:
+    HSTNng: 0.003
+  slo:
+    type: lat
+    ttft_s: 2.0
+    tbt_s: 0.15
+  quality:
+    qwen2.5-7b: 0.72
+    qwen2.5-14b: 0.81
+    qwen2.5-32b: 0.89
+  entry_data_mb:
+    qwen2.5-7b: 0.001844
+    qwen2.5-14b: 0.001844
+    qwen2.5-32b: 0.001844
+  exit_data_mb:
+    qwen2.5-7b: 0.00052
+    qwen2.5-14b: 0.00052
+    qwen2.5-32b: 0.00052
+  edge_data_mb:
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->final: 0.5
+    qwen2.5-7b:search->final: 0.08
+    qwen2.5-7b:search->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->final: 0.5
+    qwen2.5-14b:search->final: 0.08
+    qwen2.5-14b:search->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->final: 0.5
+    qwen2.5-32b:search->final: 0.08
+    qwen2.5-32b:search->retrieve: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
+    output_tokens:
+      qwen2.5-7b: 43
+      qwen2.5-14b: 43
+      qwen2.5-32b: 43
+  - id: search
+    type: tool
+    tool: web_search
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1152
+      qwen2.5-14b: 1152
+      qwen2.5-32b: 1152
+    output_tokens:
+      qwen2.5-7b: 130
+      qwen2.5-14b: 130
+      qwen2.5-32b: 130
+  pattern_flows:
+  - id: search
+    probability: 0.7
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - final
+  - id: search-retrieve
+    probability: 0.3
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - retrieve
+      - final
+- id: transactional_tool-t01
+  family: transactional_tool
+  template_id: transactional_tool:1
+  length_class: short
+  ingress_rates:
+    IPLSng: 0.003
+  slo:
+    type: ddl
+    deadline_s: 8.0
+  quality:
+    qwen2.5-7b: 0.68
+    qwen2.5-14b: 0.8
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.00092
+    qwen2.5-14b: 0.00092
+    qwen2.5-32b: 0.00092
+  exit_data_mb:
+    qwen2.5-7b: 0.000152
+    qwen2.5-14b: 0.000152
+    qwen2.5-32b: 0.000152
+  edge_data_mb:
+    qwen2.5-7b:api->file: 0.5
+    qwen2.5-7b:api->final: 0.1
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->api: 0.01
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:api->file: 0.5
+    qwen2.5-14b:api->final: 0.1
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->api: 0.01
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:api->file: 0.5
+    qwen2.5-32b:api->final: 0.1
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->api: 0.01
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 230
+      qwen2.5-14b: 230
+      qwen2.5-32b: 230
+    output_tokens:
+      qwen2.5-7b: 19
+      qwen2.5-14b: 19
+      qwen2.5-32b: 19
+    stage_deadline_s: 3.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
+    output_tokens:
+      qwen2.5-7b: 38
+      qwen2.5-14b: 38
+      qwen2.5-32b: 38
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t02
+  family: transactional_tool
+  template_id: transactional_tool:2
+  length_class: short
+  ingress_rates:
+    KSCYng: 0.003
+  slo:
+    type: ddl
+    deadline_s: 8.0
+  quality:
+    qwen2.5-7b: 0.68
+    qwen2.5-14b: 0.8
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.001228
+    qwen2.5-14b: 0.001228
+    qwen2.5-32b: 0.001228
+  exit_data_mb:
+    qwen2.5-7b: 0.000204
+    qwen2.5-14b: 0.000204
+    qwen2.5-32b: 0.000204
+  edge_data_mb:
+    qwen2.5-7b:api->file: 0.5
+    qwen2.5-7b:api->final: 0.1
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->api: 0.01
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:api->file: 0.5
+    qwen2.5-14b:api->final: 0.1
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->api: 0.01
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:api->file: 0.5
+    qwen2.5-32b:api->final: 0.1
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->api: 0.01
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 307
+      qwen2.5-14b: 307
+      qwen2.5-32b: 307
+    output_tokens:
+      qwen2.5-7b: 26
+      qwen2.5-14b: 26
+      qwen2.5-32b: 26
+    stage_deadline_s: 3.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 614
+      qwen2.5-14b: 614
+      qwen2.5-32b: 614
+    output_tokens:
+      qwen2.5-7b: 51
+      qwen2.5-14b: 51
+      qwen2.5-32b: 51
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t03
+  family: transactional_tool
+  template_id: transactional_tool:3
+  length_class: medium
+  ingress_rates:
+    LOSAng: 0.003
+  slo:
+    type: ddl
+    deadline_s: 8.0
+  quality:
+    qwen2.5-7b: 0.68
+    qwen2.5-14b: 0.8
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.001536
+    qwen2.5-14b: 0.001536
+    qwen2.5-32b: 0.001536
+  exit_data_mb:
+    qwen2.5-7b: 0.000256
+    qwen2.5-14b: 0.000256
+    qwen2.5-32b: 0.000256
+  edge_data_mb:
+    qwen2.5-7b:api->file: 0.5
+    qwen2.5-7b:api->final: 0.1
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->api: 0.01
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:api->file: 0.5
+    qwen2.5-14b:api->final: 0.1
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->api: 0.01
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:api->file: 0.5
+    qwen2.5-32b:api->final: 0.1
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->api: 0.01
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 384
+      qwen2.5-14b: 384
+      qwen2.5-32b: 384
+    output_tokens:
+      qwen2.5-7b: 32
+      qwen2.5-14b: 32
+      qwen2.5-32b: 32
+    stage_deadline_s: 3.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 768
+      qwen2.5-14b: 768
+      qwen2.5-32b: 768
+    output_tokens:
+      qwen2.5-7b: 64
+      qwen2.5-14b: 64
+      qwen2.5-32b: 64
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t04
+  family: transactional_tool
+  template_id: transactional_tool:4
+  length_class: medium
+  ingress_rates:
+    NYCMng: 0.003
+  slo:
+    type: ddl
+    deadline_s: 8.0
+  quality:
+    qwen2.5-7b: 0.68
+    qwen2.5-14b: 0.8
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.001996
+    qwen2.5-14b: 0.001996
+    qwen2.5-32b: 0.001996
+  exit_data_mb:
+    qwen2.5-7b: 0.000332
+    qwen2.5-14b: 0.000332
+    qwen2.5-32b: 0.000332
+  edge_data_mb:
+    qwen2.5-7b:api->file: 0.5
+    qwen2.5-7b:api->final: 0.1
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->api: 0.01
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:api->file: 0.5
+    qwen2.5-14b:api->final: 0.1
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->api: 0.01
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:api->file: 0.5
+    qwen2.5-32b:api->final: 0.1
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->api: 0.01
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 499
+      qwen2.5-14b: 499
+      qwen2.5-32b: 499
+    output_tokens:
+      qwen2.5-7b: 42
+      qwen2.5-14b: 42
+      qwen2.5-32b: 42
+    stage_deadline_s: 3.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 998
+      qwen2.5-14b: 998
+      qwen2.5-32b: 998
+    output_tokens:
+      qwen2.5-7b: 83
+      qwen2.5-14b: 83
+      qwen2.5-32b: 83
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: transactional_tool-t05
+  family: transactional_tool
+  template_id: transactional_tool:5
+  length_class: long
+  ingress_rates:
+    SNVAng: 0.003
+  slo:
+    type: ddl
+    deadline_s: 8.0
+  quality:
+    qwen2.5-7b: 0.68
+    qwen2.5-14b: 0.8
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.002764
+    qwen2.5-14b: 0.002764
+    qwen2.5-32b: 0.002764
+  exit_data_mb:
+    qwen2.5-7b: 0.00046
+    qwen2.5-14b: 0.00046
+    qwen2.5-32b: 0.00046
+  edge_data_mb:
+    qwen2.5-7b:api->file: 0.5
+    qwen2.5-7b:api->final: 0.1
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->api: 0.01
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:api->file: 0.5
+    qwen2.5-14b:api->final: 0.1
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->api: 0.01
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:api->file: 0.5
+    qwen2.5-32b:api->final: 0.1
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->api: 0.01
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 691
+      qwen2.5-14b: 691
+      qwen2.5-32b: 691
+    output_tokens:
+      qwen2.5-7b: 58
+      qwen2.5-14b: 58
+      qwen2.5-32b: 58
+    stage_deadline_s: 3.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1382
+      qwen2.5-14b: 1382
+      qwen2.5-32b: 1382
+    output_tokens:
+      qwen2.5-7b: 115
+      qwen2.5-14b: 115
+      qwen2.5-32b: 115
+  pattern_flows:
+  - id: direct
+    probability: 0.55
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - final
+  - id: verified
+    probability: 0.45
+    final_node: final
+    chains:
+    - - plan
+      - api
+      - file
+      - verify
+      - final
+- id: deep_research-t01
+  family: deep_research
+  template_id: deep_research:1
+  length_class: short
+  ingress_rates:
+    STTLng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 4.0
+    tbt_s: 0.2
+    deadline_s: 25.0
+  quality:
+    qwen2.5-7b: 0.62
+    qwen2.5-14b: 0.77
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.001844
+    qwen2.5-14b: 0.001844
+    qwen2.5-32b: 0.001844
+  exit_data_mb:
+    qwen2.5-7b: 0.000616
+    qwen2.5-14b: 0.000616
+    qwen2.5-32b: 0.000616
+  edge_data_mb:
+    qwen2.5-7b:analyze_docs->file: 0.5
+    qwen2.5-7b:analyze_docs->final: 0.000384
+    qwen2.5-7b:analyze_web->api: 0.01
+    qwen2.5-7b:analyze_web->verify: 0.02
+    qwen2.5-7b:api->verify: 0.02
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->retrieve: 0.02
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->analyze_docs: 0.5
+    qwen2.5-7b:search->analyze_web: 0.08
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:analyze_docs->file: 0.5
+    qwen2.5-14b:analyze_docs->final: 0.000384
+    qwen2.5-14b:analyze_web->api: 0.01
+    qwen2.5-14b:analyze_web->verify: 0.02
+    qwen2.5-14b:api->verify: 0.02
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->analyze_docs: 0.5
+    qwen2.5-14b:search->analyze_web: 0.08
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:analyze_docs->file: 0.5
+    qwen2.5-32b:analyze_docs->final: 0.000384
+    qwen2.5-32b:analyze_web->api: 0.01
+    qwen2.5-32b:analyze_web->verify: 0.02
+    qwen2.5-32b:api->verify: 0.02
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->analyze_docs: 0.5
+    qwen2.5-32b:search->analyze_web: 0.08
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
+    output_tokens:
+      qwen2.5-7b: 38
+      qwen2.5-14b: 38
+      qwen2.5-32b: 38
+    stage_deadline_s: 5.0
+  - id: search
+    type: tool
+    tool: web_search
+  - id: analyze_web
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 922
+      qwen2.5-14b: 922
+      qwen2.5-32b: 922
+    output_tokens:
+      qwen2.5-7b: 77
+      qwen2.5-14b: 77
+      qwen2.5-32b: 77
+    stage_deadline_s: 12.0
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: analyze_docs
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1229
+      qwen2.5-14b: 1229
+      qwen2.5-32b: 1229
+    output_tokens:
+      qwen2.5-7b: 96
+      qwen2.5-14b: 96
+      qwen2.5-32b: 96
+    stage_deadline_s: 15.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1843
+      qwen2.5-14b: 1843
+      qwen2.5-32b: 1843
+    output_tokens:
+      qwen2.5-7b: 154
+      qwen2.5-14b: 154
+      qwen2.5-32b: 154
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t02
+  family: deep_research
+  template_id: deep_research:2
+  length_class: short
+  ingress_rates:
+    WASHng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 4.0
+    tbt_s: 0.2
+    deadline_s: 25.0
+  quality:
+    qwen2.5-7b: 0.62
+    qwen2.5-14b: 0.77
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.002456
+    qwen2.5-14b: 0.002456
+    qwen2.5-32b: 0.002456
+  exit_data_mb:
+    qwen2.5-7b: 0.00082
+    qwen2.5-14b: 0.00082
+    qwen2.5-32b: 0.00082
+  edge_data_mb:
+    qwen2.5-7b:analyze_docs->file: 0.5
+    qwen2.5-7b:analyze_docs->final: 0.000512
+    qwen2.5-7b:analyze_web->api: 0.01
+    qwen2.5-7b:analyze_web->verify: 0.02
+    qwen2.5-7b:api->verify: 0.02
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->retrieve: 0.02
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->analyze_docs: 0.5
+    qwen2.5-7b:search->analyze_web: 0.08
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:analyze_docs->file: 0.5
+    qwen2.5-14b:analyze_docs->final: 0.000512
+    qwen2.5-14b:analyze_web->api: 0.01
+    qwen2.5-14b:analyze_web->verify: 0.02
+    qwen2.5-14b:api->verify: 0.02
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->analyze_docs: 0.5
+    qwen2.5-14b:search->analyze_web: 0.08
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:analyze_docs->file: 0.5
+    qwen2.5-32b:analyze_docs->final: 0.000512
+    qwen2.5-32b:analyze_web->api: 0.01
+    qwen2.5-32b:analyze_web->verify: 0.02
+    qwen2.5-32b:api->verify: 0.02
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->analyze_docs: 0.5
+    qwen2.5-32b:search->analyze_web: 0.08
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 614
+      qwen2.5-14b: 614
+      qwen2.5-32b: 614
+    output_tokens:
+      qwen2.5-7b: 51
+      qwen2.5-14b: 51
+      qwen2.5-32b: 51
+    stage_deadline_s: 5.0
+  - id: search
+    type: tool
+    tool: web_search
+  - id: analyze_web
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1229
+      qwen2.5-14b: 1229
+      qwen2.5-32b: 1229
+    output_tokens:
+      qwen2.5-7b: 102
+      qwen2.5-14b: 102
+      qwen2.5-32b: 102
+    stage_deadline_s: 12.0
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: analyze_docs
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1638
+      qwen2.5-14b: 1638
+      qwen2.5-32b: 1638
+    output_tokens:
+      qwen2.5-7b: 128
+      qwen2.5-14b: 128
+      qwen2.5-32b: 128
+    stage_deadline_s: 15.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2458
+      qwen2.5-14b: 2458
+      qwen2.5-32b: 2458
+    output_tokens:
+      qwen2.5-7b: 205
+      qwen2.5-14b: 205
+      qwen2.5-32b: 205
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t03
+  family: deep_research
+  template_id: deep_research:3
+  length_class: medium
+  ingress_rates:
+    ATLAM5: 0.003
+  slo:
+    type: cmp
+    ttft_s: 4.0
+    tbt_s: 0.2
+    deadline_s: 25.0
+  quality:
+    qwen2.5-7b: 0.62
+    qwen2.5-14b: 0.77
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.003072
+    qwen2.5-14b: 0.003072
+    qwen2.5-32b: 0.003072
+  exit_data_mb:
+    qwen2.5-7b: 0.001024
+    qwen2.5-14b: 0.001024
+    qwen2.5-32b: 0.001024
+  edge_data_mb:
+    qwen2.5-7b:analyze_docs->file: 0.5
+    qwen2.5-7b:analyze_docs->final: 0.00064
+    qwen2.5-7b:analyze_web->api: 0.01
+    qwen2.5-7b:analyze_web->verify: 0.02
+    qwen2.5-7b:api->verify: 0.02
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->retrieve: 0.02
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->analyze_docs: 0.5
+    qwen2.5-7b:search->analyze_web: 0.08
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:analyze_docs->file: 0.5
+    qwen2.5-14b:analyze_docs->final: 0.00064
+    qwen2.5-14b:analyze_web->api: 0.01
+    qwen2.5-14b:analyze_web->verify: 0.02
+    qwen2.5-14b:api->verify: 0.02
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->analyze_docs: 0.5
+    qwen2.5-14b:search->analyze_web: 0.08
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:analyze_docs->file: 0.5
+    qwen2.5-32b:analyze_docs->final: 0.00064
+    qwen2.5-32b:analyze_web->api: 0.01
+    qwen2.5-32b:analyze_web->verify: 0.02
+    qwen2.5-32b:api->verify: 0.02
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->analyze_docs: 0.5
+    qwen2.5-32b:search->analyze_web: 0.08
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 768
+      qwen2.5-14b: 768
+      qwen2.5-32b: 768
+    output_tokens:
+      qwen2.5-7b: 64
+      qwen2.5-14b: 64
+      qwen2.5-32b: 64
+    stage_deadline_s: 5.0
+  - id: search
+    type: tool
+    tool: web_search
+  - id: analyze_web
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1536
+      qwen2.5-14b: 1536
+      qwen2.5-32b: 1536
+    output_tokens:
+      qwen2.5-7b: 128
+      qwen2.5-14b: 128
+      qwen2.5-32b: 128
+    stage_deadline_s: 12.0
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: analyze_docs
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2048
+      qwen2.5-14b: 2048
+      qwen2.5-32b: 2048
+    output_tokens:
+      qwen2.5-7b: 160
+      qwen2.5-14b: 160
+      qwen2.5-32b: 160
+    stage_deadline_s: 15.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3072
+      qwen2.5-14b: 3072
+      qwen2.5-32b: 3072
+    output_tokens:
+      qwen2.5-7b: 256
+      qwen2.5-14b: 256
+      qwen2.5-32b: 256
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t04
+  family: deep_research
+  template_id: deep_research:4
+  length_class: medium
+  ingress_rates:
+    ATLAng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 4.0
+    tbt_s: 0.2
+    deadline_s: 25.0
+  quality:
+    qwen2.5-7b: 0.62
+    qwen2.5-14b: 0.77
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.003992
+    qwen2.5-14b: 0.003992
+    qwen2.5-32b: 0.003992
+  exit_data_mb:
+    qwen2.5-7b: 0.001332
+    qwen2.5-14b: 0.001332
+    qwen2.5-32b: 0.001332
+  edge_data_mb:
+    qwen2.5-7b:analyze_docs->file: 0.5
+    qwen2.5-7b:analyze_docs->final: 0.000832
+    qwen2.5-7b:analyze_web->api: 0.01
+    qwen2.5-7b:analyze_web->verify: 0.02
+    qwen2.5-7b:api->verify: 0.02
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->retrieve: 0.02
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->analyze_docs: 0.5
+    qwen2.5-7b:search->analyze_web: 0.08
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:analyze_docs->file: 0.5
+    qwen2.5-14b:analyze_docs->final: 0.000832
+    qwen2.5-14b:analyze_web->api: 0.01
+    qwen2.5-14b:analyze_web->verify: 0.02
+    qwen2.5-14b:api->verify: 0.02
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->analyze_docs: 0.5
+    qwen2.5-14b:search->analyze_web: 0.08
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:analyze_docs->file: 0.5
+    qwen2.5-32b:analyze_docs->final: 0.000832
+    qwen2.5-32b:analyze_web->api: 0.01
+    qwen2.5-32b:analyze_web->verify: 0.02
+    qwen2.5-32b:api->verify: 0.02
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->analyze_docs: 0.5
+    qwen2.5-32b:search->analyze_web: 0.08
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 998
+      qwen2.5-14b: 998
+      qwen2.5-32b: 998
+    output_tokens:
+      qwen2.5-7b: 83
+      qwen2.5-14b: 83
+      qwen2.5-32b: 83
+    stage_deadline_s: 5.0
+  - id: search
+    type: tool
+    tool: web_search
+  - id: analyze_web
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1997
+      qwen2.5-14b: 1997
+      qwen2.5-32b: 1997
+    output_tokens:
+      qwen2.5-7b: 166
+      qwen2.5-14b: 166
+      qwen2.5-32b: 166
+    stage_deadline_s: 12.0
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: analyze_docs
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2662
+      qwen2.5-14b: 2662
+      qwen2.5-32b: 2662
+    output_tokens:
+      qwen2.5-7b: 208
+      qwen2.5-14b: 208
+      qwen2.5-32b: 208
+    stage_deadline_s: 15.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3994
+      qwen2.5-14b: 3994
+      qwen2.5-32b: 3994
+    output_tokens:
+      qwen2.5-7b: 333
+      qwen2.5-14b: 333
+      qwen2.5-32b: 333
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: deep_research-t05
+  family: deep_research
+  template_id: deep_research:5
+  length_class: long
+  ingress_rates:
+    CHINng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 4.0
+    tbt_s: 0.2
+    deadline_s: 25.0
+  quality:
+    qwen2.5-7b: 0.62
+    qwen2.5-14b: 0.77
+    qwen2.5-32b: 0.91
+  entry_data_mb:
+    qwen2.5-7b: 0.005528
+    qwen2.5-14b: 0.005528
+    qwen2.5-32b: 0.005528
+  exit_data_mb:
+    qwen2.5-7b: 0.001844
+    qwen2.5-14b: 0.001844
+    qwen2.5-32b: 0.001844
+  edge_data_mb:
+    qwen2.5-7b:analyze_docs->file: 0.5
+    qwen2.5-7b:analyze_docs->final: 0.001152
+    qwen2.5-7b:analyze_web->api: 0.01
+    qwen2.5-7b:analyze_web->verify: 0.02
+    qwen2.5-7b:api->verify: 0.02
+    qwen2.5-7b:file->verify: 0.02
+    qwen2.5-7b:plan->retrieve: 0.02
+    qwen2.5-7b:plan->search: 0.005
+    qwen2.5-7b:retrieve->analyze_docs: 0.5
+    qwen2.5-7b:search->analyze_web: 0.08
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:analyze_docs->file: 0.5
+    qwen2.5-14b:analyze_docs->final: 0.001152
+    qwen2.5-14b:analyze_web->api: 0.01
+    qwen2.5-14b:analyze_web->verify: 0.02
+    qwen2.5-14b:api->verify: 0.02
+    qwen2.5-14b:file->verify: 0.02
+    qwen2.5-14b:plan->retrieve: 0.02
+    qwen2.5-14b:plan->search: 0.005
+    qwen2.5-14b:retrieve->analyze_docs: 0.5
+    qwen2.5-14b:search->analyze_web: 0.08
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:analyze_docs->file: 0.5
+    qwen2.5-32b:analyze_docs->final: 0.001152
+    qwen2.5-32b:analyze_web->api: 0.01
+    qwen2.5-32b:analyze_web->verify: 0.02
+    qwen2.5-32b:api->verify: 0.02
+    qwen2.5-32b:file->verify: 0.02
+    qwen2.5-32b:plan->retrieve: 0.02
+    qwen2.5-32b:plan->search: 0.005
+    qwen2.5-32b:retrieve->analyze_docs: 0.5
+    qwen2.5-32b:search->analyze_web: 0.08
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1382
+      qwen2.5-14b: 1382
+      qwen2.5-32b: 1382
+    output_tokens:
+      qwen2.5-7b: 115
+      qwen2.5-14b: 115
+      qwen2.5-32b: 115
+    stage_deadline_s: 5.0
+  - id: search
+    type: tool
+    tool: web_search
+  - id: analyze_web
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2765
+      qwen2.5-14b: 2765
+      qwen2.5-32b: 2765
+    output_tokens:
+      qwen2.5-7b: 230
+      qwen2.5-14b: 230
+      qwen2.5-32b: 230
+    stage_deadline_s: 12.0
+  - id: retrieve
+    type: tool
+    tool: information_retrieval
+  - id: analyze_docs
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3686
+      qwen2.5-14b: 3686
+      qwen2.5-32b: 3686
+    output_tokens:
+      qwen2.5-7b: 288
+      qwen2.5-14b: 288
+      qwen2.5-32b: 288
+    stage_deadline_s: 15.0
+  - id: api
+    type: tool
+    tool: external_api
+  - id: file
+    type: tool
+    tool: file_processing
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 5530
+      qwen2.5-14b: 5530
+      qwen2.5-32b: 5530
+    output_tokens:
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
+  pattern_flows:
+  - id: parallel-core
+    probability: 0.65
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - final
+  - id: parallel-expanded
+    probability: 0.35
+    final_node: final
+    chains:
+    - - plan
+      - search
+      - analyze_web
+      - api
+      - verify
+      - final
+    - - plan
+      - retrieve
+      - analyze_docs
+      - file
+      - verify
+      - final
+- id: coding_agent-t01
+  family: coding_agent
+  template_id: coding_agent:1
+  length_class: short
+  ingress_rates:
+    DNVRng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 5.0
+    tbt_s: 0.25
+    deadline_s: 40.0
+  quality:
+    qwen2.5-7b: 0.55
+    qwen2.5-14b: 0.7
+    qwen2.5-32b: 0.86
+  entry_data_mb:
+    qwen2.5-7b: 0.002456
+    qwen2.5-14b: 0.002456
+    qwen2.5-32b: 0.002456
+  exit_data_mb:
+    qwen2.5-7b: 0.00046
+    qwen2.5-14b: 0.00046
+    qwen2.5-32b: 0.00046
+  edge_data_mb:
+    qwen2.5-7b:design->edit: 0.5
+    qwen2.5-7b:edit->implement: 0.4
+    qwen2.5-7b:implement->integration: 0.05
+    qwen2.5-7b:implement->unit: 0.05
+    qwen2.5-7b:inspect->verify: 0.02
+    qwen2.5-7b:integration->inspect: 0.2
+    qwen2.5-7b:plan->read: 0.5
+    qwen2.5-7b:read->design: 0.4
+    qwen2.5-7b:unit->inspect: 0.2
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:design->edit: 0.5
+    qwen2.5-14b:edit->implement: 0.4
+    qwen2.5-14b:implement->integration: 0.05
+    qwen2.5-14b:implement->unit: 0.05
+    qwen2.5-14b:inspect->verify: 0.02
+    qwen2.5-14b:integration->inspect: 0.2
+    qwen2.5-14b:plan->read: 0.5
+    qwen2.5-14b:read->design: 0.4
+    qwen2.5-14b:unit->inspect: 0.2
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:design->edit: 0.5
+    qwen2.5-32b:edit->implement: 0.4
+    qwen2.5-32b:implement->integration: 0.05
+    qwen2.5-32b:implement->unit: 0.05
+    qwen2.5-32b:inspect->verify: 0.02
+    qwen2.5-32b:integration->inspect: 0.2
+    qwen2.5-32b:plan->read: 0.5
+    qwen2.5-32b:read->design: 0.4
+    qwen2.5-32b:unit->inspect: 0.2
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 614
+      qwen2.5-14b: 614
+      qwen2.5-32b: 614
+    output_tokens:
+      qwen2.5-7b: 58
+      qwen2.5-14b: 58
+      qwen2.5-32b: 58
+    stage_deadline_s: 6.0
+  - id: read
+    type: tool
+    tool: file_processing
+  - id: design
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1229
+      qwen2.5-14b: 1229
+      qwen2.5-32b: 1229
+    output_tokens:
+      qwen2.5-7b: 96
+      qwen2.5-14b: 96
+      qwen2.5-32b: 96
+    stage_deadline_s: 14.0
+  - id: edit
+    type: tool
+    tool: file_processing
+  - id: implement
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2458
+      qwen2.5-14b: 2458
+      qwen2.5-32b: 2458
+    output_tokens:
+      qwen2.5-7b: 154
+      qwen2.5-14b: 154
+      qwen2.5-32b: 154
+    stage_deadline_s: 24.0
+  - id: unit
+    type: tool
+    tool: code_execution
+  - id: integration
+    type: tool
+    tool: code_execution
+  - id: inspect
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1843
+      qwen2.5-14b: 1843
+      qwen2.5-32b: 1843
+    output_tokens:
+      qwen2.5-7b: 96
+      qwen2.5-14b: 96
+      qwen2.5-32b: 96
+    stage_deadline_s: 32.0
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1229
+      qwen2.5-14b: 1229
+      qwen2.5-32b: 1229
+    output_tokens:
+      qwen2.5-7b: 115
+      qwen2.5-14b: 115
+      qwen2.5-32b: 115
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t02
+  family: coding_agent
+  template_id: coding_agent:2
+  length_class: short
+  ingress_rates:
+    HSTNng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 5.0
+    tbt_s: 0.25
+    deadline_s: 40.0
+  quality:
+    qwen2.5-7b: 0.55
+    qwen2.5-14b: 0.7
+    qwen2.5-32b: 0.86
+  entry_data_mb:
+    qwen2.5-7b: 0.003276
+    qwen2.5-14b: 0.003276
+    qwen2.5-32b: 0.003276
+  exit_data_mb:
+    qwen2.5-7b: 0.000616
+    qwen2.5-14b: 0.000616
+    qwen2.5-32b: 0.000616
+  edge_data_mb:
+    qwen2.5-7b:design->edit: 0.5
+    qwen2.5-7b:edit->implement: 0.4
+    qwen2.5-7b:implement->integration: 0.05
+    qwen2.5-7b:implement->unit: 0.05
+    qwen2.5-7b:inspect->verify: 0.02
+    qwen2.5-7b:integration->inspect: 0.2
+    qwen2.5-7b:plan->read: 0.5
+    qwen2.5-7b:read->design: 0.4
+    qwen2.5-7b:unit->inspect: 0.2
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:design->edit: 0.5
+    qwen2.5-14b:edit->implement: 0.4
+    qwen2.5-14b:implement->integration: 0.05
+    qwen2.5-14b:implement->unit: 0.05
+    qwen2.5-14b:inspect->verify: 0.02
+    qwen2.5-14b:integration->inspect: 0.2
+    qwen2.5-14b:plan->read: 0.5
+    qwen2.5-14b:read->design: 0.4
+    qwen2.5-14b:unit->inspect: 0.2
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:design->edit: 0.5
+    qwen2.5-32b:edit->implement: 0.4
+    qwen2.5-32b:implement->integration: 0.05
+    qwen2.5-32b:implement->unit: 0.05
+    qwen2.5-32b:inspect->verify: 0.02
+    qwen2.5-32b:integration->inspect: 0.2
+    qwen2.5-32b:plan->read: 0.5
+    qwen2.5-32b:read->design: 0.4
+    qwen2.5-32b:unit->inspect: 0.2
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 819
+      qwen2.5-14b: 819
+      qwen2.5-32b: 819
+    output_tokens:
+      qwen2.5-7b: 77
+      qwen2.5-14b: 77
+      qwen2.5-32b: 77
+    stage_deadline_s: 6.0
+  - id: read
+    type: tool
+    tool: file_processing
+  - id: design
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1638
+      qwen2.5-14b: 1638
+      qwen2.5-32b: 1638
+    output_tokens:
+      qwen2.5-7b: 128
+      qwen2.5-14b: 128
+      qwen2.5-32b: 128
+    stage_deadline_s: 14.0
+  - id: edit
+    type: tool
+    tool: file_processing
+  - id: implement
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3277
+      qwen2.5-14b: 3277
+      qwen2.5-32b: 3277
+    output_tokens:
+      qwen2.5-7b: 205
+      qwen2.5-14b: 205
+      qwen2.5-32b: 205
+    stage_deadline_s: 24.0
+  - id: unit
+    type: tool
+    tool: code_execution
+  - id: integration
+    type: tool
+    tool: code_execution
+  - id: inspect
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2458
+      qwen2.5-14b: 2458
+      qwen2.5-32b: 2458
+    output_tokens:
+      qwen2.5-7b: 128
+      qwen2.5-14b: 128
+      qwen2.5-32b: 128
+    stage_deadline_s: 32.0
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1638
+      qwen2.5-14b: 1638
+      qwen2.5-32b: 1638
+    output_tokens:
+      qwen2.5-7b: 154
+      qwen2.5-14b: 154
+      qwen2.5-32b: 154
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t03
+  family: coding_agent
+  template_id: coding_agent:3
+  length_class: medium
+  ingress_rates:
+    IPLSng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 5.0
+    tbt_s: 0.25
+    deadline_s: 40.0
+  quality:
+    qwen2.5-7b: 0.55
+    qwen2.5-14b: 0.7
+    qwen2.5-32b: 0.86
+  entry_data_mb:
+    qwen2.5-7b: 0.004096
+    qwen2.5-14b: 0.004096
+    qwen2.5-32b: 0.004096
+  exit_data_mb:
+    qwen2.5-7b: 0.000768
+    qwen2.5-14b: 0.000768
+    qwen2.5-32b: 0.000768
+  edge_data_mb:
+    qwen2.5-7b:design->edit: 0.5
+    qwen2.5-7b:edit->implement: 0.4
+    qwen2.5-7b:implement->integration: 0.05
+    qwen2.5-7b:implement->unit: 0.05
+    qwen2.5-7b:inspect->verify: 0.02
+    qwen2.5-7b:integration->inspect: 0.2
+    qwen2.5-7b:plan->read: 0.5
+    qwen2.5-7b:read->design: 0.4
+    qwen2.5-7b:unit->inspect: 0.2
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:design->edit: 0.5
+    qwen2.5-14b:edit->implement: 0.4
+    qwen2.5-14b:implement->integration: 0.05
+    qwen2.5-14b:implement->unit: 0.05
+    qwen2.5-14b:inspect->verify: 0.02
+    qwen2.5-14b:integration->inspect: 0.2
+    qwen2.5-14b:plan->read: 0.5
+    qwen2.5-14b:read->design: 0.4
+    qwen2.5-14b:unit->inspect: 0.2
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:design->edit: 0.5
+    qwen2.5-32b:edit->implement: 0.4
+    qwen2.5-32b:implement->integration: 0.05
+    qwen2.5-32b:implement->unit: 0.05
+    qwen2.5-32b:inspect->verify: 0.02
+    qwen2.5-32b:integration->inspect: 0.2
+    qwen2.5-32b:plan->read: 0.5
+    qwen2.5-32b:read->design: 0.4
+    qwen2.5-32b:unit->inspect: 0.2
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1024
+      qwen2.5-14b: 1024
+      qwen2.5-32b: 1024
+    output_tokens:
+      qwen2.5-7b: 96
+      qwen2.5-14b: 96
+      qwen2.5-32b: 96
+    stage_deadline_s: 6.0
+  - id: read
+    type: tool
+    tool: file_processing
+  - id: design
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2048
+      qwen2.5-14b: 2048
+      qwen2.5-32b: 2048
+    output_tokens:
+      qwen2.5-7b: 160
+      qwen2.5-14b: 160
+      qwen2.5-32b: 160
+    stage_deadline_s: 14.0
+  - id: edit
+    type: tool
+    tool: file_processing
+  - id: implement
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 4096
+      qwen2.5-14b: 4096
+      qwen2.5-32b: 4096
+    output_tokens:
+      qwen2.5-7b: 256
+      qwen2.5-14b: 256
+      qwen2.5-32b: 256
+    stage_deadline_s: 24.0
+  - id: unit
+    type: tool
+    tool: code_execution
+  - id: integration
+    type: tool
+    tool: code_execution
+  - id: inspect
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3072
+      qwen2.5-14b: 3072
+      qwen2.5-32b: 3072
+    output_tokens:
+      qwen2.5-7b: 160
+      qwen2.5-14b: 160
+      qwen2.5-32b: 160
+    stage_deadline_s: 32.0
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2048
+      qwen2.5-14b: 2048
+      qwen2.5-32b: 2048
+    output_tokens:
+      qwen2.5-7b: 192
+      qwen2.5-14b: 192
+      qwen2.5-32b: 192
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t04
+  family: coding_agent
+  template_id: coding_agent:4
+  length_class: medium
+  ingress_rates:
+    KSCYng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 5.0
+    tbt_s: 0.25
+    deadline_s: 40.0
+  quality:
+    qwen2.5-7b: 0.55
+    qwen2.5-14b: 0.7
+    qwen2.5-32b: 0.86
+  entry_data_mb:
+    qwen2.5-7b: 0.005324
+    qwen2.5-14b: 0.005324
+    qwen2.5-32b: 0.005324
+  exit_data_mb:
+    qwen2.5-7b: 0.001
+    qwen2.5-14b: 0.001
+    qwen2.5-32b: 0.001
+  edge_data_mb:
+    qwen2.5-7b:design->edit: 0.5
+    qwen2.5-7b:edit->implement: 0.4
+    qwen2.5-7b:implement->integration: 0.05
+    qwen2.5-7b:implement->unit: 0.05
+    qwen2.5-7b:inspect->verify: 0.02
+    qwen2.5-7b:integration->inspect: 0.2
+    qwen2.5-7b:plan->read: 0.5
+    qwen2.5-7b:read->design: 0.4
+    qwen2.5-7b:unit->inspect: 0.2
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:design->edit: 0.5
+    qwen2.5-14b:edit->implement: 0.4
+    qwen2.5-14b:implement->integration: 0.05
+    qwen2.5-14b:implement->unit: 0.05
+    qwen2.5-14b:inspect->verify: 0.02
+    qwen2.5-14b:integration->inspect: 0.2
+    qwen2.5-14b:plan->read: 0.5
+    qwen2.5-14b:read->design: 0.4
+    qwen2.5-14b:unit->inspect: 0.2
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:design->edit: 0.5
+    qwen2.5-32b:edit->implement: 0.4
+    qwen2.5-32b:implement->integration: 0.05
+    qwen2.5-32b:implement->unit: 0.05
+    qwen2.5-32b:inspect->verify: 0.02
+    qwen2.5-32b:integration->inspect: 0.2
+    qwen2.5-32b:plan->read: 0.5
+    qwen2.5-32b:read->design: 0.4
+    qwen2.5-32b:unit->inspect: 0.2
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1331
+      qwen2.5-14b: 1331
+      qwen2.5-32b: 1331
+    output_tokens:
+      qwen2.5-7b: 125
+      qwen2.5-14b: 125
+      qwen2.5-32b: 125
+    stage_deadline_s: 6.0
+  - id: read
+    type: tool
+    tool: file_processing
+  - id: design
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2662
+      qwen2.5-14b: 2662
+      qwen2.5-32b: 2662
+    output_tokens:
+      qwen2.5-7b: 208
+      qwen2.5-14b: 208
+      qwen2.5-32b: 208
+    stage_deadline_s: 14.0
+  - id: edit
+    type: tool
+    tool: file_processing
+  - id: implement
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 5325
+      qwen2.5-14b: 5325
+      qwen2.5-32b: 5325
+    output_tokens:
+      qwen2.5-7b: 333
+      qwen2.5-14b: 333
+      qwen2.5-32b: 333
+    stage_deadline_s: 24.0
+  - id: unit
+    type: tool
+    tool: code_execution
+  - id: integration
+    type: tool
+    tool: code_execution
+  - id: inspect
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3994
+      qwen2.5-14b: 3994
+      qwen2.5-32b: 3994
+    output_tokens:
+      qwen2.5-7b: 208
+      qwen2.5-14b: 208
+      qwen2.5-32b: 208
+    stage_deadline_s: 32.0
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 2662
+      qwen2.5-14b: 2662
+      qwen2.5-32b: 2662
+    output_tokens:
+      qwen2.5-7b: 250
+      qwen2.5-14b: 250
+      qwen2.5-32b: 250
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final
+- id: coding_agent-t05
+  family: coding_agent
+  template_id: coding_agent:5
+  length_class: long
+  ingress_rates:
+    LOSAng: 0.003
+  slo:
+    type: cmp
+    ttft_s: 5.0
+    tbt_s: 0.25
+    deadline_s: 40.0
+  quality:
+    qwen2.5-7b: 0.55
+    qwen2.5-14b: 0.7
+    qwen2.5-32b: 0.86
+  entry_data_mb:
+    qwen2.5-7b: 0.007372
+    qwen2.5-14b: 0.007372
+    qwen2.5-32b: 0.007372
+  exit_data_mb:
+    qwen2.5-7b: 0.001384
+    qwen2.5-14b: 0.001384
+    qwen2.5-32b: 0.001384
+  edge_data_mb:
+    qwen2.5-7b:design->edit: 0.5
+    qwen2.5-7b:edit->implement: 0.4
+    qwen2.5-7b:implement->integration: 0.05
+    qwen2.5-7b:implement->unit: 0.05
+    qwen2.5-7b:inspect->verify: 0.02
+    qwen2.5-7b:integration->inspect: 0.2
+    qwen2.5-7b:plan->read: 0.5
+    qwen2.5-7b:read->design: 0.4
+    qwen2.5-7b:unit->inspect: 0.2
+    qwen2.5-7b:verify->final: 0.02
+    qwen2.5-14b:design->edit: 0.5
+    qwen2.5-14b:edit->implement: 0.4
+    qwen2.5-14b:implement->integration: 0.05
+    qwen2.5-14b:implement->unit: 0.05
+    qwen2.5-14b:inspect->verify: 0.02
+    qwen2.5-14b:integration->inspect: 0.2
+    qwen2.5-14b:plan->read: 0.5
+    qwen2.5-14b:read->design: 0.4
+    qwen2.5-14b:unit->inspect: 0.2
+    qwen2.5-14b:verify->final: 0.02
+    qwen2.5-32b:design->edit: 0.5
+    qwen2.5-32b:edit->implement: 0.4
+    qwen2.5-32b:implement->integration: 0.05
+    qwen2.5-32b:implement->unit: 0.05
+    qwen2.5-32b:inspect->verify: 0.02
+    qwen2.5-32b:integration->inspect: 0.2
+    qwen2.5-32b:plan->read: 0.5
+    qwen2.5-32b:read->design: 0.4
+    qwen2.5-32b:unit->inspect: 0.2
+    qwen2.5-32b:verify->final: 0.02
+  nodes:
+  - id: plan
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 1843
+      qwen2.5-14b: 1843
+      qwen2.5-32b: 1843
+    output_tokens:
+      qwen2.5-7b: 173
+      qwen2.5-14b: 173
+      qwen2.5-32b: 173
+    stage_deadline_s: 6.0
+  - id: read
+    type: tool
+    tool: file_processing
+  - id: design
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3686
+      qwen2.5-14b: 3686
+      qwen2.5-32b: 3686
+    output_tokens:
+      qwen2.5-7b: 288
+      qwen2.5-14b: 288
+      qwen2.5-32b: 288
+    stage_deadline_s: 14.0
+  - id: edit
+    type: tool
+    tool: file_processing
+  - id: implement
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 7373
+      qwen2.5-14b: 7373
+      qwen2.5-32b: 7373
+    output_tokens:
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
+    stage_deadline_s: 24.0
+  - id: unit
+    type: tool
+    tool: code_execution
+  - id: integration
+    type: tool
+    tool: code_execution
+  - id: inspect
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 5530
+      qwen2.5-14b: 5530
+      qwen2.5-32b: 5530
+    output_tokens:
+      qwen2.5-7b: 288
+      qwen2.5-14b: 288
+      qwen2.5-32b: 288
+    stage_deadline_s: 32.0
+  - id: verify
+    type: tool
+    tool: result_verification
+  - id: final
+    type: llm
+    prompt_tokens:
+      qwen2.5-7b: 3686
+      qwen2.5-14b: 3686
+      qwen2.5-32b: 3686
+    output_tokens:
+      qwen2.5-7b: 346
+      qwen2.5-14b: 346
+      qwen2.5-32b: 346
+  pattern_flows:
+  - id: serial-test
+    probability: 0.6
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+  - id: parallel-test
+    probability: 0.4
+    final_node: final
+    chains:
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - unit
+      - inspect
+      - verify
+      - final
+    - - plan
+      - read
+      - design
+      - edit
+      - implement
+      - integration
+      - inspect
+      - verify
+      - final

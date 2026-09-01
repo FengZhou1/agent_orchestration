@@ -7,9 +7,10 @@ def test_rl_matrix_auto_has_only_meaningful_combinations():
         ["joint", "deploy", "route"], ["auto"]
     )
     assert combinations == [
-        ("joint", "vanilla"),
+        ("joint", "constrained"),
+        ("joint", "unconstrained"),
         ("joint", "potential"),
         ("joint", "icm"),
-        ("deploy", "vanilla"),
-        ("route", "vanilla"),
+        ("deploy", "constrained"),
+        ("route", "constrained"),
     ]

@@ -64,6 +64,41 @@ class CapacityPlanner:
             for server_id, server in self.scenario.servers.items()
         )
 
+    def resource_excess(self, deployment: DeploymentDecision) -> float:
+        """Return normalized physical-resource excess for a complete deployment."""
+        gpu: dict[str, float] = defaultdict(float)
+        gpu_memory: dict[str, float] = defaultdict(float)
+        cpu: dict[str, float] = defaultdict(float)
+        memory: dict[str, float] = defaultdict(float)
+        for candidate_id, active in deployment.llm_active.items():
+            if not active:
+                continue
+            candidate = self.scenario.candidates[candidate_id]
+            config = self.scenario.llm_configs[candidate.config]
+            gpu[candidate.server] += config.gpu_count * config.gpu_share
+            gpu_memory[candidate.server] += (
+                config.gpu_count * config.reserved_memory_gb_per_gpu
+            )
+        for (tool_id, server_id), replicas in deployment.tool_replicas.items():
+            tool = self.scenario.tools[tool_id]
+            cpu[server_id] += replicas * tool.cpu_cores
+            memory[server_id] += replicas * tool.memory_gb
+
+        excess = 0.0
+        for server_id, server in self.scenario.servers.items():
+            capacities = (
+                (gpu[server_id], float(server.gpu_count)),
+                (
+                    gpu_memory[server_id],
+                    float(server.gpu_count) * server.gpu_memory_gb,
+                ),
+                (cpu[server_id], float(server.cpu_cores)),
+                (memory[server_id], server.memory_gb),
+            )
+            for demand, capacity in capacities:
+                excess += max(0.0, demand / max(capacity, 1e-12) - 1.0)
+        return excess
+
     def initial_deployment(self) -> DeploymentDecision:
         deployment = DeploymentDecision(
             llm_active={candidate_id: 0 for candidate_id in self.scenario.candidates},
@@ -95,4 +130,3 @@ class CapacityPlanner:
         if not self.deployment_feasible(deployment):
             raise ValueError("The capacity planner could not construct a feasible deployment")
         return deployment
-

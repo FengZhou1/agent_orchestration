@@ -62,3 +62,50 @@ def test_profile_backend_can_replace_analytical_llm_component(scenario):
     metrics = simulator.step(deployment, routing).metrics
     assert metrics.mean_latency_s > 0.0
     assert metrics.total_arrival_rps > 0.0
+
+
+def test_profile_backend_accepts_complete_workload_composition():
+    rows = []
+    for prompt in (128.0, 512.0):
+        for output in (16.0, 64.0):
+            for arrival in (1.0, 4.0):
+                for long_fraction in (0.0, 1.0):
+                    for dominant in ("interactive_retrieval", "coding_agent"):
+                        composition = {
+                            "interactive_retrieval": 0.7 if dominant == "interactive_retrieval" else 0.1,
+                            "transactional_tool": 0.1,
+                            "deep_research": 0.1,
+                            "coding_agent": 0.7 if dominant == "coding_agent" else 0.1,
+                        }
+                        rows.append(
+                            {
+                                "model": "small",
+                                "config": "edge",
+                                "prompt_tokens": prompt,
+                                "output_tokens": output,
+                                "arrival_rate_rps": arrival,
+                                "long_request_fraction": long_fraction,
+                                **{f"{family}_fraction": value for family, value in composition.items()},
+                                "ttft_s": 0.1 + arrival / 100,
+                                "tbt_s": 0.02,
+                                "response_s": 0.3 + output / 1000,
+                                "stable_capacity_rps": 8.0,
+                                "kv_tokens": prompt + output,
+                            }
+                        )
+    backend = ProfileBackend(pd.DataFrame(rows))
+    estimate = backend.estimate(
+        "small",
+        "edge",
+        256,
+        32,
+        2,
+        0.5,
+        {
+            "interactive_retrieval": 0.25,
+            "transactional_tool": 0.25,
+            "deep_research": 0.25,
+            "coding_agent": 0.25,
+        },
+    )
+    assert estimate.response_s > estimate.ttft_s

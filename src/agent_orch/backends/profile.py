@@ -21,11 +21,17 @@ class LLMProfileEstimate:
 class ProfileBackend:
     """Offline profile lookup with linear interpolation and nearest fallback."""
 
-    INPUT_COLUMNS = (
+    BASE_INPUT_COLUMNS = (
         "prompt_tokens",
         "output_tokens",
         "arrival_rate_rps",
         "long_request_fraction",
+    )
+    COMPOSITION_COLUMNS = (
+        "interactive_retrieval_fraction",
+        "transactional_tool_fraction",
+        "deep_research_fraction",
+        "coding_agent_fraction",
     )
     OUTPUT_COLUMNS = (
         "ttft_s",
@@ -36,7 +42,17 @@ class ProfileBackend:
     )
 
     def __init__(self, frame: pd.DataFrame):
-        required = {"model", "config", *self.INPUT_COLUMNS, *self.OUTPUT_COLUMNS}
+        composition_columns = set(self.COMPOSITION_COLUMNS)
+        present_composition = composition_columns & set(frame.columns)
+        if present_composition and present_composition != composition_columns:
+            missing_composition = sorted(composition_columns - set(frame.columns))
+            raise ValueError(
+                f"Profile table has an incomplete workload composition: {missing_composition}"
+            )
+        self.input_columns = self.BASE_INPUT_COLUMNS + (
+            self.COMPOSITION_COLUMNS if present_composition else ()
+        )
+        required = {"model", "config", *self.input_columns, *self.OUTPUT_COLUMNS}
         missing = required - set(frame.columns)
         if missing:
             raise ValueError(f"Profile table is missing columns: {sorted(missing)}")
@@ -55,16 +71,21 @@ class ProfileBackend:
         output_tokens: float,
         arrival_rate_rps: float,
         long_request_fraction: float,
+        composition: dict[str, float] | None = None,
     ) -> LLMProfileEstimate:
         subset = self.frame[
             (self.frame["model"] == model) & (self.frame["config"] == config)
         ]
         if subset.empty:
             raise KeyError(f"No profile for {model}/{config}")
-        point = np.asarray(
-            [prompt_tokens, output_tokens, arrival_rate_rps, long_request_fraction],
-            dtype=float,
-        )
+        point_values = [prompt_tokens, output_tokens, arrival_rate_rps, long_request_fraction]
+        if self.COMPOSITION_COLUMNS[0] in self.input_columns:
+            composition = composition or {}
+            point_values.extend(
+                float(composition.get(column.removesuffix("_fraction"), 0.0))
+                for column in self.COMPOSITION_COLUMNS
+            )
+        point = np.asarray(point_values, dtype=float)
         values = []
         modes = []
         for output in self.OUTPUT_COLUMNS:
@@ -91,9 +112,9 @@ class ProfileBackend:
         key = (model, config, f"{output}:{'linear' if linear else 'nearest'}")
         if key in self._interpolators:
             return self._interpolators[key]
-        points = subset[list(self.INPUT_COLUMNS)].to_numpy(dtype=float)
+        points = subset[list(self.input_columns)].to_numpy(dtype=float)
         values = subset[output].to_numpy(dtype=float)
-        if linear and len(subset) >= len(self.INPUT_COLUMNS) + 1:
+        if linear and len(subset) >= len(self.input_columns) + 1:
             try:
                 interpolator = LinearNDInterpolator(points, values, fill_value=np.nan)
             except Exception:
@@ -102,4 +123,3 @@ class ProfileBackend:
             interpolator = NearestNDInterpolator(points, values)
         self._interpolators[key] = interpolator
         return interpolator
-

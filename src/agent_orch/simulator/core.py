@@ -71,7 +71,7 @@ class Simulator:
         workflow = self.workflow.evaluate(
             deployment, routing, analytical, arrival_rates
         )
-        cost = self._cost(deployment, analytical.link_loads_mbit)
+        cost = self._cost(deployment, analytical.link_load_mbps)
         violations = len(set(analytical.violations))
         attainment = (
             workflow.goodput_rps / workflow.total_arrival_rps
@@ -90,7 +90,7 @@ class Simulator:
             app_latency_s=workflow.app_latency_s,
             llm_utilization=analytical.llm_utilization,
             tool_utilization={f"{h}@{n}": value for (h, n), value in analytical.tool_utilization.items()},
-            link_utilization=self.backend.network.utilization(analytical.link_loads_mbit),
+            link_utilization=self.backend.network.utilization(analytical.link_load_mbps),
             diagnostics={
                 "violation_labels": sorted(set(analytical.violations)),
                 "kv_stable": analytical.llm_kv_stable,
@@ -98,11 +98,11 @@ class Simulator:
             },
         )
         reward_components = {
-            "cost": -cost,
-            "latency": -workflow.mean_latency_s,
-            "goodput": workflow.goodput_rps,
-            "quality": workflow.quality,
-            "constraint": -10.0 * violations,
+            "cost_raw": cost,
+            "latency_raw": workflow.mean_latency_s,
+            "goodput_raw": workflow.goodput_rps,
+            "quality_raw": workflow.quality,
+            "constraint_count": float(violations),
         }
         self.previous_deployment = deployment.copy()
         self.last_metrics = metrics
@@ -144,7 +144,7 @@ class Simulator:
                 if analytical
                 else {},
                 "link_utilization": self.backend.network.utilization(
-                    analytical.link_loads_mbit
+                    analytical.link_load_mbps
                 )
                 if analytical
                 else {},
@@ -154,7 +154,7 @@ class Simulator:
     def _cost(
         self,
         deployment: DeploymentDecision,
-        link_loads_mbit: dict[tuple[str, str], float],
+        link_load_mbps: dict[tuple[str, str], float],
     ) -> float:
         cost = 0.0
         for candidate_id, active in deployment.llm_active.items():
@@ -171,7 +171,7 @@ class Simulator:
             cost += replicas * tool.running_cost_per_slot
             started = max(0, replicas - self.previous_deployment.tool_replicas.get(pool, 0))
             cost += started * tool.start_cost
-        cost += self.backend.network.traffic_cost(link_loads_mbit)
+        cost += self.backend.network.traffic_cost(link_load_mbps)
         return cost
 
 

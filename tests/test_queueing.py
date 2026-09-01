@@ -1,6 +1,6 @@
 import pytest
 
-from agent_orch.performance.queueing import llm_waiting_time
+from agent_orch.performance.queueing import llm_waiting_time, tool_response_time
 
 
 def test_single_server_matches_pollaczek_khinchine():
@@ -19,3 +19,8 @@ def test_waiting_time_is_monotone_in_load():
     high = llm_waiting_time(2.0, 0.5, 0.3, 2, 60.0)[0]
     assert high > low
 
+
+def test_tool_waiting_time_uses_arrival_and_service_variability():
+    low = tool_response_time(1.0, 4.0, 1, 1.0, 0.5, 60.0)[0]
+    high = tool_response_time(1.0, 4.0, 1, 2.0, 2.0, 60.0)[0]
+    assert high > low

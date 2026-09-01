@@ -10,6 +10,7 @@ import platform
 import numpy as np
 import pandas as pd
 
+from agent_orch.backends import ProfileBackend
 from agent_orch.baselines import make_policy
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
@@ -23,21 +24,40 @@ def main() -> int:
     parser.add_argument("--seeds", default="0,1,2,3,4")
     parser.add_argument("--policies", default="static,equal,least_load,random,greedy")
     parser.add_argument("--bursty", action="store_true")
+    parser.add_argument("--trace")
+    parser.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
+    parser.add_argument(
+        "--arrival-mode",
+        choices=["trace", "nhpp", "poisson", "synthetic-stress"],
+        default="trace",
+    )
     parser.add_argument("--output", default="results/baseline_matrix.parquet")
     args = parser.parse_args()
 
     scenario = ScenarioLoader.load(args.scenario)
+    profile = ProfileBackend.from_csv(args.profile) if args.profile else None
+    source_trace = ArrivalTrace.from_csv(args.trace) if args.trace else None
     records = []
     for seed in (int(value) for value in args.seeds.split(",")):
-        trace = (
-            ArrivalTrace.synthetic_bursty(scenario, args.slots, seed)
-            if args.bursty
-            else None
-        )
+        mode = "synthetic-stress" if args.bursty else args.arrival_mode
+        if mode == "synthetic-stress":
+            trace = ArrivalTrace.synthetic_bursty(scenario, args.slots, seed)
+        elif source_trace is None:
+            if mode != "trace":
+                raise ValueError(f"Arrival mode {mode} requires --trace")
+            trace = None
+        elif mode == "trace":
+            trace = source_trace
+        elif mode == "nhpp":
+            trace = ArrivalTrace.nhpp_control(scenario, source_trace, args.slots, seed)
+        else:
+            trace = ArrivalTrace.homogeneous_poisson(
+                scenario, source_trace, args.slots, seed
+            )
         for policy_name in args.policies.split(","):
             policy = make_policy(policy_name, scenario, seed)
             deployment = policy.deployment()
-            simulator = Simulator(scenario)
+            simulator = Simulator(scenario, llm_profile_backend=profile)
             simulator.set_arrival_trace(trace)
             simulator.reset(seed)
             for _ in range(args.slots):
@@ -77,6 +97,9 @@ def main() -> int:
         "seeds": [int(value) for value in args.seeds.split(",")],
         "policies": args.policies.split(","),
         "bursty": args.bursty,
+        "arrival_mode": mode,
+        "trace": str(Path(args.trace).resolve()) if args.trace else None,
+        "profile": str(Path(args.profile).resolve()) if args.profile else None,
         "python": platform.python_version(),
         "numpy": np.__version__,
         "pandas": pd.__version__,

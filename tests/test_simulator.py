@@ -55,7 +55,7 @@ def test_parallel_flow_uses_maximum_branch_not_sum(scenario):
                 app_id, ingress, model, flow_id, source, target, routing, analytical
             )
         prefixes.append(delay)
-    e2e, _, _, _ = evaluator._flow_latency(
+    e2e, _, _, _, _ = evaluator._flow_latency(
         app_id, ingress, model, flow_id, routing, analytical
     )
     final_response = evaluator._final_llm_performance(

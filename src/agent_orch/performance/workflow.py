@@ -58,7 +58,7 @@ class WorkflowEvaluator:
                     quality_numerator += ingress_rate * model_share * app.quality[model]
                     for flow in app.pattern_flows:
                         probability = ingress_rate * model_share * flow.probability
-                        e2e, ttft, tbt, stage_ok = self._flow_latency(
+                        e2e, ttft, tbt, stage_ok, stage_times = self._flow_latency(
                             app.id,
                             ingress,
                             model,
@@ -78,6 +78,10 @@ class WorkflowEvaluator:
                             "tbt_s": tbt,
                             "slo": float(satisfied),
                             "weight_rps": probability,
+                            **{
+                                f"stage:{node_id}_s": value
+                                for node_id, value in stage_times.items()
+                            },
                         }
             app_latency[app.id] = latency_numerator / app_rate if app_rate > 0.0 else 0.0
             latency_numerator_system += latency_numerator
@@ -103,7 +107,7 @@ class WorkflowEvaluator:
         flow_id: str,
         routing: RoutingDecision,
         result: AnalyticalResult,
-    ) -> tuple[float, float, float, bool]:
+    ) -> tuple[float, float, float, bool, dict[str, float]]:
         app = self.scenario.applications[app_id]
         flow = next(flow for flow in app.pattern_flows if flow.id == flow_id)
         prefix_delays: list[float] = []
@@ -137,10 +141,15 @@ class WorkflowEvaluator:
         )
         e2e = critical_prefix + final_response + exit_delay
         ttft = critical_prefix + final_ttft + first_token_return
-        stage_ok = self._stage_deadlines_satisfied(
+        stage_times = self._stage_completion_times(
             app_id, ingress, model, flow_id, routing, result
         )
-        return e2e, ttft, final_tbt, stage_ok
+        stage_ok = all(
+            value <= float(app.nodes[node_id].stage_deadline_s)
+            for node_id, value in stage_times.items()
+            if app.nodes[node_id].stage_deadline_s is not None
+        )
+        return e2e, ttft, final_tbt, stage_ok, stage_times
 
     def _node_response(
         self,
@@ -213,9 +222,13 @@ class WorkflowEvaluator:
         )
         if not pairs:
             return self.scenario.simulation.overload_delay_s
+        app = self.scenario.applications[app_id]
+        data_mb = app.edge_data_mb.get((model, source, target), 0.0)
         return sum(
             probability
-            * self.backend.network.path_delay(u, v, result.link_loads_mbit)
+            * self.backend.network.path_delay(
+                u, v, data_mb, result.link_load_mbps
+            )
             for u, v, probability in pairs
         )
 
@@ -228,12 +241,15 @@ class WorkflowEvaluator:
         node_id: str,
         result: AnalyticalResult,
     ) -> float:
+        app = self.scenario.applications[app_id]
         distribution = result.node_server_distribution.get(
             (app_id, ingress, model, flow_id, node_id), {}
         )
         return sum(
             probability
-            * self.backend.network.path_delay(ingress, server, result.link_loads_mbit)
+            * self.backend.network.path_delay(
+                ingress, server, app.entry_data_mb[model], result.link_load_mbps
+            )
             for server, probability in distribution.items()
         )
 
@@ -246,12 +262,15 @@ class WorkflowEvaluator:
         final_node: str,
         result: AnalyticalResult,
     ) -> float:
+        app = self.scenario.applications[app_id]
         distribution = result.node_server_distribution.get(
             (app_id, ingress, model, flow_id, final_node), {}
         )
         return sum(
             probability
-            * self.backend.network.path_delay(server, ingress, result.link_loads_mbit)
+            * self.backend.network.path_delay(
+                server, ingress, app.exit_data_mb[model], result.link_load_mbps
+            )
             for server, probability in distribution.items()
         )
 
@@ -315,7 +334,7 @@ class WorkflowEvaluator:
             tbt += missing * self.scenario.simulation.overload_delay_s
         return response, ttft, tbt
 
-    def _stage_deadlines_satisfied(
+    def _stage_completion_times(
         self,
         app_id: str,
         ingress: str,
@@ -323,14 +342,14 @@ class WorkflowEvaluator:
         flow_id: str,
         routing: RoutingDecision,
         result: AnalyticalResult,
-    ) -> bool:
+    ) -> dict[str, float]:
         app = self.scenario.applications[app_id]
         flow = next(flow for flow in app.pattern_flows if flow.id == flow_id)
+        completion: dict[str, float] = {}
         for node in app.nodes.values():
             if (
                 node.type is not NodeType.LLM
                 or node.id == flow.final_node
-                or node.stage_deadline_s is None
                 or node.id not in flow.nodes
             ):
                 continue
@@ -361,9 +380,9 @@ class WorkflowEvaluator:
                     app_id, ingress, model, flow_id, node.id, routing, result
                 )
                 prefixes.append(delay)
-            if prefixes and max(prefixes) > node.stage_deadline_s:
-                return False
-        return True
+            if prefixes:
+                completion[node.id] = max(prefixes)
+        return completion
 
     def slo_satisfied(
         self,
