@@ -1,35 +1,35 @@
-# Formula-to-code contract
+# 论文公式与代码实现对应关系
 
-Source of truth: `latex/agent_system_model_service_mesh_style.tex`.
+系统模型以 `latex/agent_system_model_service_mesh_style.tex` 为准。
 
-| Paper object | Code owner | Unit / invariant |
+| 论文对象 | 代码实现 | 量纲或约束 |
 |---|---|---|
-| `y_l`, `z_hn` | `DeploymentDecision` | binary LLM candidate; nonnegative tool replicas |
-| `x_agm` | `RoutingDecision.model_share` | simplex over models for every `(a,g)` |
-| `varphi_agil` | `RoutingDecision.llm_share` | sums to `x_agm` over instances of model `m` |
-| `p_aij^{u,v}` | `RoutingDecision.tool_route` | simplex over deployed destination replicas |
-| `lambda_{a,i,l}` | `AnalyticalBackend.llm_arrivals` | requests/s |
-| LLM Roofline work | `performance.llm.service_demand` | FLOPs, bytes, seconds |
-| `W_l^LLM` | `performance.queueing.llm_waiting_time` | seconds; finite overload sentinel |
-| `Lambda_{h,n}` | `AnalyticalBackend.tool_arrivals` | requests/s, every visited parallel node counted once |
-| GI/M/c tool delay | `performance.queueing.tool_response_time` | seconds |
-| `D_e^con` / link offered load | `NetworkBackend.add_traffic` | Mbps; independent of control-slot duration |
-| `T_{u,v}^net` | `NetworkBackend.path_delay` | seconds |
-| critical path | `WorkflowEvaluator` | maximum complete chain delay; shared segments are not summed across chains |
-| SLO event | `WorkflowEvaluator.slo_satisfied` | piecewise by `lat`, `ddl`, `cmp` |
-| `G^req`, `Q^sys` | `SlotMetrics` | requests/s and traffic-weighted score in `[0,1]` |
+| `y_l`、`z_hn` | `DeploymentDecision` | LLM 候选实例为二值变量；无状态服务副本数为非负整数 |
+| `x_agm` | `RoutingDecision.model_share` | 对每个 `(a,g)`，模型选择比例满足单纯形约束 |
+| `varphi_agil` | `RoutingDecision.llm_share` | 模型 `m` 的所有实例分配比例之和等于 `x_agm` |
+| `p_aij^{u,v}` | `RoutingDecision.tool_route` | 在已部署的目标无状态服务副本之间满足单纯形约束 |
+| `lambda_{a,i,l}` | `AnalyticalBackend.llm_arrivals` | 请求/秒 |
+| LLM Roofline 计算负载 | `performance.llm.service_demand` | FLOPs、字节、秒 |
+| `W_l^LLM` | `performance.queueing.llm_waiting_time` | 秒；过载时使用有限的预设时延 |
+| `Lambda_{h,n}` | `AnalyticalBackend.tool_arrivals` | 请求/秒；实际执行的每个并行节点均计入一次 |
+| GI/M/c 无状态服务时延 | `performance.queueing.tool_response_time` | 秒 |
+| `D_e^con` 或链路负载 | `NetworkBackend.add_traffic` | Mbps；不受控制时隙长度影响 |
+| `T_{u,v}^net` | `NetworkBackend.path_delay` | 秒 |
+| 关键路径 | `WorkflowEvaluator` | 取完整调用链时延的最大值；多条链之间的共享段不重复求和 |
+| SLO 事件 | `WorkflowEvaluator.slo_satisfied` | 按 `lat`、`ddl` 和 `cmp` 三类分别判断 |
+| `G^req`、`Q^sys` | `SlotMetrics` | 请求/秒，以及取值范围为 `[0,1]` 的流量加权质量得分 |
 
-Algorithm realization:
+## 算法实现
 
-- one slow deployment action jointly selects all `y_l` and `z_hn` values at each deployment epoch;
-- the fast PPO head selects `x_agm` in every physical slot;
-- `varphi_agil` and `p_aij^{u,v}` are computed by the capacity-, delay-, and utilization-aware physical router;
-- normalized objective utility and physical constraint cost are optimized through PPO-Lagrangian.
+- 每个部署周期执行一次慢时间尺度动作，联合选择全部 `y_l` 和 `z_hn`；
+- 快时间尺度 PPO 策略头在每个物理时隙选择 `x_agm`；
+- `varphi_agil` 和 `p_aij^{u,v}` 由考虑容量、时延和利用率的物理路由器计算；
+- PPO-Lagrangian 分别处理归一化目标效用和物理约束代价。
 
-Boundary rules:
+## 边界处理规则
 
-- zero-flow undeployed objects contribute zero load and delay;
-- positive flow without a feasible instance is a service failure;
-- unstable queues use a finite configured overload delay and set a violation flag;
-- one-element routing groups are deterministic and do not enter an RL log-probability;
-- the analytical backend never returns NaN or infinity.
+- 零流量且未部署的对象产生零负载和零时延；
+- 正流量无法映射至可行实例时记为服务失败；
+- 队列不稳定时使用配置中的有限过载时延，并设置约束违例标志；
+- 只有一个可选项的路由组采用确定性选择，不计入 RL 策略的对数概率；
+- 分析后端不得返回 NaN 或无穷值。

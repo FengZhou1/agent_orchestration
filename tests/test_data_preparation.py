@@ -45,6 +45,46 @@ def test_arrival_normalization_preserves_token_pairs_and_assigns_catalog_apps(tm
     assert sum(sum(values.values()) for values in scaled.rates.values()) == len(frame)
 
 
+def test_multiple_burstgpt_files_keep_one_global_timeline(tmp_path):
+    columns = {
+        "Model": ["ChatGPT", "GPT-4"],
+        "Request tokens": [100, 200],
+        "Response tokens": [10, 20],
+        "Total tokens": [110, 220],
+        "Log Type": ["API log", "Conversation log"],
+    }
+    first = pd.DataFrame({"Timestamp": [10.0, 20.0], **columns})
+    second = pd.DataFrame({"Timestamp": [100.0, 120.0], **columns})
+    first_path = tmp_path / "first.csv"
+    second_path = tmp_path / "second.csv"
+    first.to_csv(first_path, index=False)
+    second.to_csv(second_path, index=False)
+    events = ARRIVALS["load_event_files"](
+        [first_path, second_path], "burstgpt", chunksize=1
+    )
+    assert events["timestamp_s"].tolist() == [0.0, 10.0, 90.0, 110.0]
+    assert events["request_id"].is_unique
+    assert set(zip(events["prompt_tokens"], events["output_tokens"])) == {
+        (100, 10),
+        (200, 20),
+    }
+
+
+def test_joint_length_strata_are_ordered_and_keep_paired_samples():
+    prompt = pd.Series(range(1, 101), dtype=float)
+    output = 0.5 * prompt + 1.0
+    events = pd.DataFrame(
+        {
+            "prompt_tokens": prompt,
+            "output_tokens": output,
+        }
+    )
+    labels, summary = ARRIVALS["_joint_length_classes"](events)
+    assert labels.value_counts().sum() == len(events)
+    assert summary["total_tokens_mean"].is_monotonic_increasing
+    assert set(labels) == {"short", "medium", "long"}
+
+
 def test_service_profile_uses_low_load_samples_and_stability_rule():
     frame = pd.DataFrame(
         {
