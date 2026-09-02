@@ -1,7 +1,7 @@
 import math
-from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from agent_orch.agents import PPOConfig, StructuredActorCritic, train_ppo
 from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnlyEnv
@@ -9,22 +9,42 @@ from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnl
 
 def _blank_routing_action(env):
     return {
-        "deploy": env.encode_deployment(env.current_deployment),
+        "deploy": 0,
         "model": np.ones(env.layout.model_action_size, dtype=np.float32),
     }
+
+
+def _valid_action(env, observation):
+    action = _blank_routing_action(env)
+    if observation["action_type"] == env.DEPLOYMENT:
+        valid = np.flatnonzero(observation["deploy_mask"])
+        assert len(valid) > 0
+        action["deploy"] = int(valid[0])
+    return action
+
+
+def _complete_deployment(env, observation):
+    infos = []
+    while observation["action_type"] == env.DEPLOYMENT:
+        previous_slot = env.simulator.slot
+        observation, reward, terminated, truncated, info = env.step(
+            _valid_action(env, observation)
+        )
+        assert reward == 0.0
+        assert env.simulator.slot == previous_slot
+        assert not terminated
+        assert not truncated
+        infos.append(info)
+    return observation, infos
 
 
 def test_environment_completes_deployment_and_routing_phases(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, potential_shaping=True, seed=3)
     observation, _ = env.reset(seed=3)
     assert observation["action_type"] == env.DEPLOYMENT
-    observation, reward, terminated, truncated, info = env.step(
-        _blank_routing_action(env)
-    )
-    assert math.isfinite(reward)
-    assert not terminated
-    assert not truncated
-    assert info["discount"] == 1.0
+    observation, deployment_infos = _complete_deployment(env, observation)
+    assert deployment_infos
+    assert all(info["discount"] == env.deployment_gamma for info in deployment_infos)
     assert observation["action_type"] == env.ROUTING
     observation, reward, _, _, info = env.step(_blank_routing_action(env))
     assert math.isfinite(reward)
@@ -80,7 +100,7 @@ def test_ppo_reports_rollout_optimization_and_update_progress(scenario):
         on_update=updates.append,
     )
     assert phases == [(0, "collecting"), (0, "optimizing")]
-    assert rollout_steps[-1] == (0, step_count)
+    assert 0 < rollout_steps[-1][1] <= step_count
     assert optimization_steps == [(0, 1, 1)]
     assert len(updates) == 1
 
@@ -115,9 +135,13 @@ def test_routing_only_environment_never_enters_deployment(scenario):
 def test_deployment_only_environment_evaluates_internal_interval(scenario):
     env = DeploymentOnlyEnv(scenario, max_slots=2, seed=14)
     observation, _ = env.reset(seed=14)
-    observation, reward, terminated, _, last_info = env.step(
-        _blank_routing_action(env)
-    )
+    terminated = False
+    last_info = {}
+    reward = 0.0
+    while not terminated:
+        observation, reward, terminated, _, last_info = env.step(
+            _valid_action(env, observation)
+        )
     assert terminated
     assert last_info["evaluated_slots"] == 2
     assert len(last_info["interval_metrics"]) == 2
@@ -128,8 +152,8 @@ def test_deployment_only_environment_evaluates_internal_interval(scenario):
 def test_normalized_reward_has_separate_constraint_cost(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=15)
     observation, _ = env.reset(seed=15)
-    observation, _, _, _, deployment_info = env.step(_blank_routing_action(env))
-    assert deployment_info["constraint_cost"] == 0.0
+    observation, deployment_infos = _complete_deployment(env, observation)
+    assert all(info["constraint_cost"] == 0.0 for info in deployment_infos)
     _, reward, _, _, routing_info = env.step(_blank_routing_action(env))
     components = routing_info["reward_components"]
     assert -1.0 <= reward <= 1.0
@@ -143,54 +167,34 @@ def test_normalized_reward_has_separate_constraint_cost(scenario):
     assert routing_info["constraint_cost"] >= 0.0
 
 
-def test_missing_services_are_applied_and_exposed_as_constraint_cost(scenario):
+def test_sequential_deployment_builds_a_feasible_capacity_plan(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=16)
-    env.reset(seed=16)
-    missing = {
-        "deploy": np.zeros(len(env.layout.deployment_groups), dtype=np.int64),
-        "model": np.ones(env.layout.model_action_size, dtype=np.float32),
-    }
-    observation, reward, _, _, info = env.step(missing)
-    assert reward == 0.0
-    assert not info["invalid_action"]
-    assert info["constraint_cost"] > 0.0
-    assert sum(env.current_deployment.llm_active.values()) == 0
-    assert observation["features"][0] == 0.0
-    _, _, _, _, routing_info = env.step(missing)
-    assert routing_info["constraint_cost"] > 0.0
-    assert any(
-        "unserved" in label
-        for label in routing_info["metrics"].diagnostics["violation_labels"]
-    )
+    observation, _ = env.reset(seed=16)
+    observation, infos = _complete_deployment(env, observation)
+    assert infos[-1]["deployment_complete"]
+    assert env.planner.deployment_feasible(env.current_deployment)
+    assert sum(env.current_deployment.llm_active.values()) > 0
+    assert sum(env.current_deployment.tool_replicas.values()) > 0
+    assert observation["action_type"] == env.ROUTING
 
 
-def test_resource_infeasible_deployment_is_rejected_without_changing_state(scenario):
+def test_sequential_deployment_rejects_a_masked_target(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=17)
-    env.reset(seed=17)
-    before = env.current_deployment.copy()
-    env.scenario.servers["n0"] = replace(
-        env.scenario.servers["n0"], cpu_cores=1, memory_gb=1.0
-    )
-    selected = np.asarray(
-        [width - 1 for width in env.layout.deployment_widths], dtype=np.int64
-    )
-    invalid = {
-        "deploy": selected,
-        "model": np.ones(env.layout.model_action_size, dtype=np.float32),
-    }
-    _, reward, _, _, info = env.step(invalid)
-    assert reward == 0.0
-    assert info["invalid_action"]
-    assert info["constraint_cost"] > 0.0
-    assert env.current_deployment == before
+    observation, _ = env.reset(seed=17)
+    invalid = np.flatnonzero(observation["deploy_mask"] == 0)
+    assert len(invalid) > 0
+    action = _blank_routing_action(env)
+    action["deploy"] = int(invalid[0])
+    with pytest.raises(ValueError, match="masked or invalid"):
+        env.step(action)
 
 
 def test_deployment_and_first_routing_share_the_same_physical_slot(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=18)
     observation, _ = env.reset(seed=18)
     assert env.simulator.slot == 0
-    observation, _, _, _, deployment_info = env.step(_blank_routing_action(env))
-    assert deployment_info["discount"] == 1.0
+    observation, deployment_infos = _complete_deployment(env, observation)
+    assert all(info["discount"] == env.deployment_gamma for info in deployment_infos)
     assert env.simulator.slot == 0
     _, _, _, _, routing_info = env.step(_blank_routing_action(env))
     assert routing_info["discount"] == env.gamma

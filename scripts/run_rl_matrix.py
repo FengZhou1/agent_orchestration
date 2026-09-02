@@ -260,7 +260,7 @@ def main() -> int:
                         "models": train_env.layout.models,
                         "candidates": train_env.layout.candidates,
                         "servers": train_env.layout.servers,
-                        "deployment_widths": train_env.layout.deployment_widths,
+                        "deployment_targets": train_env.layout.deployment_targets,
                         "model_groups": train_env.layout.model_groups,
                     },
                     "seed": seed,

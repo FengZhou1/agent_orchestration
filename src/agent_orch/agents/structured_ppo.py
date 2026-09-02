@@ -26,6 +26,8 @@ UpdateCallback = Callable[[dict[str, float]], None]
 class PPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
+    deployment_gamma: float = 1.0
+    deployment_gae_lambda: float = 0.95
     clip_ratio: float = 0.2
     learning_rate: float = 3.0e-4
     update_epochs: int = 10
@@ -35,10 +37,26 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     hidden_size: int = 128
     constrained: bool = True
-    constraint_limit: float = 0.0
-    lagrangian_learning_rate: float = 0.05
-    initial_lagrange_multiplier: float = 0.0
-    max_lagrange_multiplier: float = 50.0
+    constraint_limits: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    lagrangian_learning_rates: tuple[float, float, float, float] = (
+        0.05,
+        0.05,
+        0.05,
+        0.05,
+    )
+    initial_lagrange_multipliers: tuple[float, float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    max_lagrange_multipliers: tuple[float, float, float, float] = (
+        50.0,
+        50.0,
+        50.0,
+        50.0,
+    )
+    routing_loss_weight: float = 1.0
     exploration_mode: Literal["rnd", "none", "icm"] = "rnd"
     rnd_feature_size: int = 64
     rnd_learning_rate: float = 1.0e-4
@@ -63,7 +81,8 @@ class StructuredActorCritic(nn.Module):
         )
         self.deploy_head = nn.Linear(hidden, self.layout.deployment_action_size)
         self.model_head = nn.Linear(hidden, self.layout.model_action_size)
-        self.value_head = nn.Linear(hidden, 1)
+        self.deployment_value_head = nn.Linear(hidden, 1)
+        self.routing_value_head = nn.Linear(hidden, 1)
 
     def _encode(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
         features = observation["features"]
@@ -74,7 +93,13 @@ class StructuredActorCritic(nn.Module):
         return self.encoder(torch.cat([features, phase], dim=-1))
 
     def value(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
-        return self.value_head(self._encode(observation)).squeeze(-1)
+        hidden = self._encode(observation)
+        phases = observation["action_type"].long().view(-1)
+        deployment = self.deployment_value_head(hidden).squeeze(-1)
+        routing = self.routing_value_head(hidden).squeeze(-1)
+        return torch.where(
+            phases == AgentOrchestrationEnv.DEPLOYMENT, deployment, routing
+        )
 
     @torch.no_grad()
     def act(
@@ -85,24 +110,21 @@ class StructuredActorCritic(nn.Module):
     ) -> tuple[dict[str, Any], float, float]:
         obs = _observation_to_tensors(observation, device, batched=False)
         hidden = self._encode(obs)
-        value = self.value_head(hidden).squeeze(-1)
+        value = self.value(obs)
         phase = int(observation["action_type"])
         action = {
-            "deploy": np.zeros(
-                len(self.layout.deployment_groups), dtype=np.int64
-            ),
+            "deploy": 0,
             "model": np.zeros(self.layout.model_action_size, dtype=np.float32),
         }
         if phase == AgentOrchestrationEnv.DEPLOYMENT:
-            selected, log_prob, _ = _sample_variable_categoricals(
+            selected, log_prob, _ = _sample_categorical(
                 self.deploy_head(hidden).squeeze(0),
                 torch.as_tensor(
                     observation["deploy_mask"], dtype=torch.bool, device=device
                 ),
-                self.layout.deployment_widths,
                 deterministic,
             )
-            action["deploy"] = selected.cpu().numpy().astype(np.int64)
+            action["deploy"] = int(selected.item())
         else:
             model, model_logp, _ = _sample_grouped_dirichlet(
                 self.model_head(hidden).squeeze(0),
@@ -121,17 +143,22 @@ class StructuredActorCritic(nn.Module):
         actions: dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self._encode(observation)
-        values = self.value_head(hidden).squeeze(-1)
         phases = observation["action_type"].long().view(-1)
+        deployment_values = self.deployment_value_head(hidden).squeeze(-1)
+        routing_values = self.routing_value_head(hidden).squeeze(-1)
+        values = torch.where(
+            phases == AgentOrchestrationEnv.DEPLOYMENT,
+            deployment_values,
+            routing_values,
+        )
         log_probs = torch.zeros_like(values)
         entropies = torch.zeros_like(values)
         for index in range(hidden.shape[0]):
             if int(phases[index].item()) == AgentOrchestrationEnv.DEPLOYMENT:
-                deploy_logp, deploy_entropy = _evaluate_variable_categoricals(
+                deploy_logp, deploy_entropy = _evaluate_categorical(
                     self.deploy_head(hidden[index]),
                     observation["deploy_mask"][index],
                     actions["deploy"][index],
-                    self.layout.deployment_widths,
                 )
                 log_probs[index] = deploy_logp
                 entropies[index] = deploy_entropy
@@ -161,12 +188,14 @@ def train_ppo(
     on_update: UpdateCallback | None = None,
 ) -> tuple[StructuredActorCritic, list[dict[str, float]]]:
     device = resolve_device(device)
+    _validate_constraint_config(config)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if device.startswith("cuda:"):
         torch.cuda.manual_seed_all(seed)
     env.gamma = config.gamma
+    env.deployment_gamma = config.deployment_gamma
     policy = StructuredActorCritic(env, config).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate)
     action_vector_size = (
@@ -182,7 +211,7 @@ def train_ppo(
     icm_optimizer = torch.optim.Adam(icm.parameters(), lr=config.learning_rate) if icm else None
     rnd = (
         RNDModule(
-            env.observation_space["features"].shape[0] + 2,
+            env.observation_space["features"].shape[0],
             config.hidden_size,
             config.rnd_feature_size,
         ).to(device)
@@ -194,143 +223,235 @@ def train_ppo(
         if rnd is not None
         else None
     )
-    rnd_moments = PhaseRunningMoments(2)
+    rnd_moments = PhaseRunningMoments(1)
     observation, _ = env.reset(seed=seed)
     history: list[dict[str, float]] = []
-    lagrange_multiplier = config.initial_lagrange_multiplier
-    episode_counter = 0
-    optimizer_steps_per_update = config.update_epochs * math.ceil(
-        rollout_steps / config.minibatch_size
+    lagrange_multipliers = np.asarray(
+        config.initial_lagrange_multipliers, dtype=np.float64
     )
+    constraint_limits = np.asarray(config.constraint_limits, dtype=np.float64)
+    episode_counter = 0
+    pending_deployment: list[dict[str, Any]] = []
 
     for update in range(updates):
         if on_phase is not None:
             on_phase(update, "collecting")
-        observations: list[dict[str, Any]] = []
-        next_observations: list[dict[str, Any]] = []
-        actions: list[dict[str, Any]] = []
-        log_probs: list[float] = []
-        values: list[float] = []
-        rewards: list[float] = []
-        constraint_costs: list[float] = []
-        discounts: list[float] = []
-        terminals: list[float] = []
-
-        for rollout_step in range(1, rollout_steps + 1):
+        deployment_records: list[dict[str, Any]] = []
+        routing_records: list[dict[str, Any]] = []
+        rollout_step = 0
+        # A slow deployment trajectory is completed only after the ensuing
+        # physical deployment period has been evaluated.  Extending collection
+        # to that boundary keeps every shared slow reward on-policy.
+        while (
+            rollout_step < rollout_steps
+            or bool(pending_deployment)
+            or not (deployment_records or routing_records)
+        ):
+            remaining_budget = rollout_steps - rollout_step
+            minimum_period_steps = (
+                env.scenario.simulation.deployment_period_slots + 1
+            )
+            if (
+                rollout_step > 0
+                and not pending_deployment
+                and int(observation["action_type"])
+                == AgentOrchestrationEnv.DEPLOYMENT
+                and remaining_budget < minimum_period_steps
+            ):
+                break
+            rollout_step += 1
+            phase = int(observation["action_type"])
             action, log_prob, value = policy.act(observation, device=device)
             next_observation, reward, terminated, truncated, info = env.step(action)
-            observations.append(observation)
-            next_observations.append(next_observation)
-            actions.append(action)
-            log_probs.append(log_prob)
-            values.append(value)
-            rewards.append(float(reward))
-            constraint_steps = max(1.0, float(info.get("constraint_steps", 1.0)))
-            constraint_costs.append(
-                float(info.get("constraint_cost", 0.0)) / constraint_steps
-            )
-            discounts.append(float(info.get("discount", config.gamma)))
-            terminals.append(float(terminated or truncated))
+            record = {
+                "observation": observation,
+                "next_observation": next_observation,
+                "action": action,
+                "log_prob": log_prob,
+                "value": value,
+                "reward": float(reward),
+                "external_reward": float(reward),
+                "terminal": bool(terminated or truncated),
+            }
+            if phase == AgentOrchestrationEnv.DEPLOYMENT:
+                pending_deployment.append(record)
+            else:
+                constraint_vector = np.asarray(
+                    info.get("constraint_vector", [0.0, 0.0, 0.0, 0.0]),
+                    dtype=np.float64,
+                )
+                constrained_reward = _constrained_utility(
+                    float(reward),
+                    constraint_vector,
+                    lagrange_multipliers,
+                    constraint_limits,
+                    config.constrained,
+                )
+                record["reward"] = constrained_reward
+                record["external_reward"] = constrained_reward
+                record["utility"] = float(reward)
+                record["constraint_vector"] = constraint_vector
+                record["terminal"] = bool(
+                    terminated
+                    or truncated
+                    or "deployment_period_summary" in info
+                )
+                routing_records.append(record)
+
+            summary = info.get("deployment_period_summary")
+            if summary is not None and pending_deployment:
+                actual = _constrained_utility(
+                    float(summary["actual_utility"]),
+                    np.asarray(summary["actual_constraints"], dtype=np.float64),
+                    lagrange_multipliers,
+                    constraint_limits,
+                    config.constrained,
+                )
+                baseline = _constrained_utility(
+                    float(summary["baseline_utility"]),
+                    np.asarray(summary["baseline_constraints"], dtype=np.float64),
+                    lagrange_multipliers,
+                    constraint_limits,
+                    config.constrained,
+                )
+                shared_reward = (actual - baseline) / max(
+                    1, int(summary["deployment_steps"])
+                )
+                for index, pending in enumerate(pending_deployment):
+                    pending["reward"] = shared_reward
+                    pending["external_reward"] = shared_reward
+                    pending["terminal"] = index == len(pending_deployment) - 1
+                    deployment_records.append(pending)
+                pending_deployment = []
+
             observation = next_observation
             if terminated or truncated:
                 episode_counter += 1
                 observation, _ = env.reset(seed=seed + episode_counter)
-            if on_rollout_step is not None:
+            if on_rollout_step is not None and rollout_step <= rollout_steps:
                 on_rollout_step(update, rollout_step)
 
-        utility_rewards = list(rewards)
-        phase_array = np.asarray(
-            [int(obs["action_type"]) for obs in observations], dtype=np.int64
-        )
-        intrinsic_raw = np.zeros(len(observations), dtype=np.float32)
-        intrinsic_normalized = np.zeros(len(observations), dtype=np.float32)
+        exploration_weight = _exploration_weight(config, update, updates)
+        intrinsic_raw = np.zeros(len(deployment_records), dtype=np.float32)
+        intrinsic_normalized = np.zeros(len(deployment_records), dtype=np.float32)
         current_rnd_states = None
-        next_rnd_states = None
+        if rnd is not None and deployment_records:
+            current_rnd_states = _rnd_state_inputs(
+                [record["observation"] for record in deployment_records], device
+            )
+            next_rnd_states = _rnd_state_inputs(
+                [record["next_observation"] for record in deployment_records], device
+            )
+            intrinsic_raw = rnd.intrinsic_reward(next_rnd_states).cpu().numpy()
+            intrinsic_normalized = rnd_moments.scale_by_std(
+                intrinsic_raw,
+                np.zeros(len(intrinsic_raw), dtype=np.int64),
+                config.rnd_reward_clip,
+            )
+            rnd_moments.update(
+                intrinsic_raw, np.zeros(len(intrinsic_raw), dtype=np.int64)
+            )
+            for record, intrinsic_reward in zip(
+                deployment_records, intrinsic_normalized
+            ):
+                record["reward"] += exploration_weight * float(intrinsic_reward)
+
+        records = deployment_records + routing_records
         feature_tensor = None
         next_feature_tensor = None
         action_vector_tensor = None
-
-        if rnd is not None:
-            current_rnd_states = _rnd_state_inputs(observations, device)
-            next_rnd_states = _rnd_state_inputs(next_observations, device)
-            intrinsic_raw = rnd.intrinsic_reward(next_rnd_states).cpu().numpy()
-            intrinsic_normalized = rnd_moments.normalize(
-                intrinsic_raw,
-                phase_array,
-                config.rnd_reward_clip,
-            )
-            rnd_moments.update(intrinsic_raw, phase_array)
-        if icm is not None:
+        icm_raw = np.zeros(len(records), dtype=np.float32)
+        if icm is not None and records:
             feature_tensor = torch.as_tensor(
-                np.stack([obs["features"] for obs in observations]),
+                np.stack([record["observation"]["features"] for record in records]),
                 dtype=torch.float32,
                 device=device,
             )
             next_feature_tensor = torch.as_tensor(
-                np.stack([obs["features"] for obs in next_observations]),
+                np.stack(
+                    [record["next_observation"]["features"] for record in records]
+                ),
                 dtype=torch.float32,
                 device=device,
             )
             action_vectors = np.stack(
                 [
                     structured_action_vector(
-                        action,
-                        int(obs["action_type"]),
-                        env.layout.deployment_widths,
+                        record["action"],
+                        int(record["observation"]["action_type"]),
+                        env.layout.deployment_action_size,
                     )
-                    for obs, action in zip(observations, actions)
+                    for record in records
                 ]
             )
-            action_vector_tensor = torch.as_tensor(action_vectors, dtype=torch.float32, device=device)
-            intrinsic = icm.intrinsic_reward(
+            action_vector_tensor = torch.as_tensor(
+                action_vectors, dtype=torch.float32, device=device
+            )
+            icm_raw = icm.intrinsic_reward(
                 feature_tensor, action_vector_tensor, next_feature_tensor
-            )
-            intrinsic_raw = intrinsic.cpu().numpy()
-            intrinsic_normalized = intrinsic_raw.copy()
+            ).cpu().numpy()
+            for record, intrinsic_reward in zip(records, icm_raw):
+                record["reward"] += config.icm_scale * float(intrinsic_reward)
 
-        lagrangian_rewards = _lagrangian_rewards(
-            utility_rewards,
-            constraint_costs,
-            lagrange_multiplier,
-            config.constraint_limit,
-            config.constrained,
+        deployment_advantages, deployment_returns = _phase_gae(
+            deployment_records,
+            config.deployment_gamma,
+            config.deployment_gae_lambda,
+            0.0,
         )
-        exploration_weight = _exploration_weight(config, update, updates)
-        if config.exploration_mode == "icm":
-            exploration_weight = config.icm_scale
-        rewards = _combine_training_rewards(
-            lagrangian_rewards, intrinsic_normalized, exploration_weight
-        )
-        with torch.no_grad():
-            bootstrap = float(
-                policy.value(_observation_to_tensors(observation, device, False)).item()
-            )
-        advantages, returns = _gae(
-            rewards,
-            values,
-            discounts,
-            terminals,
-            bootstrap,
+        routing_bootstrap = 0.0
+        if (
+            routing_records
+            and not routing_records[-1]["terminal"]
+            and int(observation["action_type"]) == AgentOrchestrationEnv.ROUTING
+        ):
+            with torch.no_grad():
+                routing_bootstrap = float(
+                    policy.value(
+                        _observation_to_tensors(observation, device, False)
+                    ).item()
+                )
+        routing_advantages, routing_returns = _phase_gae(
+            routing_records,
+            config.gamma,
             config.gae_lambda,
+            routing_bootstrap,
         )
-        advantages = advantages.to(device)
-        advantages = (advantages - advantages.mean()) / (
-            advantages.std(unbiased=False) + 1e-8
+        deployment_advantages = _normalize_advantages(deployment_advantages)
+        routing_advantages = _normalize_advantages(routing_advantages)
+        advantages = torch.cat(
+            [deployment_advantages, routing_advantages], dim=0
+        ).to(device)
+        returns_tensor = torch.as_tensor(
+            deployment_returns + routing_returns,
+            dtype=torch.float32,
+            device=device,
         )
-        old_log_probs = torch.as_tensor(log_probs, dtype=torch.float32, device=device)
-        returns_tensor = torch.as_tensor(returns, dtype=torch.float32, device=device)
-        observations_tensor = _stack_observations(observations, device)
-        actions_tensor = _stack_actions(actions, device)
-        indices = np.arange(rollout_steps)
+        old_log_probs = torch.as_tensor(
+            [record["log_prob"] for record in records],
+            dtype=torch.float32,
+            device=device,
+        )
+        observations_tensor = _stack_observations(
+            [record["observation"] for record in records], device
+        )
+        actions_tensor = _stack_actions(
+            [record["action"] for record in records], device
+        )
+        phase_tensor = observations_tensor["action_type"]
+        indices = np.arange(len(records))
         losses = []
         icm_losses = []
         rnd_losses = []
         optimization_step = 0
+        optimizer_steps_per_update = config.update_epochs * math.ceil(
+            len(records) / config.minibatch_size
+        )
         if on_phase is not None:
             on_phase(update, "optimizing")
         for _ in range(config.update_epochs):
             np.random.shuffle(indices)
-            for start in range(0, rollout_steps, config.minibatch_size):
+            for start in range(0, len(records), config.minibatch_size):
                 batch = indices[start : start + config.minibatch_size]
                 batch_t = torch.as_tensor(batch, dtype=torch.long, device=device)
                 obs_batch = {key: value[batch_t] for key, value in observations_tensor.items()}
@@ -343,14 +464,30 @@ def train_ppo(
                 clipped = torch.clamp(
                     ratio, 1.0 - config.clip_ratio, 1.0 + config.clip_ratio
                 )
-                actor_loss = -torch.min(ratio * advantage_batch, clipped * advantage_batch).mean()
-                value_loss = torch.nn.functional.mse_loss(
-                    predicted_values, returns_tensor[batch_t]
+                surrogate = torch.min(
+                    ratio * advantage_batch, clipped * advantage_batch
+                )
+                batch_phases = phase_tensor[batch_t]
+                deployment_mask = batch_phases == AgentOrchestrationEnv.DEPLOYMENT
+                routing_mask = batch_phases == AgentOrchestrationEnv.ROUTING
+                actor_loss = -_masked_mean(surrogate, deployment_mask)
+                actor_loss -= config.routing_loss_weight * _masked_mean(
+                    surrogate, routing_mask
+                )
+                value_loss = _masked_mse(
+                    predicted_values, returns_tensor[batch_t], deployment_mask
+                )
+                value_loss += _masked_mse(
+                    predicted_values, returns_tensor[batch_t], routing_mask
+                )
+                entropy_term = _masked_mean(entropy, deployment_mask)
+                entropy_term += config.routing_loss_weight * _masked_mean(
+                    entropy, routing_mask
                 )
                 loss = (
                     actor_loss
                     + config.value_coefficient * value_loss
-                    - config.entropy_coefficient * entropy.mean()
+                    - config.entropy_coefficient * entropy_term
                 )
                 optimizer.zero_grad()
                 loss.backward()
@@ -372,72 +509,91 @@ def train_ppo(
                     nn.utils.clip_grad_norm_(icm.parameters(), config.max_grad_norm)
                     icm_optimizer.step()
                     icm_losses.append(float(icm_loss.item()))
-                if rnd is not None and rnd_optimizer is not None:
-                    assert current_rnd_states is not None
-                    rnd_loss = (
-                        config.rnd_loss_coefficient
-                        * rnd.loss(current_rnd_states[batch_t])
-                    )
-                    rnd_optimizer.zero_grad()
-                    rnd_loss.backward()
-                    nn.utils.clip_grad_norm_(
-                        rnd.predictor.parameters(), config.max_grad_norm
-                    )
-                    rnd_optimizer.step()
-                    rnd_losses.append(float(rnd_loss.item()))
+                if (
+                    rnd is not None
+                    and rnd_optimizer is not None
+                    and current_rnd_states is not None
+                ):
+                    deployment_indices = batch_t[
+                        batch_t < len(deployment_records)
+                    ]
+                    if len(deployment_indices) > 0:
+                        rnd_loss = (
+                            config.rnd_loss_coefficient
+                            * rnd.loss(current_rnd_states[deployment_indices])
+                        )
+                        rnd_optimizer.zero_grad()
+                        rnd_loss.backward()
+                        nn.utils.clip_grad_norm_(
+                            rnd.predictor.parameters(), config.max_grad_norm
+                        )
+                        rnd_optimizer.step()
+                        rnd_losses.append(float(rnd_loss.item()))
                 optimization_step += 1
                 if on_optimization_step is not None:
                     on_optimization_step(
                         update, optimization_step, optimizer_steps_per_update
                     )
 
-        next_lagrange_multiplier = lagrange_multiplier
+        constraint_rows = [
+            record["constraint_vector"] for record in routing_records
+        ]
+        mean_constraints = (
+            np.mean(np.stack(constraint_rows), axis=0)
+            if constraint_rows
+            else np.zeros(4, dtype=np.float64)
+        )
+        next_lagrange_multipliers = lagrange_multipliers.copy()
         if config.constrained:
-            next_lagrange_multiplier = _update_lagrange_multiplier(
-                lagrange_multiplier,
-                float(np.mean(constraint_costs)),
-                config.constraint_limit,
-                config.lagrangian_learning_rate,
-                config.max_lagrange_multiplier,
+            next_lagrange_multipliers = _update_lagrange_multipliers(
+                lagrange_multipliers,
+                mean_constraints,
+                constraint_limits,
+                np.asarray(config.lagrangian_learning_rates, dtype=np.float64),
+                np.asarray(config.max_lagrange_multipliers, dtype=np.float64),
             )
+        training_rewards = [record["reward"] for record in records]
+        external_rewards = [record["external_reward"] for record in records]
+        utility_rewards = [float(record["utility"]) for record in routing_records]
         record = {
             "update": float(update),
-            "mean_reward": float(np.mean(rewards)),
-            "mean_utility": float(np.mean(utility_rewards)),
-            "mean_lagrangian_reward": float(np.mean(lagrangian_rewards)),
-            "mean_constraint_cost": float(np.mean(constraint_costs)),
-            "lagrange_multiplier": float(lagrange_multiplier),
-            "next_lagrange_multiplier": float(next_lagrange_multiplier),
+            "mean_reward": float(np.mean(training_rewards)),
+            "mean_utility": float(np.mean(utility_rewards)) if utility_rewards else 0.0,
+            "mean_lagrangian_reward": float(np.mean(external_rewards)),
+            "mean_constraint_cost": float(np.sum(mean_constraints)),
+            "lagrange_multiplier": float(np.sum(lagrange_multipliers)),
+            "next_lagrange_multiplier": float(
+                np.sum(next_lagrange_multipliers)
+            ),
             "mean_loss": float(np.mean(losses)),
-            "deployment_steps": float(
-                sum(
-                    phase == AgentOrchestrationEnv.DEPLOYMENT
-                    for phase in phase_array
-                )
-            ),
-            "routing_steps": float(
-                sum(phase == AgentOrchestrationEnv.ROUTING for phase in phase_array)
-            ),
+            "deployment_steps": float(len(deployment_records)),
+            "routing_steps": float(len(routing_records)),
             "exploration_weight": float(exploration_weight),
-            "mean_intrinsic_reward": float(np.mean(intrinsic_normalized)),
-            "mean_raw_intrinsic_reward": float(np.mean(intrinsic_raw)),
+            "mean_intrinsic_reward": float(np.mean(intrinsic_normalized))
+            if len(intrinsic_normalized)
+            else 0.0,
+            "mean_raw_intrinsic_reward": float(np.mean(intrinsic_raw))
+            if len(intrinsic_raw)
+            else 0.0,
             "mean_deployment_rnd_reward": _phase_mean(
                 intrinsic_normalized,
-                phase_array,
-                AgentOrchestrationEnv.DEPLOYMENT,
+                np.zeros(len(intrinsic_normalized), dtype=np.int64),
+                0,
             ),
-            "mean_routing_rnd_reward": _phase_mean(
-                intrinsic_normalized,
-                phase_array,
-                AgentOrchestrationEnv.ROUTING,
-            ),
+            "mean_routing_rnd_reward": 0.0,
             "mean_rnd_loss": float(np.mean(rnd_losses)) if rnd_losses else 0.0,
             "mean_icm_loss": float(np.mean(icm_losses)) if icm_losses else 0.0,
         }
+        for index, name in enumerate(env.CONSTRAINT_NAMES):
+            record[f"mean_constraint_{name}"] = float(mean_constraints[index])
+            record[f"lagrange_{name}"] = float(lagrange_multipliers[index])
+            record[f"next_lagrange_{name}"] = float(
+                next_lagrange_multipliers[index]
+            )
         history.append(record)
         if on_update is not None:
             on_update(record)
-        lagrange_multiplier = next_lagrange_multiplier
+        lagrange_multipliers = next_lagrange_multipliers
     return policy, history
 
 
@@ -451,47 +607,79 @@ def _exploration_weight(config: PPOConfig, update: int, updates: int) -> float:
     )
 
 
-def _lagrangian_rewards(
-    utilities: list[float],
-    constraint_costs: list[float],
-    multiplier: float,
-    constraint_limit: float,
-    constrained: bool,
-) -> list[float]:
-    if not constrained:
-        return list(utilities)
-    return [
-        utility - multiplier * (constraint - constraint_limit)
-        for utility, constraint in zip(utilities, constraint_costs)
-    ]
-
-
-def _combine_training_rewards(
-    lagrangian_rewards: list[float],
-    intrinsic_rewards: np.ndarray,
-    exploration_weight: float,
-) -> list[float]:
-    return [
-        reward + exploration_weight * float(intrinsic_rewards[index])
-        for index, reward in enumerate(lagrangian_rewards)
-    ]
-
-
-def _update_lagrange_multiplier(
-    multiplier: float,
-    mean_constraint_cost: float,
-    constraint_limit: float,
-    learning_rate: float,
-    maximum: float,
-) -> float:
-    return float(
-        np.clip(
-            multiplier
-            + learning_rate * (mean_constraint_cost - constraint_limit),
-            0.0,
-            maximum,
-        )
+def _validate_constraint_config(config: PPOConfig) -> None:
+    fields = (
+        config.constraint_limits,
+        config.lagrangian_learning_rates,
+        config.initial_lagrange_multipliers,
+        config.max_lagrange_multipliers,
     )
+    if any(len(values) != 4 for values in fields):
+        raise ValueError("The LLM, KV, tool, and link constraint vectors need four values")
+
+
+def _constrained_utility(
+    utility: float,
+    constraints: np.ndarray,
+    multipliers: np.ndarray,
+    limits: np.ndarray,
+    constrained: bool,
+) -> float:
+    if not constrained:
+        return float(utility)
+    return float(utility - np.dot(multipliers, constraints - limits))
+
+
+def _update_lagrange_multipliers(
+    multipliers: np.ndarray,
+    mean_constraints: np.ndarray,
+    limits: np.ndarray,
+    learning_rates: np.ndarray,
+    maxima: np.ndarray,
+) -> np.ndarray:
+    return np.clip(
+        multipliers + learning_rates * (mean_constraints - limits),
+        0.0,
+        maxima,
+    )
+
+
+def _phase_gae(
+    records: list[dict[str, Any]],
+    gamma: float,
+    gae_lambda: float,
+    bootstrap: float,
+) -> tuple[torch.Tensor, list[float]]:
+    if not records:
+        return torch.empty(0, dtype=torch.float32), []
+    return _gae(
+        rewards=[float(record["reward"]) for record in records],
+        values=[float(record["value"]) for record in records],
+        discounts=[gamma] * len(records),
+        terminals=[float(record["terminal"]) for record in records],
+        bootstrap=bootstrap,
+        gae_lambda=gae_lambda,
+    )
+
+
+def _normalize_advantages(values: torch.Tensor) -> torch.Tensor:
+    if len(values) <= 1:
+        return values
+    return (values - values.mean()) / (values.std(unbiased=False) + 1.0e-8)
+
+
+def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    if bool(mask.any()):
+        return values[mask].mean()
+    return values.new_tensor(0.0)
+
+
+def _masked_mse(
+    predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor
+) -> torch.Tensor:
+    if bool(mask.any()):
+        return torch.nn.functional.mse_loss(predicted[mask], target[mask])
+    return predicted.new_tensor(0.0)
 
 
 def _phase_mean(values: np.ndarray, phases: np.ndarray, phase: int) -> float:
@@ -503,46 +691,29 @@ def _concentrations(raw: torch.Tensor) -> torch.Tensor:
     return torch.clamp(torch.nn.functional.softplus(raw) + 0.1, 0.1, 100.0)
 
 
-def _sample_variable_categoricals(
+def _sample_categorical(
     raw: torch.Tensor,
     mask: torch.Tensor,
-    widths: tuple[int, ...],
     deterministic: bool,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    choices: list[torch.Tensor] = []
-    log_prob = raw.new_tensor(0.0)
-    entropy = raw.new_tensor(0.0)
-    offset = 0
-    for width in widths:
-        logits = raw[offset : offset + width]
-        valid = mask[offset : offset + width].bool()
-        distribution = Categorical(logits=logits.masked_fill(~valid, -1.0e9))
-        choice = torch.argmax(logits.masked_fill(~valid, -1.0e9)) if deterministic else distribution.sample()
-        choices.append(choice)
-        log_prob = log_prob + distribution.log_prob(choice)
-        entropy = entropy + distribution.entropy()
-        offset += width
-    return torch.stack(choices), log_prob, entropy
+    valid = mask.bool()
+    if not bool(valid.any()):
+        raise ValueError("The sequential deployment step has no feasible target")
+    logits = raw.masked_fill(~valid, -1.0e9)
+    distribution = Categorical(logits=logits)
+    choice = torch.argmax(logits) if deterministic else distribution.sample()
+    return choice, distribution.log_prob(choice), distribution.entropy()
 
 
-def _evaluate_variable_categoricals(
+def _evaluate_categorical(
     raw: torch.Tensor,
     mask: torch.Tensor,
     action: torch.Tensor,
-    widths: tuple[int, ...],
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    log_prob = raw.new_tensor(0.0)
-    entropy = raw.new_tensor(0.0)
-    offset = 0
-    for group, width in enumerate(widths):
-        logits = raw[offset : offset + width]
-        valid = mask[offset : offset + width].bool()
-        distribution = Categorical(logits=logits.masked_fill(~valid, -1.0e9))
-        choice = action[group].long()
-        log_prob = log_prob + distribution.log_prob(choice)
-        entropy = entropy + distribution.entropy()
-        offset += width
-    return log_prob, entropy
+    valid = mask.bool()
+    distribution = Categorical(logits=raw.masked_fill(~valid, -1.0e9))
+    choice = action.long()
+    return distribution.log_prob(choice), distribution.entropy()
 
 
 def _sample_grouped_dirichlet(
@@ -613,18 +784,11 @@ def _observation_to_tensors(
 def _rnd_state_inputs(
     observations: list[dict[str, Any]], device: torch.device | str
 ) -> torch.Tensor:
-    features = torch.as_tensor(
+    return torch.as_tensor(
         np.stack([observation["features"] for observation in observations]),
         dtype=torch.float32,
         device=device,
     )
-    phases = torch.as_tensor(
-        [observation["action_type"] for observation in observations],
-        dtype=torch.long,
-        device=device,
-    )
-    phase_encoding = torch.nn.functional.one_hot(phases, num_classes=2).float()
-    return torch.cat([features, phase_encoding], dim=-1)
 
 
 def _stack_observations(

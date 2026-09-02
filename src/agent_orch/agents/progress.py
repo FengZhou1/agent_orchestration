@@ -49,6 +49,7 @@ class TrainingProgressReporter:
         self._update = 0
         self._rollout_step = 0
         self._optimizer_step = 0
+        self._optimizer_total_current = self.optimizer_steps
         self._phase = "initializing"
         self._latest_metrics: dict[str, float] = {}
         self._history_handle: TextIO | None = None
@@ -118,14 +119,14 @@ class TrainingProgressReporter:
         self._update = update + 1
         self._phase = "optimizing"
         self._optimizer_step = optimization_step
-        if total_steps != self.optimizer_steps:
-            raise ValueError(
-                "Optimizer progress does not match the configured number of steps"
-            )
+        self._optimizer_total_current = total_steps
+        mapped_step = math.ceil(
+            optimization_step * self.optimizer_steps / max(1, total_steps)
+        )
         target = (
             update * self.units_per_update
             + self.rollout_steps
-            + optimization_step
+            + mapped_step
         )
         self._advance(target)
 
@@ -180,7 +181,7 @@ class TrainingProgressReporter:
             "rollout_step": self._rollout_step,
             "rollout_steps_per_update": self.rollout_steps,
             "optimizer_step": self._optimizer_step,
-            "optimizer_steps_per_update": self.optimizer_steps,
+            "optimizer_steps_per_update": self._optimizer_total_current,
             "completed_work_units": self._completed_units,
             "total_work_units": self.total_units,
             "progress_percent": (

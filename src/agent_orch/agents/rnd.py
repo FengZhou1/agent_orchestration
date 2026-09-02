@@ -63,6 +63,29 @@ class PhaseRunningMoments:
             ) / (np.sqrt(max(variance, 0.0)) + epsilon)
         return np.clip(normalized, 0.0, clip_max).astype(np.float32)
 
+    def scale_by_std(
+        self,
+        values: np.ndarray,
+        phases: np.ndarray,
+        clip_max: float,
+        epsilon: float = 1.0e-8,
+    ) -> np.ndarray:
+        """Scale non-negative RND errors by the historical phase standard deviation."""
+        normalized = np.zeros_like(values, dtype=np.float64)
+        for phase in range(len(self.count)):
+            selected = phases == phase
+            if not np.any(selected):
+                continue
+            variance = (
+                self.m2[phase] / max(self.count[phase], 1.0)
+                if self.count[phase] > 1.0
+                else 1.0
+            )
+            normalized[selected] = values[selected] / (
+                np.sqrt(max(variance, 0.0)) + epsilon
+            )
+        return np.clip(normalized, 0.0, clip_max).astype(np.float32)
+
     def update(self, values: np.ndarray, phases: np.ndarray) -> None:
         for value, phase in zip(values.astype(float), phases.astype(int)):
             self.count[phase] += 1.0

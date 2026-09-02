@@ -57,17 +57,16 @@ class ICMModule(nn.Module):
 def structured_action_vector(
     action: dict,
     phase: int,
-    deployment_widths: tuple[int, ...],
+    deployment_action_size: int,
 ) -> np.ndarray:
     phase_one_hot = np.asarray([float(phase == 0), float(phase == 1)], dtype=np.float32)
-    deployment = np.asarray(action["deploy"], dtype=np.int64)
-    encoded: list[float] = []
-    for choice, width in zip(deployment, deployment_widths):
-        encoded.extend(float(choice == value) for value in range(width))
+    deployment = np.zeros(deployment_action_size, dtype=np.float32)
+    if phase == 0:
+        deployment[int(action["deploy"])] = 1.0
     return np.concatenate(
         [
             phase_one_hot,
-            np.asarray(encoded, dtype=np.float32),
+            deployment,
             np.asarray(action["model"], dtype=np.float32),
         ]
     )

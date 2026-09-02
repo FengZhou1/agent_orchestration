@@ -3,9 +3,9 @@ import torch
 
 from agent_orch.agents import PhaseRunningMoments, RNDModule
 from agent_orch.agents.structured_ppo import (
-    _combine_training_rewards,
+    _constrained_utility,
     _gae,
-    _update_lagrange_multiplier,
+    _update_lagrange_multipliers,
 )
 
 
@@ -40,19 +40,35 @@ def test_phase_running_moments_are_independent():
 
 
 def test_intrinsic_reward_is_added_after_lagrangian_penalty():
-    combined = _combine_training_rewards(
-        [0.2 - 2.0 * 0.1], np.asarray([3.0], dtype=np.float32), 0.01
+    external = _constrained_utility(
+        0.2,
+        np.asarray([0.1, 0.0, 0.0, 0.0]),
+        np.asarray([2.0, 0.0, 0.0, 0.0]),
+        np.zeros(4),
+        True,
     )
-    assert abs(combined[0] - 0.03) < 1.0e-8
+    combined = external + 0.01 * 3.0
+    assert abs(combined - 0.03) < 1.0e-8
 
 
-def test_lagrange_multiplier_moves_with_constraint_cost_and_is_bounded():
-    increased = _update_lagrange_multiplier(0.5, 1.0, 0.0, 0.1, 2.0)
-    decreased = _update_lagrange_multiplier(0.5, 0.0, 1.0, 0.1, 2.0)
-    capped = _update_lagrange_multiplier(1.9, 10.0, 0.0, 1.0, 2.0)
-    assert increased > 0.5
-    assert decreased < 0.5
-    assert capped == 2.0
+def test_vector_lagrange_update_keeps_constraint_classes_independent():
+    updated = _update_lagrange_multipliers(
+        np.asarray([0.5, 0.5, 0.5, 0.5]),
+        np.asarray([1.0, 0.0, 3.0, 0.0]),
+        np.asarray([0.0, 1.0, 1.0, 0.0]),
+        np.asarray([0.1, 0.2, 0.3, 0.4]),
+        np.asarray([2.0, 2.0, 1.0, 2.0]),
+    )
+    assert np.allclose(updated, [0.6, 0.3, 1.0, 0.5])
+
+
+def test_rnd_scaling_uses_standard_deviation_without_mean_centering():
+    moments = PhaseRunningMoments(1)
+    moments.update(np.asarray([1.0, 3.0]), np.asarray([0, 0]))
+    scaled = moments.scale_by_std(
+        np.asarray([2.0]), np.asarray([0]), clip_max=5.0
+    )
+    assert np.allclose(scaled, [2.0])
 
 
 def test_gae_uses_per_transition_phase_discounts():

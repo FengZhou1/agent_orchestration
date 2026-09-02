@@ -207,7 +207,7 @@ def main() -> int:
                     "models": env.layout.models,
                     "candidates": env.layout.candidates,
                     "servers": env.layout.servers,
-                    "deployment_widths": env.layout.deployment_widths,
+                    "deployment_targets": env.layout.deployment_targets,
                     "model_groups": env.layout.model_groups,
                 },
                 "seed": args.seed,
