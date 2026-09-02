@@ -16,15 +16,21 @@ class ActionDecoder:
             raise ValueError("Deployment violates a physical resource constraint")
 
     def validate_routing(
-        self, deployment: DeploymentDecision, routing: RoutingDecision, atol: float = 1e-7
+        self,
+        deployment: DeploymentDecision,
+        routing: RoutingDecision,
+        atol: float = 1e-7,
+        allow_unserved: bool = False,
     ) -> None:
+        any_active_model = any(deployment.llm_active.values())
         for app in self.scenario.applications.values():
             for ingress in app.ingress_rates:
                 model_sum = sum(
                     routing.model_share.get((app.id, ingress, model), 0.0)
                     for model in self.scenario.models
                 )
-                if abs(model_sum - 1.0) > atol:
+                expected_model_sum = 1.0 if any_active_model else 0.0
+                if abs(model_sum - expected_model_sum) > atol:
                     raise ValueError(f"Model shares do not sum to one for {app.id}@{ingress}")
                 for model in self.scenario.models:
                     model_share = routing.model_share.get((app.id, ingress, model), 0.0)
@@ -38,7 +44,8 @@ class ActionDecoder:
                             for candidate in self.scenario.candidates.values()
                             if candidate.model == model
                         )
-                        if abs(instance_sum - model_share) > atol:
+                        unrouted = allow_unserved and instance_sum <= atol
+                        if not unrouted and abs(instance_sum - model_share) > atol:
                             raise ValueError(
                                 f"LLM shares do not sum to model share for {app.id}:{node.id}:{model}"
                             )
@@ -61,7 +68,8 @@ class ActionDecoder:
                         routing.tool_route.get((app.id, source, target, u, v), 0.0)
                         for v in destinations
                     )
-                    if destinations and abs(route_sum - 1.0) > atol:
+                    unrouted = allow_unserved and route_sum <= atol
+                    if destinations and not unrouted and abs(route_sum - 1.0) > atol:
                         raise ValueError(
                             f"Tool route does not sum to one for {app.id}:{source}->{target}@{u}"
                         )
@@ -73,4 +81,3 @@ class ActionDecoder:
         if total <= 0.0:
             return {}
         return {key: value / total for key, value in positive.items() if value > 0.0}
-

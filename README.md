@@ -19,6 +19,14 @@ conda activate agent-orch
 python -m pip install -e .
 ```
 
+如需使用 NVIDIA GPU 训练策略网络和 RND 网络，可创建 CUDA 环境：
+
+```powershell
+conda env create -f environment-gpu.yml
+conda activate agent-orch-gpu
+python -m pip install -e .
+```
+
 ## 生成基准场景
 
 `toy.yaml` 仅用于冒烟测试。论文实验采用自动生成的 Abilene Main、GEANT Scale 和各类 Stress 场景。
@@ -30,7 +38,7 @@ python scripts/build_benchmark_scenarios.py
 python scripts/export_reference_catalogs.py
 ```
 
-固定公共轨迹版本并完成无状态服务测量后，可使用处理后的服务器联合记录和服务 profile 重新生成场景：
+固定基础设施数据版本并完成无状态服务测量后，可使用处理后的服务器联合记录和服务 profile 重新生成场景：
 
 ```powershell
 python scripts/build_benchmark_scenarios.py `
@@ -47,37 +55,35 @@ conda activate agent-orch
 agent-orch-sim run --scenario configs/toy.yaml --policy greedy --slots 10 --seed 7
 ```
 
-旧版人工突发模式仅作为显式压力实验保留：
-
-```powershell
-agent-orch-sim run --scenario configs/toy.yaml --policy greedy --slots 100 --seed 7 --synthetic-bursty
-```
-
 执行结构化 PPO 冒烟训练：
 
 ```powershell
 agent-orch-sim train --scenario configs/toy.yaml --updates 10 --rollout-steps 256
 ```
 
-使用 `--mode joint`、`--mode deploy` 或 `--mode route` 选择联合优化、仅部署优化或仅路由优化。默认采用约束 PPO；`--unconstrained` 用作消融，Potential Shaping 和 ICM 为可选对照：
+使用 `--mode joint`、`--mode deploy` 或 `--mode route` 选择联合优化、仅部署优化或仅路由优化。联合模式默认运行带拉格朗日约束和 RND 探索的 DTS-PPO-RND；`--exploration none` 关闭内在奖励，`--exploration icm` 和 Potential Shaping 仅作为显式对照：
 
 ```powershell
-agent-orch-sim train --scenario configs/toy.yaml --mode joint --icm
+agent-orch-sim train --scenario configs/toy.yaml --mode joint --exploration rnd
 ```
 
 运行多随机种子基线矩阵：
 
 ```powershell
-python scripts/run_baseline_matrix.py --scenario configs/toy.yaml --slots 600 --bursty
+python scripts/run_baseline_matrix.py --scenario configs/toy.yaml --slots 600
 ```
 
-运行多随机种子 PPO 结构与组件矩阵：
+运行 DTS-PPO-RND。默认仅执行随机种子 0 和联合算法，不展开消融矩阵；`--device auto` 在 CUDA 可用时选择 `cuda:0`，否则使用 CPU：
 
 ```powershell
-python scripts/run_rl_matrix.py --scenario configs/toy.yaml --updates 100 --rollout-steps 1024
+python scripts/run_rl_matrix.py `
+  --scenario configs/toy.yaml `
+  --updates 100 `
+  --rollout-steps 1024 `
+  --device auto
 ```
 
-矩阵实验会保存逐时隙指标、逐次实验汇总、模型检查点、训练历史以及软件和场景清单。运行完整矩阵前，可使用一个随机种子、一次更新和一种模式完成快速集成检查。默认的 `auto` 矩阵包括有约束和无约束的 Joint-PPO，以及 Potential Shaping 和 ICM 消融；仅部署和仅路由实验采用有约束 PPO。显式指定 `--variants` 时，将执行对应的笛卡尔积组合。
+训练时，终端进度条分别显示轨迹收集和 PPO 优化阶段。每个运行目录中的 `training_status.json` 持续覆盖当前进度、耗时和预计剩余时间，`training_history.jsonl` 在每次 PPO update 后立即追加训练指标；训练完成后仍会生成完整的 `training_history.json`。使用 `--no-progress` 可关闭终端进度条而保留在线文件。需要完整消融时，显式传入 `--seeds 0,1,2,3,4 --modes joint,deploy,route --variants auto`；Potential Shaping 与 ICM 可通过 `--modes joint --variants potential,icm` 运行。
 
 根据多随机种子汇总结果生成可复现的置信区间和配对显著性检验：
 
@@ -85,11 +91,11 @@ python scripts/run_rl_matrix.py --scenario configs/toy.yaml --updates 100 --roll
 python scripts/summarize_results.py `
   --input results/baseline_matrix.summary.parquet `
   --group-columns policy `
-  --metrics mean_cost,mean_latency_s,mean_goodput_rps,mean_quality,mean_slo_attainment `
+  --metrics mean_cost,mean_latency_s,mean_goodput_rps,mean_quality,mean_slo_attainment,mean_violations,violation_slot_fraction `
   --baseline static
 ```
 
-生成统一的固定负载统计、IEEE 风格 PDF/PNG 图、RL 消融图、收敛曲线、决策开销图和突发负载轨迹：
+生成统一的固定负载统计、IEEE 风格 PDF/PNG 图、RL 消融图、收敛曲线和决策开销图：
 
 ```powershell
 python scripts/plot_results.py `
@@ -118,18 +124,11 @@ python scripts/generate_composition_sweep.py `
   --family-sweep --output configs/generated/family_composition
 ```
 
-## 准备轨迹驱动的到达流量
+## JITServe 负载与泊松到达
 
-原始数据集不提交至代码仓库。使用以下命令将固定版本的 BurstGPT 转换为真实轨迹、分钟级非齐次泊松过程和齐次泊松过程，并划分训练集、验证集和测试集：
+四类应用的输入和输出 token 特征取自 JITServe Table 2。交互式检索、事务型调用、深度研究和编码 Agent 分别对应 Chatbot-Single、Deep Research-Single、Deep Research-Compound 和 Chatbot-Compound。每类应用的五个模板依次采用 P50、P50 与均值的几何中点、均值、均值与 P95 的几何中点及 P95；请求级 token 总量按 pattern flow 的节点访问概率分配到各 LLM 节点。
 
-```powershell
-python scripts/prepare_arrival_traces.py `
-  --input <BurstGPT.csv> --source burstgpt --source-version <release> `
-  --scenario configs/benchmarks/main_abilene.yaml `
-  --reference-capacity-rps <pinned-capacity>
-```
-
-输出目录包含输入、输出 token 配对审计表和数据清单，记录源文件校验和、处理命令、应用类别映射、随机种子、全局时间戳缩放和数据划分边界。生成 0.40、0.65、0.85 和 1.05 四档负载前，先计算固定参考部署的稳定容量：
+到达过程统一采用平稳泊松过程。分析型仿真直接将场景配置中的平均到达率作为排队模型的泊松强度，`--arrival-scale` 对全部强度作统一缩放，不将一秒内的离散请求计数反推为稳态到达率。Main 场景的基准总到达率为 0.045 request/s，负载实验采用 0.5、1、2 和 3 倍四档。先计算固定参考部署的稳定容量：
 
 ```powershell
 python scripts/estimate_reference_capacity.py `
@@ -143,21 +142,29 @@ python scripts/estimate_reference_capacity.py `
 python scripts/calibrate_slos.py `
   --scenario configs/benchmarks/main_abilene.yaml `
   --profile data/processed/llm_profile.csv `
-  --trace data/processed/arrivals/load_0p40/trace/validation.csv `
+  --arrival-scale 0.5 `
   --output configs/generated/main_abilene_slo.yaml
 ```
 
-运行轨迹驱动的基线矩阵：
+运行泊松到达下的基线矩阵：
 
 ```powershell
 python scripts/run_baseline_matrix.py `
   --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
-  --trace data/processed/arrivals/load_0p65/trace/test.csv `
   --profile data/processed/llm_profile.csv `
-  --arrival-mode trace
+  --arrival-scale 1.0 `
+  --seeds 0,1,2,3,4 `
+  --output results/baseline_main.parquet
 ```
 
-使用同一源轨迹并将 `--arrival-mode` 改为 `nhpp` 或 `poisson`，可执行受控的到达过程对照实验。RL 训练可分别通过 `--train-trace` 和 `--eval-trace` 指定训练轨迹与评估轨迹。
+仅绘制 baseline 结果：
+
+```powershell
+python scripts/plot_results.py `
+  --baseline-summary results/baseline_main.summary.parquet `
+  --output results/figures_baseline `
+  --analysis-output results/analysis_baseline
+```
 
 ## 准备和验证 LLM 性能 profile
 
@@ -181,4 +188,4 @@ python scripts/validate_llm_model.py `
 
 联合控制器在两个时间尺度上运行。每个部署周期开始时，带掩码的分类策略头生成完整部署方案，包括各 LLM 候选实例的二值部署决策和各无状态服务在服务器上的副本数。在后续物理时隙内，分组 Dirichlet 策略头决定应用模型比例；LLM 实例分配和无状态服务路由由已部署容量、当前利用率、分析式服务需求和网络传播时延共同确定。
 
-时隙效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。物理资源、队列、KV cache 和链路容量的超限程度作为独立约束代价返回。PPO 使用自适应拉格朗日乘子，因此目标权重仅表示运行偏好，不再兼任可行性惩罚系数。
+时隙效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。物理资源、队列、KV cache 和链路容量的超限程度作为独立约束代价返回。PPO 使用自适应拉格朗日乘子，因此目标权重仅表示运行偏好，不再兼任可行性惩罚系数。RND 对部署阶段和路由阶段分别维护奖励统计量，其权重随训练进度线性衰减；确定性评估仅使用外在系统目标。

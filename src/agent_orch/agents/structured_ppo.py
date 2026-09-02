@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import random
-from typing import Any
+from typing import Any, Callable, Literal
 
 import numpy as np
 import torch
@@ -10,7 +11,15 @@ from torch import nn
 from torch.distributions import Categorical, Dirichlet
 
 from agent_orch.envs import AgentOrchestrationEnv
+from .device import resolve_device
 from .icm import ICMModule, structured_action_vector
+from .rnd import PhaseRunningMoments, RNDModule
+
+
+PhaseCallback = Callable[[int, str], None]
+RolloutProgressCallback = Callable[[int, int], None]
+OptimizationProgressCallback = Callable[[int, int, int], None]
+UpdateCallback = Callable[[dict[str, float]], None]
 
 
 @dataclass(frozen=True)
@@ -30,6 +39,14 @@ class PPOConfig:
     lagrangian_learning_rate: float = 0.05
     initial_lagrange_multiplier: float = 0.0
     max_lagrange_multiplier: float = 50.0
+    exploration_mode: Literal["rnd", "none", "icm"] = "rnd"
+    rnd_feature_size: int = 64
+    rnd_learning_rate: float = 1.0e-4
+    rnd_initial_weight: float = 0.01
+    rnd_final_weight: float = 0.0
+    rnd_reward_clip: float = 5.0
+    rnd_loss_coefficient: float = 1.0
+    icm_scale: float = 0.01
 
 
 class StructuredActorCritic(nn.Module):
@@ -138,12 +155,18 @@ def train_ppo(
     seed: int = 0,
     config: PPOConfig = PPOConfig(),
     device: str = "cpu",
-    use_icm: bool = False,
-    icm_scale: float = 0.01,
+    on_phase: PhaseCallback | None = None,
+    on_rollout_step: RolloutProgressCallback | None = None,
+    on_optimization_step: OptimizationProgressCallback | None = None,
+    on_update: UpdateCallback | None = None,
 ) -> tuple[StructuredActorCritic, list[dict[str, float]]]:
+    device = resolve_device(device)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if device.startswith("cuda:"):
+        torch.cuda.manual_seed_all(seed)
+    env.gamma = config.gamma
     policy = StructuredActorCritic(env, config).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate)
     action_vector_size = (
@@ -153,15 +176,36 @@ def train_ppo(
     )
     icm = (
         ICMModule(env.observation_space["features"].shape[0], action_vector_size).to(device)
-        if use_icm
+        if config.exploration_mode == "icm"
         else None
     )
     icm_optimizer = torch.optim.Adam(icm.parameters(), lr=config.learning_rate) if icm else None
+    rnd = (
+        RNDModule(
+            env.observation_space["features"].shape[0] + 2,
+            config.hidden_size,
+            config.rnd_feature_size,
+        ).to(device)
+        if config.exploration_mode == "rnd"
+        else None
+    )
+    rnd_optimizer = (
+        torch.optim.Adam(rnd.predictor.parameters(), lr=config.rnd_learning_rate)
+        if rnd is not None
+        else None
+    )
+    rnd_moments = PhaseRunningMoments(2)
     observation, _ = env.reset(seed=seed)
     history: list[dict[str, float]] = []
     lagrange_multiplier = config.initial_lagrange_multiplier
+    episode_counter = 0
+    optimizer_steps_per_update = config.update_epochs * math.ceil(
+        rollout_steps / config.minibatch_size
+    )
 
     for update in range(updates):
+        if on_phase is not None:
+            on_phase(update, "collecting")
         observations: list[dict[str, Any]] = []
         next_observations: list[dict[str, Any]] = []
         actions: list[dict[str, Any]] = []
@@ -172,7 +216,7 @@ def train_ppo(
         discounts: list[float] = []
         terminals: list[float] = []
 
-        for _ in range(rollout_steps):
+        for rollout_step in range(1, rollout_steps + 1):
             action, log_prob, value = policy.act(observation, device=device)
             next_observation, reward, terminated, truncated, info = env.step(action)
             observations.append(observation)
@@ -189,20 +233,33 @@ def train_ppo(
             terminals.append(float(terminated or truncated))
             observation = next_observation
             if terminated or truncated:
-                observation, _ = env.reset(seed=seed + update + 1)
+                episode_counter += 1
+                observation, _ = env.reset(seed=seed + episode_counter)
+            if on_rollout_step is not None:
+                on_rollout_step(update, rollout_step)
 
-        intrinsic_mean = 0.0
         utility_rewards = list(rewards)
-        action_vectors = np.stack(
-            [
-                structured_action_vector(
-                    action,
-                    int(obs["action_type"]),
-                    env.layout.deployment_widths,
-                )
-                for obs, action in zip(observations, actions)
-            ]
+        phase_array = np.asarray(
+            [int(obs["action_type"]) for obs in observations], dtype=np.int64
         )
+        intrinsic_raw = np.zeros(len(observations), dtype=np.float32)
+        intrinsic_normalized = np.zeros(len(observations), dtype=np.float32)
+        current_rnd_states = None
+        next_rnd_states = None
+        feature_tensor = None
+        next_feature_tensor = None
+        action_vector_tensor = None
+
+        if rnd is not None:
+            current_rnd_states = _rnd_state_inputs(observations, device)
+            next_rnd_states = _rnd_state_inputs(next_observations, device)
+            intrinsic_raw = rnd.intrinsic_reward(next_rnd_states).cpu().numpy()
+            intrinsic_normalized = rnd_moments.normalize(
+                intrinsic_raw,
+                phase_array,
+                config.rnd_reward_clip,
+            )
+            rnd_moments.update(intrinsic_raw, phase_array)
         if icm is not None:
             feature_tensor = torch.as_tensor(
                 np.stack([obs["features"] for obs in observations]),
@@ -214,24 +271,36 @@ def train_ppo(
                 dtype=torch.float32,
                 device=device,
             )
-            action_vector_tensor = torch.as_tensor(
-                action_vectors, dtype=torch.float32, device=device
+            action_vectors = np.stack(
+                [
+                    structured_action_vector(
+                        action,
+                        int(obs["action_type"]),
+                        env.layout.deployment_widths,
+                    )
+                    for obs, action in zip(observations, actions)
+                ]
             )
+            action_vector_tensor = torch.as_tensor(action_vectors, dtype=torch.float32, device=device)
             intrinsic = icm.intrinsic_reward(
                 feature_tensor, action_vector_tensor, next_feature_tensor
             )
-            intrinsic_mean = float(intrinsic.mean().item())
-            rewards = [
-                reward + icm_scale * float(intrinsic[index].item())
-                for index, reward in enumerate(rewards)
-            ]
-        if config.constrained:
-            rewards = [
-                utility
-                - lagrange_multiplier
-                * (constraint - config.constraint_limit)
-                for utility, constraint in zip(utility_rewards, constraint_costs)
-            ]
+            intrinsic_raw = intrinsic.cpu().numpy()
+            intrinsic_normalized = intrinsic_raw.copy()
+
+        lagrangian_rewards = _lagrangian_rewards(
+            utility_rewards,
+            constraint_costs,
+            lagrange_multiplier,
+            config.constraint_limit,
+            config.constrained,
+        )
+        exploration_weight = _exploration_weight(config, update, updates)
+        if config.exploration_mode == "icm":
+            exploration_weight = config.icm_scale
+        rewards = _combine_training_rewards(
+            lagrangian_rewards, intrinsic_normalized, exploration_weight
+        )
         with torch.no_grad():
             bootstrap = float(
                 policy.value(_observation_to_tensors(observation, device, False)).item()
@@ -245,7 +314,9 @@ def train_ppo(
             config.gae_lambda,
         )
         advantages = advantages.to(device)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = (advantages - advantages.mean()) / (
+            advantages.std(unbiased=False) + 1e-8
+        )
         old_log_probs = torch.as_tensor(log_probs, dtype=torch.float32, device=device)
         returns_tensor = torch.as_tensor(returns, dtype=torch.float32, device=device)
         observations_tensor = _stack_observations(observations, device)
@@ -253,6 +324,10 @@ def train_ppo(
         indices = np.arange(rollout_steps)
         losses = []
         icm_losses = []
+        rnd_losses = []
+        optimization_step = 0
+        if on_phase is not None:
+            on_phase(update, "optimizing")
         for _ in range(config.update_epochs):
             np.random.shuffle(indices)
             for start in range(0, rollout_steps, config.minibatch_size):
@@ -283,6 +358,9 @@ def train_ppo(
                 optimizer.step()
                 losses.append(float(loss.item()))
                 if icm is not None and icm_optimizer is not None:
+                    assert feature_tensor is not None
+                    assert next_feature_tensor is not None
+                    assert action_vector_tensor is not None
                     feature_batch = feature_tensor[batch_t]
                     next_feature_batch = next_feature_tensor[batch_t]
                     action_vector_batch = action_vector_tensor[batch_t]
@@ -294,32 +372,131 @@ def train_ppo(
                     nn.utils.clip_grad_norm_(icm.parameters(), config.max_grad_norm)
                     icm_optimizer.step()
                     icm_losses.append(float(icm_loss.item()))
-        history.append(
-            {
-                "update": float(update),
-                "mean_reward": float(np.mean(rewards)),
-                "mean_utility": float(np.mean(utility_rewards)),
-                "mean_constraint_cost": float(np.mean(constraint_costs)),
-                "lagrange_multiplier": float(lagrange_multiplier),
-                "mean_loss": float(np.mean(losses)),
-                "routing_steps": float(
-                    sum(int(obs["action_type"] == AgentOrchestrationEnv.ROUTING) for obs in observations)
-                ),
-                "mean_intrinsic_reward": intrinsic_mean,
-                "mean_icm_loss": float(np.mean(icm_losses)) if icm_losses else 0.0,
-            }
-        )
+                if rnd is not None and rnd_optimizer is not None:
+                    assert current_rnd_states is not None
+                    rnd_loss = (
+                        config.rnd_loss_coefficient
+                        * rnd.loss(current_rnd_states[batch_t])
+                    )
+                    rnd_optimizer.zero_grad()
+                    rnd_loss.backward()
+                    nn.utils.clip_grad_norm_(
+                        rnd.predictor.parameters(), config.max_grad_norm
+                    )
+                    rnd_optimizer.step()
+                    rnd_losses.append(float(rnd_loss.item()))
+                optimization_step += 1
+                if on_optimization_step is not None:
+                    on_optimization_step(
+                        update, optimization_step, optimizer_steps_per_update
+                    )
+
+        next_lagrange_multiplier = lagrange_multiplier
         if config.constrained:
-            lagrange_multiplier = float(
-                np.clip(
-                    lagrange_multiplier
-                    + config.lagrangian_learning_rate
-                    * (float(np.mean(constraint_costs)) - config.constraint_limit),
-                    0.0,
-                    config.max_lagrange_multiplier,
-                )
+            next_lagrange_multiplier = _update_lagrange_multiplier(
+                lagrange_multiplier,
+                float(np.mean(constraint_costs)),
+                config.constraint_limit,
+                config.lagrangian_learning_rate,
+                config.max_lagrange_multiplier,
             )
+        record = {
+            "update": float(update),
+            "mean_reward": float(np.mean(rewards)),
+            "mean_utility": float(np.mean(utility_rewards)),
+            "mean_lagrangian_reward": float(np.mean(lagrangian_rewards)),
+            "mean_constraint_cost": float(np.mean(constraint_costs)),
+            "lagrange_multiplier": float(lagrange_multiplier),
+            "next_lagrange_multiplier": float(next_lagrange_multiplier),
+            "mean_loss": float(np.mean(losses)),
+            "deployment_steps": float(
+                sum(
+                    phase == AgentOrchestrationEnv.DEPLOYMENT
+                    for phase in phase_array
+                )
+            ),
+            "routing_steps": float(
+                sum(phase == AgentOrchestrationEnv.ROUTING for phase in phase_array)
+            ),
+            "exploration_weight": float(exploration_weight),
+            "mean_intrinsic_reward": float(np.mean(intrinsic_normalized)),
+            "mean_raw_intrinsic_reward": float(np.mean(intrinsic_raw)),
+            "mean_deployment_rnd_reward": _phase_mean(
+                intrinsic_normalized,
+                phase_array,
+                AgentOrchestrationEnv.DEPLOYMENT,
+            ),
+            "mean_routing_rnd_reward": _phase_mean(
+                intrinsic_normalized,
+                phase_array,
+                AgentOrchestrationEnv.ROUTING,
+            ),
+            "mean_rnd_loss": float(np.mean(rnd_losses)) if rnd_losses else 0.0,
+            "mean_icm_loss": float(np.mean(icm_losses)) if icm_losses else 0.0,
+        }
+        history.append(record)
+        if on_update is not None:
+            on_update(record)
+        lagrange_multiplier = next_lagrange_multiplier
     return policy, history
+
+
+def _exploration_weight(config: PPOConfig, update: int, updates: int) -> float:
+    if config.exploration_mode != "rnd":
+        return 0.0
+    progress = update / (updates - 1) if updates > 1 else 0.0
+    return float(
+        config.rnd_initial_weight
+        + progress * (config.rnd_final_weight - config.rnd_initial_weight)
+    )
+
+
+def _lagrangian_rewards(
+    utilities: list[float],
+    constraint_costs: list[float],
+    multiplier: float,
+    constraint_limit: float,
+    constrained: bool,
+) -> list[float]:
+    if not constrained:
+        return list(utilities)
+    return [
+        utility - multiplier * (constraint - constraint_limit)
+        for utility, constraint in zip(utilities, constraint_costs)
+    ]
+
+
+def _combine_training_rewards(
+    lagrangian_rewards: list[float],
+    intrinsic_rewards: np.ndarray,
+    exploration_weight: float,
+) -> list[float]:
+    return [
+        reward + exploration_weight * float(intrinsic_rewards[index])
+        for index, reward in enumerate(lagrangian_rewards)
+    ]
+
+
+def _update_lagrange_multiplier(
+    multiplier: float,
+    mean_constraint_cost: float,
+    constraint_limit: float,
+    learning_rate: float,
+    maximum: float,
+) -> float:
+    return float(
+        np.clip(
+            multiplier
+            + learning_rate * (mean_constraint_cost - constraint_limit),
+            0.0,
+            maximum,
+        )
+    )
+
+
+def _phase_mean(values: np.ndarray, phases: np.ndarray, phase: int) -> float:
+    selected = values[phases == phase]
+    return float(np.mean(selected)) if len(selected) else 0.0
 
 
 def _concentrations(raw: torch.Tensor) -> torch.Tensor:
@@ -431,6 +608,23 @@ def _observation_to_tensors(
     if batched:
         return result
     return result
+
+
+def _rnd_state_inputs(
+    observations: list[dict[str, Any]], device: torch.device | str
+) -> torch.Tensor:
+    features = torch.as_tensor(
+        np.stack([observation["features"] for observation in observations]),
+        dtype=torch.float32,
+        device=device,
+    )
+    phases = torch.as_tensor(
+        [observation["action_type"] for observation in observations],
+        dtype=torch.long,
+        device=device,
+    )
+    phase_encoding = torch.nn.functional.one_hot(phases, num_classes=2).float()
+    return torch.cat([features, phase_encoding], dim=-1)
 
 
 def _stack_observations(

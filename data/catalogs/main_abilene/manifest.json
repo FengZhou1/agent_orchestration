@@ -1,13 +1,13 @@
 {
   "artifact_type": "reference-catalog-bundle",
-  "generated_at_utc": "2026-08-31T16:59:04.041404+00:00",
+  "generated_at_utc": "2026-09-01T10:59:53.844666+00:00",
   "license": "See each source entry in scenario metadata",
   "parameters": {
     "data_sources": {
       "arrivals": {
-        "name": "BurstGPT v2",
-        "role": "request timestamps and burst structure",
-        "url": "https://github.com/HPMLL/BurstGPT"
+        "name": "stationary Poisson arrivals",
+        "role": "parameterized application request rates and load sweeps",
+        "url": "docs/experiment_protocol.md"
       },
       "infrastructure": {
         "name": "Alibaba GPU Trace v2026",
@@ -25,9 +25,9 @@
         "url": "https://github.com/alibaba/clusterdata/tree/master/cluster-trace-microservices-v2021"
       },
       "tokens": {
-        "name": "TraceLab v2 and Azure LLM Inference Trace 2024",
-        "role": "paired input-output token features",
-        "url": "https://tracelab.cs.washington.edu/"
+        "name": "JITServe Table 2",
+        "role": "application-conditioned input and output token statistics",
+        "url": "https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf"
       },
       "workflows": {
         "name": "TraceLab v2 and BFCL V3/V4",
@@ -48,9 +48,9 @@
   },
   "preprocessing_command": "python scripts/export_reference_catalogs.py --scenario C:\\Users\\01\\Desktop\\agent\\experiments\\agent_orchestration\\configs\\benchmarks\\main_abilene.yaml",
   "random_seed": 2026,
-  "source_checksum_sha256": "7e9bd7aa9d79dd9c1a34ca326562ff55eab25a5618791eeec8d7661029cb63ed",
+  "source_checksum_sha256": "825f2f7f79d13eb329f1debb9fb2e650b6dce357562168251cb17ba94e2b7d53",
   "source_name": "compiled benchmark scenario",
   "source_url": "https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2026",
-  "source_version": "deb8f6c1c7303aead393505515a92ec6c8ebfef29d0a8e5eb26590611daddd4b",
+  "source_version": "6d9488f927fffede8cb2f5b2906782d04e0349b9c48ac9d797152e051325a547",
   "split_boundaries": {}
 }

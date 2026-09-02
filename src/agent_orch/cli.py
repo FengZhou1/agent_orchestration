@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
-from statistics import mean
 
 import torch
 
-from agent_orch.agents import PPOConfig, train_ppo
+from agent_orch.agents import (
+    PPOConfig,
+    TrainingProgressReporter,
+    device_metadata,
+    resolve_device,
+    train_ppo,
+)
 from agent_orch.action_decoder import ActionDecoder
 from agent_orch.backends import ProfileBackend
 from agent_orch.baselines import make_policy
 from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnlyEnv
+from agent_orch.metrics import summarize_slot_metrics
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator.core import Simulator, metrics_to_dict
 from agent_orch.workload import ArrivalTrace
@@ -31,14 +38,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--slots", type=int, default=10)
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--output", default="results")
-    run.add_argument("--trace")
     run.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
-    run.add_argument(
-        "--arrival-mode",
-        choices=["trace", "nhpp", "poisson", "synthetic-stress"],
-        default="trace",
-    )
-    run.add_argument("--synthetic-bursty", action="store_true")
+    run.add_argument("--arrival-scale", type=float, default=1.0)
     train = subparsers.add_parser("train")
     train.add_argument("--scenario", required=True)
     train.add_argument("--updates", type=int, default=10)
@@ -46,41 +47,32 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--max-slots", type=int, default=600)
     train.add_argument("--seed", type=int, default=7)
     train.add_argument("--potential-shaping", action="store_true")
-    train.add_argument("--icm", action="store_true")
+    train.add_argument(
+        "--exploration", choices=["rnd", "none", "icm"], default="rnd"
+    )
     train.add_argument("--unconstrained", action="store_true")
     train.add_argument("--mode", choices=["joint", "deploy", "route"], default="joint")
     train.add_argument("--output", default="checkpoints")
-    train.add_argument("--trace")
     train.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
+    train.add_argument("--arrival-scale", type=float, default=1.0)
     train.add_argument(
-        "--arrival-mode",
-        choices=["trace", "nhpp", "poisson", "synthetic-stress"],
-        default="trace",
+        "--device",
+        default="auto",
+        help="training device: auto, cpu, cuda, or cuda:<index>",
     )
+    train.add_argument("--status-interval-steps", type=int, default=32)
+    train.add_argument("--no-progress", action="store_true")
     return parser
 
 
 def _load_arrivals(
     scenario,
-    trace_path: str | None,
-    mode: str,
     slots: int,
-    seed: int,
-) -> ArrivalTrace | None:
-    if mode == "synthetic-stress":
-        return ArrivalTrace.synthetic_bursty(scenario, slots, seed)
-    if trace_path is None:
-        if mode != "trace":
-            raise ValueError(f"Arrival mode {mode} requires --trace")
-        return None
-    source = ArrivalTrace.from_csv(trace_path)
-    if mode == "trace":
-        return source
-    if mode == "nhpp":
-        return ArrivalTrace.nhpp_control(scenario, source, slots, seed)
-    if mode == "poisson":
-        return ArrivalTrace.homogeneous_poisson(scenario, source, slots, seed)
-    raise ValueError(f"Unknown arrival mode {mode}")
+    rate_scale: float,
+) -> ArrivalTrace:
+    return ArrivalTrace.stationary_poisson_intensity(
+        scenario, slots, rate_scale=rate_scale
+    )
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -88,9 +80,8 @@ def _run(args: argparse.Namespace) -> int:
     scenario = ScenarioLoader.load(scenario_path)
     profile = ProfileBackend.from_csv(args.profile) if args.profile else None
     simulator = Simulator(scenario, llm_profile_backend=profile)
-    arrival_mode = "synthetic-stress" if args.synthetic_bursty else args.arrival_mode
     simulator.set_arrival_trace(
-        _load_arrivals(scenario, args.trace, arrival_mode, args.slots, args.seed)
+        _load_arrivals(scenario, args.slots, args.arrival_scale)
     )
     simulator.reset(args.seed)
     policy = make_policy(args.policy, scenario, args.seed)
@@ -120,8 +111,8 @@ def _run(args: argparse.Namespace) -> int:
         "policy": args.policy,
         "seed": args.seed,
         "slots": args.slots,
-        "arrival_mode": arrival_mode,
-        "trace": str(Path(args.trace).resolve()) if args.trace else None,
+        "arrival_process": "stationary_poisson_intensity",
+        "arrival_scale": args.arrival_scale,
         "profile": str(Path(args.profile).resolve()) if args.profile else None,
     }
     (output_dir / "manifest.json").write_text(
@@ -130,11 +121,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     summary = {
         "run_id": run_id,
-        "mean_cost": mean(row["cost"] for row in records),
-        "mean_latency_s": mean(row["mean_latency_s"] for row in records),
-        "mean_goodput_rps": mean(row["goodput_rps"] for row in records),
-        "mean_quality": mean(row["quality"] for row in records),
-        "mean_slo_attainment": mean(row["slo_attainment"] for row in records),
+        **summarize_slot_metrics(records),
         "output": str(output_dir),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
@@ -146,16 +133,16 @@ def main() -> int:
     if args.command == "run":
         return _run(args)
     if args.command == "train":
-        if args.potential_shaping and args.icm:
-            raise ValueError("Use either potential shaping or ICM in one run, not both")
+        if args.potential_shaping and args.exploration != "none":
+            raise ValueError(
+                "Potential shaping is a standalone comparison; use --exploration none"
+            )
         scenario = ScenarioLoader.load(args.scenario)
         profile = ProfileBackend.from_csv(args.profile) if args.profile else None
         arrival_trace = _load_arrivals(
             scenario,
-            args.trace,
-            args.arrival_mode,
             args.max_slots,
-            args.seed,
+            args.arrival_scale,
         )
         env_class = {
             "joint": AgentOrchestrationEnv,
@@ -170,25 +157,65 @@ def main() -> int:
             arrival_trace=arrival_trace,
             llm_profile_backend=profile,
         )
-        policy, history = train_ppo(
-            env,
-            updates=args.updates,
-            rollout_steps=args.rollout_steps,
-            seed=args.seed,
-            config=PPOConfig(constrained=not args.unconstrained),
-            use_icm=args.icm,
+        config = PPOConfig(
+            constrained=not args.unconstrained,
+            exploration_mode=args.exploration,
         )
         output = Path(args.output).resolve()
         output.mkdir(parents=True, exist_ok=True)
         base = "unconstrained" if args.unconstrained else "constrained"
-        suffix = (
-            f"{base}-potential"
-            if args.potential_shaping
-            else (f"{base}-icm" if args.icm else base)
+        suffix = f"{base}-potential" if args.potential_shaping else f"{base}-{args.exploration}"
+        run_id = f"ppo-{scenario.id}-{args.mode}-{suffix}-s{args.seed}"
+        resolved_device = resolve_device(args.device)
+        hardware = device_metadata(args.device, resolved_device)
+        print(f"Starting {run_id} on {resolved_device}", flush=True)
+        reporter = TrainingProgressReporter(
+            run_id=run_id,
+            output_dir=output,
+            updates=args.updates,
+            rollout_steps=args.rollout_steps,
+            update_epochs=config.update_epochs,
+            minibatch_size=config.minibatch_size,
+            device=resolved_device,
+            status_interval_steps=args.status_interval_steps,
+            show_progress=not args.no_progress,
+            status_filename=f"{run_id}.training_status.json",
+            history_filename=f"{run_id}.training_history.jsonl",
         )
-        checkpoint = output / f"ppo-{scenario.id}-{args.mode}-{suffix}-s{args.seed}.pt"
-        torch.save(policy.state_dict(), checkpoint)
-        (output / f"ppo-{scenario.id}-{args.mode}-{suffix}-s{args.seed}.json").write_text(
+        with reporter:
+            policy, history = train_ppo(
+                env,
+                updates=args.updates,
+                rollout_steps=args.rollout_steps,
+                seed=args.seed,
+                config=config,
+                device=resolved_device,
+                on_phase=reporter.on_phase,
+                on_rollout_step=reporter.on_rollout_step,
+                on_optimization_step=reporter.on_optimization_step,
+                on_update=reporter.on_update,
+            )
+        checkpoint = output / f"{run_id}.pt"
+        torch.save(
+            {
+                "policy_state_dict": {
+                    key: value.detach().cpu()
+                    for key, value in policy.state_dict().items()
+                },
+                "ppo_config": asdict(config),
+                "layout_signature": {
+                    "models": env.layout.models,
+                    "candidates": env.layout.candidates,
+                    "servers": env.layout.servers,
+                    "deployment_widths": env.layout.deployment_widths,
+                    "model_groups": env.layout.model_groups,
+                },
+                "seed": args.seed,
+                "device": hardware,
+            },
+            checkpoint,
+        )
+        (output / f"{run_id}.json").write_text(
             json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(json.dumps({"checkpoint": str(checkpoint), "history": history}, indent=2))

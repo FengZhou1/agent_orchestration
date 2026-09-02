@@ -1,0 +1,5 @@
+family,source_workload,source_request_type,input_mean,input_std,input_p50,input_p95,output_mean,output_std,output_p50,output_p95
+interactive_retrieval,Chatbot,Single,93,244,27,391,318,313,225,1024
+transactional_tool,Deep Research,Single,1911,2781,403,7573,534,644,410,1544
+deep_research,Deep Research,Compound,12223,8407,10807,29282,3541,2370,3148,7525
+coding_agent,Chatbot,Compound,1300,912,1097,2767,4458,1176,4417,6452

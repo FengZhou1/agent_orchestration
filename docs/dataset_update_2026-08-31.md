@@ -8,9 +8,9 @@
 
 | 参数层次 | 主要数据源 | 在仿真中的用途 |
 |---|---|---|
-| 请求到达 | BurstGPT v2 | 秒级到达时间、周期性和突发结构 |
-| 外部泛化 | Azure LLM Inference Trace 2024 | 独立时间窗口和输入—输出 token 配对样本 |
-| Agent 工作流 | TraceLab v2 | LLM 步骤、无状态服务调用、并行调用和 token 特征 |
+| 请求到达 | 参数化平稳泊松过程 | 将场景平均到达率和负载缩放系数形成的泊松强度输入分析型排队模型 |
+| LLM 请求特征 | JITServe Table 2 | 四类 Single/Compound 工作负载的输入、输出 token 统计 |
+| Agent 工作流 | TraceLab v2 | LLM 步骤、无状态服务调用和并行调用结构 |
 | 调用质量 | BFCL V3/V4 | 多步、并行和可执行函数调用任务，以及应用相关质量得分 |
 | 无状态服务结构 | Alibaba Microservices v2021 | 调用图深度、扇出、复用和调用率分布 |
 | 无状态服务性能 | DeathStarBench 或本地轻量服务 | 低负载处理时间、SCV、稳定吞吐和接口数据量 |
@@ -30,7 +30,7 @@ Mooncake 仅用于前缀缓存扩展实验。当前主实验不显式优化缓�
 - `configs/benchmarks/scale_geant.yaml`：22 个物理节点、50 个应用模板和 8 类无状态服务；
 - `configs/benchmarks/stress_*.yaml`：链路容量减半、服务能力减半和 GPU 不可用等压力场景；
 - `data/catalogs/main_abilene/`：基础设施、工作流、无状态服务及 LLM profile 请求网格；
-- `scripts/prepare_arrival_traces.py`：BurstGPT/Azure 轨迹规范化、应用映射、全局时间缩放和 60/20/20 数据划分；
+- `agent_orch.workload.ArrivalTrace.stationary_poisson_intensity`：根据场景平均到达率和负载缩放系数生成分析型仿真使用的平稳泊松强度；
 - `scripts/prepare_llm_profiles.py`：LLMServingSim/vLLM 输出规范化和留出点插值验证；
 - `scripts/prepare_service_profiles.py`：根据低负载测量计算处理时间均值、服务时间 SCV 和稳定处理率；
 - `scripts/prepare_infrastructure_catalog.py`：从 Alibaba GPU server-hour 数据中联合抽取 A10、L20 和 H20 服务器；

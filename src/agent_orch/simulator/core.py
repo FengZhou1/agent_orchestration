@@ -10,6 +10,7 @@ from agent_orch.performance import AnalyticalBackend
 from agent_orch.performance.workflow import WorkflowEvaluator
 from agent_orch.schema.models import (
     DeploymentDecision,
+    NodeType,
     RoutingDecision,
     Scenario,
     SlotMetrics,
@@ -65,9 +66,12 @@ class Simulator:
         routing: RoutingDecision,
     ) -> Transition:
         self.decoder.validate_deployment(deployment)
-        self.decoder.validate_routing(deployment, routing)
+        self.decoder.validate_routing(deployment, routing, allow_unserved=True)
         arrival_rates = self.current_arrival_rates()
         analytical = self.backend.evaluate(deployment, routing, arrival_rates)
+        analytical.violations.extend(
+            self._routing_unserved_violations(deployment, routing, arrival_rates)
+        )
         workflow = self.workflow.evaluate(
             deployment, routing, analytical, arrival_rates
         )
@@ -112,6 +116,63 @@ class Simulator:
             reward_components=reward_components,
             metrics=metrics,
         )
+
+    def _routing_unserved_violations(
+        self,
+        deployment: DeploymentDecision,
+        routing: RoutingDecision,
+        arrival_rates: dict[tuple[str, str], float],
+    ) -> list[str]:
+        violations: list[str] = []
+        for app in self.scenario.applications.values():
+            service_edges = {
+                edge
+                for flow in app.pattern_flows
+                for edge in flow.edges
+                if app.nodes[edge[1]].type is NodeType.TOOL
+            }
+            for ingress in app.ingress_rates:
+                if arrival_rates.get((app.id, ingress), 0.0) <= 0.0:
+                    continue
+                model_sum = sum(
+                    routing.model_share.get((app.id, ingress, model), 0.0)
+                    for model in self.scenario.models
+                )
+                if model_sum < 1.0 - 1.0e-7:
+                    violations.append(f"llm_unserved:{app.id}@{ingress}")
+                for node in app.nodes.values():
+                    if node.type is not NodeType.LLM:
+                        continue
+                    for model in self.scenario.models:
+                        requested = routing.model_share.get(
+                            (app.id, ingress, model), 0.0
+                        )
+                        if requested <= 1.0e-12:
+                            continue
+                        routed = sum(
+                            routing.llm_share.get(
+                                (app.id, ingress, node.id, candidate.id), 0.0
+                            )
+                            for candidate in self.scenario.candidates.values()
+                            if candidate.model == model
+                        )
+                        if routed < requested - 1.0e-7:
+                            violations.append(
+                                f"llm_unserved:{app.id}:{node.id}:{model}"
+                            )
+            for source, target in service_edges:
+                service_id = app.nodes[target].tool or ""
+                replicas = sum(
+                    deployment.tool_replicas.get((service_id, server), 0)
+                    for server in self.scenario.servers
+                )
+                has_route = any(
+                    key[0] == app.id and key[1] == source and key[2] == target
+                    for key in routing.tool_route
+                )
+                if replicas <= 0 or not has_route:
+                    violations.append(f"service_unserved:{app.id}:{source}->{target}")
+        return violations
 
     def observation(
         self,

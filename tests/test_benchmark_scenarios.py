@@ -45,7 +45,35 @@ def test_main_scenario_has_balanced_families_and_length_classes():
         )
         for family in family_counts
     }
-    assert all(rate == pytest.approx(0.015) for rate in family_rates.values())
+    assert all(rate == pytest.approx(0.01125) for rate in family_rates.values())
+
+
+def test_jitserve_table2_token_anchors_are_applied_to_each_family():
+    scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
+    expected = {
+        "interactive_retrieval": (93, 318),
+        "transactional_tool": (1911, 534),
+        "deep_research": (12223, 3541),
+        "coding_agent": (1300, 4458),
+    }
+    for family, (target_input, target_output) in expected.items():
+        application = next(
+            app
+            for app in scenario.applications.values()
+            if app.family == family and app.template_id.endswith(":3")
+        )
+        prompt = sum(
+            application.visit_probability(node.id) * node.prompt_tokens["qwen2.5-14b"]
+            for node in application.nodes.values()
+            if node.type.value == "llm"
+        )
+        output = sum(
+            application.visit_probability(node.id) * node.output_tokens["qwen2.5-14b"]
+            for node in application.nodes.values()
+            if node.type.value == "llm"
+        )
+        assert prompt == pytest.approx(target_input, abs=3.0)
+        assert output == pytest.approx(target_output, abs=3.0)
 
 
 def test_main_default_workload_is_stable_for_reference_deployment():

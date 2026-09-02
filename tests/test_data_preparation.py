@@ -3,86 +3,8 @@ from runpy import run_path
 import pandas as pd
 import pytest
 
-from agent_orch.schema.loader import ScenarioLoader
-
-
-ARRIVALS = run_path("scripts/prepare_arrival_traces.py", run_name="test_module")
 SERVICES = run_path("scripts/prepare_service_profiles.py", run_name="test_module")
 LLM_PROFILES = run_path("scripts/prepare_llm_profiles.py", run_name="test_module")
-
-
-def test_arrival_normalization_preserves_token_pairs_and_assigns_catalog_apps(tmp_path):
-    frame = pd.DataFrame(
-        {
-            "Timestamp": [0.0, 1.0, 2.0, 61.0, 62.0, 63.0],
-            "Session ID": ["a", "a", "b", "c", "d", "e"],
-            "Request tokens": [100, 120, 500, 1000, 3000, 8000],
-            "Response tokens": [10, 12, 50, 100, 300, 800],
-        }
-    )
-    normalized = ARRIVALS["normalize_events"](frame, "burstgpt")
-    original_pairs = set(zip(frame["Request tokens"], frame["Response tokens"]))
-    normalized_pairs = set(zip(normalized["prompt_tokens"], normalized["output_tokens"]))
-    assert normalized_pairs == original_pairs
-    scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
-    mix = ARRIVALS["_parse_family_mix"]("balanced", scenario)
-    assigned = ARRIVALS["assign_applications"](normalized, scenario, mix, 2026)
-    assert set(assigned["application"]) <= set(scenario.applications)
-    trace = ARRIVALS["aggregate_trace"](assigned, scenario)
-    assert sum(sum(values.values()) for values in trace.rates.values()) == len(frame)
-    assert trace.rates[3] == {}
-    dense_path = tmp_path / "arrivals.csv"
-    trace.to_frame(scenario).to_csv(dense_path, index=False)
-    from agent_orch.workload import ArrivalTrace
-    round_trip = ArrivalTrace.from_csv(dense_path)
-    assert round_trip.at(3, scenario) == {
-        (app.id, ingress): 0.0
-        for app in scenario.applications.values()
-        for ingress in app.ingress_rates
-    }
-    scaled, scaled_slots = ARRIVALS["time_scaled_trace"](assigned, scenario, 2.0)
-    assert scaled_slots < max(trace.rates) + 1
-    assert sum(sum(values.values()) for values in scaled.rates.values()) == len(frame)
-
-
-def test_multiple_burstgpt_files_keep_one_global_timeline(tmp_path):
-    columns = {
-        "Model": ["ChatGPT", "GPT-4"],
-        "Request tokens": [100, 200],
-        "Response tokens": [10, 20],
-        "Total tokens": [110, 220],
-        "Log Type": ["API log", "Conversation log"],
-    }
-    first = pd.DataFrame({"Timestamp": [10.0, 20.0], **columns})
-    second = pd.DataFrame({"Timestamp": [100.0, 120.0], **columns})
-    first_path = tmp_path / "first.csv"
-    second_path = tmp_path / "second.csv"
-    first.to_csv(first_path, index=False)
-    second.to_csv(second_path, index=False)
-    events = ARRIVALS["load_event_files"](
-        [first_path, second_path], "burstgpt", chunksize=1
-    )
-    assert events["timestamp_s"].tolist() == [0.0, 10.0, 90.0, 110.0]
-    assert events["request_id"].is_unique
-    assert set(zip(events["prompt_tokens"], events["output_tokens"])) == {
-        (100, 10),
-        (200, 20),
-    }
-
-
-def test_joint_length_strata_are_ordered_and_keep_paired_samples():
-    prompt = pd.Series(range(1, 101), dtype=float)
-    output = 0.5 * prompt + 1.0
-    events = pd.DataFrame(
-        {
-            "prompt_tokens": prompt,
-            "output_tokens": output,
-        }
-    )
-    labels, summary = ARRIVALS["_joint_length_classes"](events)
-    assert labels.value_counts().sum() == len(events)
-    assert summary["total_tokens_mean"].is_monotonic_increasing
-    assert set(labels) == {"short", "medium", "long"}
 
 
 def test_service_profile_uses_low_load_samples_and_stability_rule():

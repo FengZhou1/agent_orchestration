@@ -22,14 +22,14 @@ GPU_BANDWIDTH = {"A10": 600e9, "L20": 864e9, "H20": 3500e9}
 
 SOURCE_CATALOG = {
     "arrivals": {
-        "name": "BurstGPT v2",
-        "url": "https://github.com/HPMLL/BurstGPT",
-        "role": "request timestamps and burst structure",
+        "name": "stationary Poisson arrivals",
+        "url": "docs/experiment_protocol.md",
+        "role": "parameterized application request rates and load sweeps",
     },
     "tokens": {
-        "name": "TraceLab v2 and Azure LLM Inference Trace 2024",
-        "url": "https://tracelab.cs.washington.edu/",
-        "role": "paired input-output token features",
+        "name": "JITServe Table 2",
+        "url": "https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf",
+        "role": "application-conditioned input and output token statistics",
     },
     "workflows": {
         "name": "TraceLab v2 and BFCL V3/V4",
@@ -52,6 +52,39 @@ SOURCE_CATALOG = {
         "role": "Abilene and GEANT topology and coordinates",
     },
 }
+
+
+# JITServe Table 2 reports request-level input and output token statistics for
+# chatbot and deep-research workloads under single and compound execution.
+# Each row is mapped to the closest application family in the benchmark.
+JITSERVE_WORKLOADS: dict[str, dict[str, Any]] = {
+    "interactive_retrieval": {
+        "workload": "Chatbot",
+        "request_type": "Single",
+        "input": {"mean": 93, "std": 244, "p50": 27, "p95": 391},
+        "output": {"mean": 318, "std": 313, "p50": 225, "p95": 1024},
+    },
+    "transactional_tool": {
+        "workload": "Deep Research",
+        "request_type": "Single",
+        "input": {"mean": 1911, "std": 2781, "p50": 403, "p95": 7573},
+        "output": {"mean": 534, "std": 644, "p50": 410, "p95": 1544},
+    },
+    "deep_research": {
+        "workload": "Deep Research",
+        "request_type": "Compound",
+        "input": {"mean": 12223, "std": 8407, "p50": 10807, "p95": 29282},
+        "output": {"mean": 3541, "std": 2370, "p50": 3148, "p95": 7525},
+    },
+    "coding_agent": {
+        "workload": "Chatbot",
+        "request_type": "Compound",
+        "input": {"mean": 1300, "std": 912, "p50": 1097, "p95": 2767},
+        "output": {"mean": 4458, "std": 1176, "p50": 4417, "p95": 6452},
+    },
+}
+
+JITSERVE_LENGTH_CLASSES = ("short", "short", "medium", "medium", "long")
 
 
 TOPOLOGIES: dict[str, dict[str, Any]] = {
@@ -359,6 +392,58 @@ def _communication(
     return result
 
 
+def _jitserve_anchor(statistics: dict[str, int], template_index: int) -> int:
+    """Return five ordered token anchors from the reported P50, mean, and P95."""
+    p50 = float(statistics["p50"])
+    average = float(statistics["mean"])
+    p95 = float(statistics["p95"])
+    anchors = (
+        p50,
+        math.sqrt(p50 * average),
+        average,
+        math.sqrt(average * p95),
+        p95,
+    )
+    return max(1, round(anchors[template_index % len(anchors)]))
+
+
+def _apply_jitserve_tokens(
+    nodes: list[dict[str, Any]],
+    flows: list[dict[str, Any]],
+    target_input: int,
+    target_output: int,
+) -> None:
+    """Scale LLM-node token demands to a request-level JITServe anchor."""
+    visit_probability = {
+        node["id"]: sum(
+            float(flow["probability"])
+            for flow in flows
+            if node["id"] in {item for chain in flow["chains"] for item in chain}
+        )
+        for node in nodes
+        if node["type"] == "llm"
+    }
+    input_total = sum(
+        visit_probability[node["id"]] * float(node["prompt_tokens"][MODEL_IDS[0]])
+        for node in nodes
+        if node["type"] == "llm"
+    )
+    output_total = sum(
+        visit_probability[node["id"]] * float(node["output_tokens"][MODEL_IDS[0]])
+        for node in nodes
+        if node["type"] == "llm"
+    )
+    input_scale = target_input / input_total
+    output_scale = target_output / output_total
+    for node in nodes:
+        if node["type"] != "llm":
+            continue
+        prompt = max(1, round(float(node["prompt_tokens"][MODEL_IDS[0]]) * input_scale))
+        output = max(1, round(float(node["output_tokens"][MODEL_IDS[0]]) * output_scale))
+        node["prompt_tokens"] = {model: prompt for model in MODEL_IDS}
+        node["output_tokens"] = {model: output for model in MODEL_IDS}
+
+
 def _application(
     family: str,
     template_index: int,
@@ -367,10 +452,11 @@ def _application(
     service_parameters: dict[str, dict[str, float]],
     extended_services: bool = False,
 ) -> dict[str, Any]:
-    scales = (0.60, 0.80, 1.00, 1.30, 1.80)
-    length_classes = ("short", "short", "medium", "medium", "long")
-    scale = scales[template_index % len(scales)]
-    nodes, flows, slo = _workflow(family, scale)
+    workload = JITSERVE_WORKLOADS[family]
+    target_input = _jitserve_anchor(workload["input"], template_index)
+    target_output = _jitserve_anchor(workload["output"], template_index)
+    nodes, flows, slo = _workflow(family, 1.0)
+    _apply_jitserve_tokens(nodes, flows, target_input, target_output)
     if extended_services:
         for node in nodes:
             if template_index % 4 == 2 and node.get("tool") == "external_api":
@@ -387,7 +473,9 @@ def _application(
         "id": app_id,
         "family": family,
         "template_id": f"{family}:{template_index + 1}",
-        "length_class": length_classes[template_index % len(length_classes)],
+        "length_class": JITSERVE_LENGTH_CLASSES[
+            template_index % len(JITSERVE_LENGTH_CLASSES)
+        ],
         "ingress_rates": {ingress: rate},
         "slo": slo,
         "quality": quality,
@@ -548,9 +636,9 @@ def build_scenario(
         family: base + (1 if index < remainder else 0)
         for index, family in enumerate(families)
     }
-    # The checked-in scenario is a stable reference point. Formal load sweeps are
-    # generated from the pinned deployment capacity rather than from this value.
-    total_family_rate = 0.015
+    # The checked-in rates provide a stable reference point for stationary
+    # Poisson experiments. Load sweeps multiply these rates uniformly.
+    total_family_rate = 0.01125
     cursor = 0
     for family in families:
         count = family_counts[family]
@@ -585,6 +673,12 @@ def build_scenario(
             "seed": seed,
             "source_catalog_sha256": source_digest,
             "data_sources": SOURCE_CATALOG,
+            "jitserve_workload_profiles": JITSERVE_WORKLOADS,
+            "arrival_process": {
+                "distribution": "stationary Poisson",
+                "base_total_rate_rps": 4.0 * total_family_rate,
+                "load_scales": [0.5, 1.0, 2.0, 3.0],
+            },
             "units": {
                 "arrival_rate": "request/s",
                 "service_rate": "request/s",
@@ -595,7 +689,9 @@ def build_scenario(
             "quality_status": "reference values; replace with pinned benchmark runs",
             "slo_status": "reference thresholds; replace with low-load P95 calibration",
             "cost_normalization": "A10-hour=1, L20-hour=2, H20-hour=4",
-            "default_workload": "stable reference; formal runs use capacity-relative arrival traces",
+            "default_workload": (
+                "JITServe Table 2 token characteristics with stationary Poisson arrivals"
+            ),
             "infrastructure_status": (
                 "processed Alibaba GPU catalog" if infrastructure_servers
                 else "deterministic reference fixture"

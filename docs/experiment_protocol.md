@@ -2,10 +2,10 @@
 
 ## 数据依据与参数化方法
 
-实验沿用轨迹驱动微服务研究中的分层参数化方式：生产轨迹决定工作负载结构与规模，仿真器用于评估编排策略，受控基准测试用于校准组件性能。
+实验采用分层参数化方法：公开工作负载统计确定 LLM 请求特征，泊松过程生成应用请求到达，仿真器用于评估编排策略，受控基准测试用于校准组件性能。
 
-- BurstGPT v2 提供请求时间戳和突发结构，Azure LLM Inference Trace 2024 作为固定的外部泛化轨迹。
-- TraceLab v2 和 BFCL V3/V4 提供 Agent 执行模式、配对的 LLM 调用 token 特征、概率 pattern flow 以及调用质量任务。
+- JITServe Table 2 提供 Chatbot 与 Deep Research 在 Single 和 Compound 请求下的输入、输出 token 均值、标准差、P50 和 P95。
+- TraceLab v2 和 BFCL V3/V4 提供 Agent 执行模式、概率 pattern flow 以及调用质量任务。
 - Alibaba Microservices v2021 提供无状态服务图的深度、扇出、复用、调用率和响应时间参考分布；DeathStarBench 或等价的本地测试程序提供低负载处理时间、SCV、稳定处理率和序列化数据量。
 - Alibaba GPU Trace v2026 提供 GPU 类型、GPU 数量和 CPU 容量的服务器级联合记录，不用于生成请求到达或 LLM 推理时延。
 - SNDlib 提供 Abilene 和 GEANT 的网络拓扑及节点坐标。
@@ -31,18 +31,18 @@ Main 场景包含四类应用，每类设置五个模板：
 3. 深度研究：compound，包含两条并行无状态服务分支；
 4. 编码 Agent：compound，包含串行和并行测试模式。
 
-每类应用进一步划分短、中、长三种输入—输出 token 联合长度档位。每个档位在优化模型中作为一种应用类型，因此不增加请求级优化变量。
+四类应用分别映射到 JITServe 的 Chatbot-Single、Deep Research-Single、Deep Research-Compound 和 Chatbot-Compound。每类应用的五个模板依次使用 P50、P50 与均值的几何中点、均值、均值与 P95 的几何中点及 P95，并按 pattern flow 的节点访问概率将请求级 token 总量分配到各 LLM 节点。每个模板在优化模型中作为一种应用类型，因此不增加请求级优化变量。
 
 ## 到达过程与数据划分
 
 - 路由时隙：1 秒；
 - 部署周期：60 个时隙；
 - 训练或评估窗口：3,600 个时隙；
-- 负载档位：固定参考部署稳定容量的 0.40、0.65、0.85 和 1.05；
-- 到达轨迹：按时间顺序划分为 60% 训练集、20% 验证集和 20% 测试集；
-- 工作流数据：按 session ID 或 task ID 划分，保证各数据集之间不存在相同会话或任务。
+- Main 场景基准总到达率：0.045 request/s；
+- 负载档位：基准到达率的 0.5、1、2 和 3 倍；
+- 分析型仿真在全部对比算法间共享相同的泊松到达强度；随机种子用于算法训练与随机路由。
 
-主要实验通过一次全局时间缩放回放 BurstGPT 时间戳。缩放时将所有时间戳除以同一个负载系数，从而保持请求顺序、突发位置的相对关系、输入—输出 token 配对以及工作流分配不变。两个受控对照使用相同请求样本，分别生成分钟级非齐次泊松过程和具有相同均值的齐次泊松过程。旧版“8% 概率触发 2.5 倍负载”的人工突发仅用于显式命名的 `synthetic-stress` 模式。
+应用请求服从平稳泊松过程。若应用 $a$ 在接入节点 $g$ 的平均到达率为 $\lambda_a^g$，分析型仿真将 $\lambda_a^g$ 作为 M/GI/$C$ 排队模型的到达强度输入。负载档位通过统一缩放全部 $\lambda_a^g$ 得到，不改变应用组成与接入位置。离散请求计数仅用于事件驱动仿真，不作为稳态排队模型的瞬时到达率。
 
 均衡组成中四类应用各占 25%。另设置四组偏斜组成实验，每次令一类应用占 60%，其余三类按 20%、10% 和 10% 分配，同时保持总到达率不变。性能 profile 网格还改变长请求比例和总调用率。
 
@@ -68,14 +68,14 @@ Main 场景包含 Web 检索、信息检索、代码执行、文件处理、结�
 
 ## 对比算法与评价指标
 
-主要对比算法包括 Static-Homogeneous、Static-MultiModel、EqualSplit、LeastLoad、Greedy-SLO、PPO-Deploy、PPO-Route、有约束双时间尺度 Joint-PPO、无约束 Joint-PPO、Joint-PPO+ICM 和 Joint-PPO+Potential。穷举算法仅在 Toy 场景运行。
+主要对比算法包括 Static-Homogeneous、Static-MultiModel、EqualSplit、LeastLoad、Greedy-SLO、PPO-Deploy、PPO-Route、DTS-PPO、DTS-PPO-RND 和无约束 DTS-PPO-RND。ICM 与 Potential Shaping 作为附加探索对照，穷举算法仅在 Toy 场景运行。
 
-每种算法报告成本、请求流量加权平均响应时延、请求 goodput、质量、响应时延 P50/P95/P99、SLO 满足率、TTFT/TBT、GPU/KV/无状态服务/链路利用率、重配置次数、决策时延和训练总时间。预实验使用三个随机种子，完整实验至少使用五个随机种子；资源允许时，主结果表使用十个随机种子。各算法共享相同的轨迹窗口和随机数。统计报告包括均值、中位数、效应量、95% bootstrap 置信区间，以及带 Holm 校正的配对 bootstrap 或 Wilcoxon 检验。
+每种算法报告成本、请求流量加权平均响应时延、请求 goodput、质量、响应时延 P50/P95/P99、SLO 满足率、TTFT/TBT、GPU/KV/无状态服务/链路利用率、平均违约约束数、发生任意约束违约的时隙比例、重配置次数、决策时延和训练总时间。预实验使用三个随机种子，完整实验至少使用五个随机种子；资源允许时，主结果表使用十个随机种子。各算法共享相同的泊松到达强度。统计报告包括均值、中位数、效应量、95% bootstrap 置信区间，以及带 Holm 校正的配对 bootstrap 或 Wilcoxon 检验。
 
 ## 保真度与验收条件
 
-- 预处理后的每小时请求数、峰均比以及非零到达间隔 P50/P95 与源轨迹的误差不超过 5%。
-- 输入、输出和总 token 数的 P50/P90/P99 与源数据的误差不超过 5%，且同一源请求的输入—输出 token 配对保持不变。
+- 每个应用输入分析型排队模型的泊松强度与场景设定值一致，各算法使用完全相同的到达强度。
+- 各应用模板的请求级输入、输出 token 总量与 JITServe 目标锚点的误差不超过节点取整误差。
 - 工作流深度、无状态服务调用数、并行宽度和 pattern flow 频率与数据来源中的经验分布一致。
 - 无状态服务处理时间来自低负载内部计时，不得将包含排队和网络的生产端到端 RT 直接作为处理时间。
 - 在留出的 LLM profile 运行点上，中位绝对百分比误差不超过 10%，P95 误差不超过 20%。超过该误差范围的区域直接使用 profile 后端或 LLMServingSim 回放结果，不将其声明为分析预测。
@@ -101,17 +101,14 @@ python scripts/estimate_reference_capacity.py `
 python scripts/calibrate_slos.py `
   --scenario configs/benchmarks/main_abilene.yaml `
   --profile data/processed/llm_profile.csv `
-  --trace data/processed/arrivals/load_0p40/trace/validation.csv `
+  --arrival-scale 0.5 `
   --output configs/generated/main_abilene_slo.yaml
-python scripts/prepare_arrival_traces.py --input <BurstGPT.csv> `
-  --source burstgpt --source-version <release> `
-  --scenario configs/benchmarks/main_abilene.yaml `
-  --reference-capacity-rps <pinned-capacity>
 python scripts/generate_composition_sweep.py `
   --scenario configs/benchmarks/main_abilene.yaml --family-sweep `
   --output configs/generated/family_composition
 python scripts/run_baseline_matrix.py `
   --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
-  --trace data/processed/arrivals/load_0p65/trace/test.csv `
-  --profile data/processed/llm_profile.csv
+  --arrival-scale 1.0 --seeds 0,1,2,3,4 `
+  --profile data/processed/llm_profile.csv `
+  --output results/baseline_main.parquet
 ```

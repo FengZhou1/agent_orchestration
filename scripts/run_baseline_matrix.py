@@ -12,9 +12,22 @@ import pandas as pd
 
 from agent_orch.backends import ProfileBackend
 from agent_orch.baselines import make_policy
+from agent_orch.metrics import summarize_slot_metrics
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
 from agent_orch.workload import ArrivalTrace
+
+
+def _parquet_record(metrics) -> dict:
+    record = asdict(metrics)
+    return {
+        key: (
+            json.dumps(value, ensure_ascii=False, sort_keys=True)
+            if isinstance(value, (dict, list, tuple))
+            else value
+        )
+        for key, value in record.items()
+    }
 
 
 def main() -> int:
@@ -23,37 +36,25 @@ def main() -> int:
     parser.add_argument("--slots", type=int, default=600)
     parser.add_argument("--seeds", default="0,1,2,3,4")
     parser.add_argument("--policies", default="static,equal,least_load,random,greedy")
-    parser.add_argument("--bursty", action="store_true")
-    parser.add_argument("--trace")
     parser.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
     parser.add_argument(
-        "--arrival-mode",
-        choices=["trace", "nhpp", "poisson", "synthetic-stress"],
-        default="trace",
+        "--arrival-scale",
+        type=float,
+        default=1.0,
+        help="Multiplier applied to the stationary Poisson rates in the scenario",
     )
     parser.add_argument("--output", default="results/baseline_matrix.parquet")
     args = parser.parse_args()
 
     scenario = ScenarioLoader.load(args.scenario)
     profile = ProfileBackend.from_csv(args.profile) if args.profile else None
-    source_trace = ArrivalTrace.from_csv(args.trace) if args.trace else None
     records = []
     for seed in (int(value) for value in args.seeds.split(",")):
-        mode = "synthetic-stress" if args.bursty else args.arrival_mode
-        if mode == "synthetic-stress":
-            trace = ArrivalTrace.synthetic_bursty(scenario, args.slots, seed)
-        elif source_trace is None:
-            if mode != "trace":
-                raise ValueError(f"Arrival mode {mode} requires --trace")
-            trace = None
-        elif mode == "trace":
-            trace = source_trace
-        elif mode == "nhpp":
-            trace = ArrivalTrace.nhpp_control(scenario, source_trace, args.slots, seed)
-        else:
-            trace = ArrivalTrace.homogeneous_poisson(
-                scenario, source_trace, args.slots, seed
-            )
+        trace = ArrivalTrace.stationary_poisson_intensity(
+            scenario,
+            args.slots,
+            rate_scale=args.arrival_scale,
+        )
         for policy_name in args.policies.split(","):
             policy = make_policy(policy_name, scenario, seed)
             deployment = policy.deployment()
@@ -68,24 +69,24 @@ def main() -> int:
                         "scenario": scenario.id,
                         "policy": policy_name,
                         "seed": seed,
-                        **asdict(metrics),
+                        "arrival_scale": args.arrival_scale,
+                        **_parquet_record(metrics),
                     }
                 )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(records)
     frame.to_parquet(output, index=False)
-    summary = (
-        frame.groupby(["scenario", "policy", "seed"], as_index=False)
-        .agg(
-            mean_cost=("cost", "mean"),
-            mean_latency_s=("mean_latency_s", "mean"),
-            mean_goodput_rps=("goodput_rps", "mean"),
-            mean_quality=("quality", "mean"),
-            mean_slo_attainment=("slo_attainment", "mean"),
-            mean_violations=("violations", "mean"),
+    summary_rows = []
+    group_columns = ["scenario", "policy", "seed", "arrival_scale"]
+    for keys, group in frame.groupby(group_columns, sort=False):
+        summary_rows.append(
+            {
+                **dict(zip(group_columns, keys)),
+                **summarize_slot_metrics(group.to_dict("records")),
+            }
         )
-    )
+    summary = pd.DataFrame(summary_rows)
     summary.to_parquet(
         output.with_name(f"{output.stem}.summary.parquet"), index=False
     )
@@ -96,9 +97,8 @@ def main() -> int:
         "slots": args.slots,
         "seeds": [int(value) for value in args.seeds.split(",")],
         "policies": args.policies.split(","),
-        "bursty": args.bursty,
-        "arrival_mode": mode,
-        "trace": str(Path(args.trace).resolve()) if args.trace else None,
+        "arrival_process": "stationary_poisson_intensity",
+        "arrival_scale": args.arrival_scale,
         "profile": str(Path(args.profile).resolve()) if args.profile else None,
         "python": platform.python_version(),
         "numpy": np.__version__,

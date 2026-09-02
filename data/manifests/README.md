@@ -6,30 +6,18 @@
 
 | 产物 | 主要数据依据 | 不用于推断的内容 |
 |---|---|---|
-| 请求到达 | BurstGPT v2；Azure 2024 用于外部验证 | 工作流拓扑和 GPU 容量 |
+| 请求到达 | 场景平均到达率与平稳泊松过程 | 工作流拓扑和 GPU 容量 |
+| LLM 请求特征 | JITServe Table 2 | 请求到达时刻和 GPU 容量 |
 | 工作流 | TraceLab v2；BFCL V3/V4 | 生产请求到达强度 |
 | 无状态服务 profile | DeathStarBench 或本地低负载测量 | LLM 推理时延 |
 | 基础设施 | Alibaba GPU Trace v2026 | 请求 token 和 LLM 时延 |
 | 物理网络 | SNDlib Abilene/GEANT | Agent 任务需求语义 |
 
-## 到达轨迹格式
+## 泊松到达参数
 
-统一的到达轨迹格式为：
+场景文件的 `ingress_rates` 记录应用在各接入节点的平均请求率，单位为 request/s。给定时隙长度和随机种子，仿真器按平稳泊松过程生成每时隙请求数；不同负载档位通过统一的 `arrival_scale` 调整全部平均到达率。运行清单记录随机种子、负载缩放系数和场景校验和。
 
-```text
-slot,application,ingress,rate_rps
-```
-
-到达率使用请求/秒。在轨迹覆盖的时隙内，缺失的应用记录解释为零流量，而不是场景中的默认到达率。
-
-规范化后的请求分配审计表格式为：
-
-```text
-timestamp_s,session_id,prompt_tokens,output_tokens,length_class,
-family,application,ingress
-```
-
-输入和输出 token 始终保留同一源请求中的配对关系。不同负载档位通过一次全局时间戳缩放生成，不对请求独立重采样，也不单独放大部分突发区间。
+JITServe Table 2 的输入、输出 token 均值、标准差、P50 和 P95 记录在场景元数据中。场景生成器将五个长度锚点编译为应用模板，不再生成逐请求 token 记录。
 
 ## LLM 性能 profile 格式
 

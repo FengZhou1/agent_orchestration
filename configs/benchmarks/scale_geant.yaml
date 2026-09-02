@@ -4,16 +4,16 @@ metadata:
   generated_by: scripts/build_benchmark_scenarios.py
   generated_on: '2026-09-01'
   seed: 2026
-  source_catalog_sha256: deb8f6c1c7303aead393505515a92ec6c8ebfef29d0a8e5eb26590611daddd4b
+  source_catalog_sha256: 6d9488f927fffede8cb2f5b2906782d04e0349b9c48ac9d797152e051325a547
   data_sources:
     arrivals:
-      name: BurstGPT v2
-      url: https://github.com/HPMLL/BurstGPT
-      role: request timestamps and burst structure
+      name: stationary Poisson arrivals
+      url: docs/experiment_protocol.md
+      role: parameterized application request rates and load sweeps
     tokens:
-      name: TraceLab v2 and Azure LLM Inference Trace 2024
-      url: https://tracelab.cs.washington.edu/
-      role: paired input-output token features
+      name: JITServe Table 2
+      url: https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf
+      role: application-conditioned input and output token statistics
     workflows:
       name: TraceLab v2 and BFCL V3/V4
       url: https://gorilla.cs.berkeley.edu/leaderboard
@@ -30,6 +30,67 @@ metadata:
       name: SNDlib 1.0
       url: https://sndlib.put.poznan.pl/networks.overview.action
       role: Abilene and GEANT topology and coordinates
+  jitserve_workload_profiles:
+    interactive_retrieval:
+      workload: Chatbot
+      request_type: Single
+      input:
+        mean: 93
+        std: 244
+        p50: 27
+        p95: 391
+      output:
+        mean: 318
+        std: 313
+        p50: 225
+        p95: 1024
+    transactional_tool:
+      workload: Deep Research
+      request_type: Single
+      input:
+        mean: 1911
+        std: 2781
+        p50: 403
+        p95: 7573
+      output:
+        mean: 534
+        std: 644
+        p50: 410
+        p95: 1544
+    deep_research:
+      workload: Deep Research
+      request_type: Compound
+      input:
+        mean: 12223
+        std: 8407
+        p50: 10807
+        p95: 29282
+      output:
+        mean: 3541
+        std: 2370
+        p50: 3148
+        p95: 7525
+    coding_agent:
+      workload: Chatbot
+      request_type: Compound
+      input:
+        mean: 1300
+        std: 912
+        p50: 1097
+        p95: 2767
+      output:
+        mean: 4458
+        std: 1176
+        p50: 4417
+        p95: 6452
+  arrival_process:
+    distribution: stationary Poisson
+    base_total_rate_rps: 0.045
+    load_scales:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 3.0
   units:
     arrival_rate: request/s
     service_rate: request/s
@@ -39,7 +100,8 @@ metadata:
   quality_status: reference values; replace with pinned benchmark runs
   slo_status: reference thresholds; replace with low-load P95 calibration
   cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
-  default_workload: stable reference; formal runs use capacity-relative arrival traces
+  default_workload: JITServe Table 2 token characteristics with stationary Poisson
+    arrivals
   infrastructure_status: deterministic reference fixture
   stateless_service_status: reference 2--8 request/s/core range
   calibration_inputs: {}
@@ -1173,7 +1235,7 @@ applications:
   template_id: interactive_retrieval:1
   length_class: short
   ingress_rates:
-    at1.at: 0.0011538461538461537
+    at1.at: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1183,13 +1245,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 3.2e-05
+    qwen2.5-14b: 3.2e-05
+    qwen2.5-32b: 3.2e-05
   exit_data_mb:
-    qwen2.5-7b: 0.000172
-    qwen2.5-14b: 0.000172
-    qwen2.5-32b: 0.000172
+    qwen2.5-7b: 0.000676
+    qwen2.5-14b: 0.000676
+    qwen2.5-32b: 0.000676
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1207,13 +1269,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 8
+      qwen2.5-14b: 8
+      qwen2.5-32b: 8
     output_tokens:
-      qwen2.5-7b: 14
-      qwen2.5-14b: 14
-      qwen2.5-32b: 14
+      qwen2.5-7b: 56
+      qwen2.5-14b: 56
+      qwen2.5-32b: 56
   - id: search
     type: tool
     tool: web_search
@@ -1223,13 +1285,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 384
-      qwen2.5-14b: 384
-      qwen2.5-32b: 384
+      qwen2.5-7b: 19
+      qwen2.5-14b: 19
+      qwen2.5-32b: 19
     output_tokens:
-      qwen2.5-7b: 43
-      qwen2.5-14b: 43
-      qwen2.5-32b: 43
+      qwen2.5-7b: 169
+      qwen2.5-14b: 169
+      qwen2.5-32b: 169
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1251,7 +1313,7 @@ applications:
   template_id: interactive_retrieval:2
   length_class: short
   ingress_rates:
-    be1.be: 0.0011538461538461537
+    be1.be: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1261,13 +1323,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.00082
-    qwen2.5-14b: 0.00082
-    qwen2.5-32b: 0.00082
+    qwen2.5-7b: 5.6e-05
+    qwen2.5-14b: 5.6e-05
+    qwen2.5-32b: 5.6e-05
   exit_data_mb:
-    qwen2.5-7b: 0.000232
-    qwen2.5-14b: 0.000232
-    qwen2.5-32b: 0.000232
+    qwen2.5-7b: 0.0008
+    qwen2.5-14b: 0.0008
+    qwen2.5-32b: 0.0008
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1285,13 +1347,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 14
+      qwen2.5-14b: 14
+      qwen2.5-32b: 14
     output_tokens:
-      qwen2.5-7b: 19
-      qwen2.5-14b: 19
-      qwen2.5-32b: 19
+      qwen2.5-7b: 67
+      qwen2.5-14b: 67
+      qwen2.5-32b: 67
   - id: search
     type: tool
     tool: web_search
@@ -1301,13 +1363,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 512
-      qwen2.5-14b: 512
-      qwen2.5-32b: 512
+      qwen2.5-7b: 36
+      qwen2.5-14b: 36
+      qwen2.5-32b: 36
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 200
+      qwen2.5-14b: 200
+      qwen2.5-32b: 200
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1329,7 +1391,7 @@ applications:
   template_id: interactive_retrieval:3
   length_class: medium
   ingress_rates:
-    ch1.ch: 0.0011538461538461537
+    ch1.ch: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1339,13 +1401,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001024
-    qwen2.5-14b: 0.001024
-    qwen2.5-32b: 0.001024
+    qwen2.5-7b: 0.000108
+    qwen2.5-14b: 0.000108
+    qwen2.5-32b: 0.000108
   exit_data_mb:
-    qwen2.5-7b: 0.000288
-    qwen2.5-14b: 0.000288
-    qwen2.5-32b: 0.000288
+    qwen2.5-7b: 0.000952
+    qwen2.5-14b: 0.000952
+    qwen2.5-32b: 0.000952
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1363,13 +1425,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 27
+      qwen2.5-14b: 27
+      qwen2.5-32b: 27
     output_tokens:
-      qwen2.5-7b: 24
-      qwen2.5-14b: 24
-      qwen2.5-32b: 24
+      qwen2.5-7b: 80
+      qwen2.5-14b: 80
+      qwen2.5-32b: 80
   - id: search
     type: tool
     tool: web_search
@@ -1379,13 +1441,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 640
-      qwen2.5-14b: 640
-      qwen2.5-32b: 640
+      qwen2.5-7b: 66
+      qwen2.5-14b: 66
+      qwen2.5-32b: 66
     output_tokens:
-      qwen2.5-7b: 72
-      qwen2.5-14b: 72
-      qwen2.5-32b: 72
+      qwen2.5-7b: 238
+      qwen2.5-14b: 238
+      qwen2.5-32b: 238
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1407,7 +1469,7 @@ applications:
   template_id: interactive_retrieval:4
   length_class: medium
   ingress_rates:
-    cz1.cz: 0.0011538461538461537
+    cz1.cz: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1417,13 +1479,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001332
-    qwen2.5-14b: 0.001332
-    qwen2.5-32b: 0.001332
+    qwen2.5-7b: 0.00022
+    qwen2.5-14b: 0.00022
+    qwen2.5-32b: 0.00022
   exit_data_mb:
-    qwen2.5-7b: 0.000376
-    qwen2.5-14b: 0.000376
-    qwen2.5-32b: 0.000376
+    qwen2.5-7b: 0.001712
+    qwen2.5-14b: 0.001712
+    qwen2.5-32b: 0.001712
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.65
@@ -1441,13 +1503,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 333
-      qwen2.5-14b: 333
-      qwen2.5-32b: 333
+      qwen2.5-7b: 55
+      qwen2.5-14b: 55
+      qwen2.5-32b: 55
     output_tokens:
-      qwen2.5-7b: 31
-      qwen2.5-14b: 31
-      qwen2.5-32b: 31
+      qwen2.5-7b: 143
+      qwen2.5-14b: 143
+      qwen2.5-32b: 143
   - id: search
     type: tool
     tool: web_search
@@ -1457,13 +1519,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 832
-      qwen2.5-14b: 832
-      qwen2.5-32b: 832
+      qwen2.5-7b: 136
+      qwen2.5-14b: 136
+      qwen2.5-32b: 136
     output_tokens:
-      qwen2.5-7b: 94
-      qwen2.5-14b: 94
-      qwen2.5-32b: 94
+      qwen2.5-7b: 428
+      qwen2.5-14b: 428
+      qwen2.5-32b: 428
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1485,7 +1547,7 @@ applications:
   template_id: interactive_retrieval:5
   length_class: long
   ingress_rates:
-    de1.de: 0.0011538461538461537
+    de1.de: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1495,13 +1557,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.000448
+    qwen2.5-14b: 0.000448
+    qwen2.5-32b: 0.000448
   exit_data_mb:
-    qwen2.5-7b: 0.00052
-    qwen2.5-14b: 0.00052
-    qwen2.5-32b: 0.00052
+    qwen2.5-7b: 0.003072
+    qwen2.5-14b: 0.003072
+    qwen2.5-32b: 0.003072
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1519,13 +1581,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 112
+      qwen2.5-14b: 112
+      qwen2.5-32b: 112
     output_tokens:
-      qwen2.5-7b: 43
-      qwen2.5-14b: 43
-      qwen2.5-32b: 43
+      qwen2.5-7b: 256
+      qwen2.5-14b: 256
+      qwen2.5-32b: 256
   - id: search
     type: tool
     tool: web_search
@@ -1535,13 +1597,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1152
-      qwen2.5-14b: 1152
-      qwen2.5-32b: 1152
+      qwen2.5-7b: 279
+      qwen2.5-14b: 279
+      qwen2.5-32b: 279
     output_tokens:
-      qwen2.5-7b: 130
-      qwen2.5-14b: 130
-      qwen2.5-32b: 130
+      qwen2.5-7b: 768
+      qwen2.5-14b: 768
+      qwen2.5-32b: 768
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1563,7 +1625,7 @@ applications:
   template_id: interactive_retrieval:6
   length_class: short
   ingress_rates:
-    es1.es: 0.0011538461538461537
+    es1.es: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1573,13 +1635,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 3.2e-05
+    qwen2.5-14b: 3.2e-05
+    qwen2.5-32b: 3.2e-05
   exit_data_mb:
-    qwen2.5-7b: 0.000172
-    qwen2.5-14b: 0.000172
-    qwen2.5-32b: 0.000172
+    qwen2.5-7b: 0.000676
+    qwen2.5-14b: 0.000676
+    qwen2.5-32b: 0.000676
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1597,13 +1659,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 8
+      qwen2.5-14b: 8
+      qwen2.5-32b: 8
     output_tokens:
-      qwen2.5-7b: 14
-      qwen2.5-14b: 14
-      qwen2.5-32b: 14
+      qwen2.5-7b: 56
+      qwen2.5-14b: 56
+      qwen2.5-32b: 56
   - id: search
     type: tool
     tool: web_search
@@ -1613,13 +1675,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 384
-      qwen2.5-14b: 384
-      qwen2.5-32b: 384
+      qwen2.5-7b: 19
+      qwen2.5-14b: 19
+      qwen2.5-32b: 19
     output_tokens:
-      qwen2.5-7b: 43
-      qwen2.5-14b: 43
-      qwen2.5-32b: 43
+      qwen2.5-7b: 169
+      qwen2.5-14b: 169
+      qwen2.5-32b: 169
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1641,7 +1703,7 @@ applications:
   template_id: interactive_retrieval:7
   length_class: short
   ingress_rates:
-    fr1.fr: 0.0011538461538461537
+    fr1.fr: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1651,13 +1713,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.00082
-    qwen2.5-14b: 0.00082
-    qwen2.5-32b: 0.00082
+    qwen2.5-7b: 5.6e-05
+    qwen2.5-14b: 5.6e-05
+    qwen2.5-32b: 5.6e-05
   exit_data_mb:
-    qwen2.5-7b: 0.000232
-    qwen2.5-14b: 0.000232
-    qwen2.5-32b: 0.000232
+    qwen2.5-7b: 0.0008
+    qwen2.5-14b: 0.0008
+    qwen2.5-32b: 0.0008
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1675,13 +1737,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 14
+      qwen2.5-14b: 14
+      qwen2.5-32b: 14
     output_tokens:
-      qwen2.5-7b: 19
-      qwen2.5-14b: 19
-      qwen2.5-32b: 19
+      qwen2.5-7b: 67
+      qwen2.5-14b: 67
+      qwen2.5-32b: 67
   - id: search
     type: tool
     tool: web_search
@@ -1691,13 +1753,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 512
-      qwen2.5-14b: 512
-      qwen2.5-32b: 512
+      qwen2.5-7b: 36
+      qwen2.5-14b: 36
+      qwen2.5-32b: 36
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 200
+      qwen2.5-14b: 200
+      qwen2.5-32b: 200
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1719,7 +1781,7 @@ applications:
   template_id: interactive_retrieval:8
   length_class: medium
   ingress_rates:
-    gr1.gr: 0.0011538461538461537
+    gr1.gr: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1729,13 +1791,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001024
-    qwen2.5-14b: 0.001024
-    qwen2.5-32b: 0.001024
+    qwen2.5-7b: 0.000108
+    qwen2.5-14b: 0.000108
+    qwen2.5-32b: 0.000108
   exit_data_mb:
-    qwen2.5-7b: 0.000288
-    qwen2.5-14b: 0.000288
-    qwen2.5-32b: 0.000288
+    qwen2.5-7b: 0.000952
+    qwen2.5-14b: 0.000952
+    qwen2.5-32b: 0.000952
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.65
@@ -1753,13 +1815,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 27
+      qwen2.5-14b: 27
+      qwen2.5-32b: 27
     output_tokens:
-      qwen2.5-7b: 24
-      qwen2.5-14b: 24
-      qwen2.5-32b: 24
+      qwen2.5-7b: 80
+      qwen2.5-14b: 80
+      qwen2.5-32b: 80
   - id: search
     type: tool
     tool: web_search
@@ -1769,13 +1831,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 640
-      qwen2.5-14b: 640
-      qwen2.5-32b: 640
+      qwen2.5-7b: 66
+      qwen2.5-14b: 66
+      qwen2.5-32b: 66
     output_tokens:
-      qwen2.5-7b: 72
-      qwen2.5-14b: 72
-      qwen2.5-32b: 72
+      qwen2.5-7b: 238
+      qwen2.5-14b: 238
+      qwen2.5-32b: 238
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1797,7 +1859,7 @@ applications:
   template_id: interactive_retrieval:9
   length_class: medium
   ingress_rates:
-    hr1.hr: 0.0011538461538461537
+    hr1.hr: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1807,13 +1869,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001332
-    qwen2.5-14b: 0.001332
-    qwen2.5-32b: 0.001332
+    qwen2.5-7b: 0.00022
+    qwen2.5-14b: 0.00022
+    qwen2.5-32b: 0.00022
   exit_data_mb:
-    qwen2.5-7b: 0.000376
-    qwen2.5-14b: 0.000376
-    qwen2.5-32b: 0.000376
+    qwen2.5-7b: 0.001712
+    qwen2.5-14b: 0.001712
+    qwen2.5-32b: 0.001712
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1831,13 +1893,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 333
-      qwen2.5-14b: 333
-      qwen2.5-32b: 333
+      qwen2.5-7b: 55
+      qwen2.5-14b: 55
+      qwen2.5-32b: 55
     output_tokens:
-      qwen2.5-7b: 31
-      qwen2.5-14b: 31
-      qwen2.5-32b: 31
+      qwen2.5-7b: 143
+      qwen2.5-14b: 143
+      qwen2.5-32b: 143
   - id: search
     type: tool
     tool: web_search
@@ -1847,13 +1909,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 832
-      qwen2.5-14b: 832
-      qwen2.5-32b: 832
+      qwen2.5-7b: 136
+      qwen2.5-14b: 136
+      qwen2.5-32b: 136
     output_tokens:
-      qwen2.5-7b: 94
-      qwen2.5-14b: 94
-      qwen2.5-32b: 94
+      qwen2.5-7b: 428
+      qwen2.5-14b: 428
+      qwen2.5-32b: 428
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1875,7 +1937,7 @@ applications:
   template_id: interactive_retrieval:10
   length_class: long
   ingress_rates:
-    hu1.hu: 0.0011538461538461537
+    hu1.hu: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1885,13 +1947,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.000448
+    qwen2.5-14b: 0.000448
+    qwen2.5-32b: 0.000448
   exit_data_mb:
-    qwen2.5-7b: 0.00052
-    qwen2.5-14b: 0.00052
-    qwen2.5-32b: 0.00052
+    qwen2.5-7b: 0.003072
+    qwen2.5-14b: 0.003072
+    qwen2.5-32b: 0.003072
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1909,13 +1971,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 112
+      qwen2.5-14b: 112
+      qwen2.5-32b: 112
     output_tokens:
-      qwen2.5-7b: 43
-      qwen2.5-14b: 43
-      qwen2.5-32b: 43
+      qwen2.5-7b: 256
+      qwen2.5-14b: 256
+      qwen2.5-32b: 256
   - id: search
     type: tool
     tool: web_search
@@ -1925,13 +1987,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1152
-      qwen2.5-14b: 1152
-      qwen2.5-32b: 1152
+      qwen2.5-7b: 279
+      qwen2.5-14b: 279
+      qwen2.5-32b: 279
     output_tokens:
-      qwen2.5-7b: 130
-      qwen2.5-14b: 130
-      qwen2.5-32b: 130
+      qwen2.5-7b: 768
+      qwen2.5-14b: 768
+      qwen2.5-32b: 768
   pattern_flows:
   - id: search
     probability: 0.7
@@ -1953,7 +2015,7 @@ applications:
   template_id: interactive_retrieval:11
   length_class: short
   ingress_rates:
-    ie1.ie: 0.0011538461538461537
+    ie1.ie: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -1963,13 +2025,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 3.2e-05
+    qwen2.5-14b: 3.2e-05
+    qwen2.5-32b: 3.2e-05
   exit_data_mb:
-    qwen2.5-7b: 0.000172
-    qwen2.5-14b: 0.000172
-    qwen2.5-32b: 0.000172
+    qwen2.5-7b: 0.000676
+    qwen2.5-14b: 0.000676
+    qwen2.5-32b: 0.000676
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -1987,13 +2049,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 8
+      qwen2.5-14b: 8
+      qwen2.5-32b: 8
     output_tokens:
-      qwen2.5-7b: 14
-      qwen2.5-14b: 14
-      qwen2.5-32b: 14
+      qwen2.5-7b: 56
+      qwen2.5-14b: 56
+      qwen2.5-32b: 56
   - id: search
     type: tool
     tool: web_search
@@ -2003,13 +2065,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 384
-      qwen2.5-14b: 384
-      qwen2.5-32b: 384
+      qwen2.5-7b: 19
+      qwen2.5-14b: 19
+      qwen2.5-32b: 19
     output_tokens:
-      qwen2.5-7b: 43
-      qwen2.5-14b: 43
-      qwen2.5-32b: 43
+      qwen2.5-7b: 169
+      qwen2.5-14b: 169
+      qwen2.5-32b: 169
   pattern_flows:
   - id: search
     probability: 0.7
@@ -2031,7 +2093,7 @@ applications:
   template_id: interactive_retrieval:12
   length_class: short
   ingress_rates:
-    il1.il: 0.0011538461538461537
+    il1.il: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -2041,13 +2103,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.00082
-    qwen2.5-14b: 0.00082
-    qwen2.5-32b: 0.00082
+    qwen2.5-7b: 5.6e-05
+    qwen2.5-14b: 5.6e-05
+    qwen2.5-32b: 5.6e-05
   exit_data_mb:
-    qwen2.5-7b: 0.000232
-    qwen2.5-14b: 0.000232
-    qwen2.5-32b: 0.000232
+    qwen2.5-7b: 0.0008
+    qwen2.5-14b: 0.0008
+    qwen2.5-32b: 0.0008
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.65
@@ -2065,13 +2127,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 14
+      qwen2.5-14b: 14
+      qwen2.5-32b: 14
     output_tokens:
-      qwen2.5-7b: 19
-      qwen2.5-14b: 19
-      qwen2.5-32b: 19
+      qwen2.5-7b: 67
+      qwen2.5-14b: 67
+      qwen2.5-32b: 67
   - id: search
     type: tool
     tool: web_search
@@ -2081,13 +2143,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 512
-      qwen2.5-14b: 512
-      qwen2.5-32b: 512
+      qwen2.5-7b: 36
+      qwen2.5-14b: 36
+      qwen2.5-32b: 36
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 200
+      qwen2.5-14b: 200
+      qwen2.5-32b: 200
   pattern_flows:
   - id: search
     probability: 0.7
@@ -2109,7 +2171,7 @@ applications:
   template_id: interactive_retrieval:13
   length_class: medium
   ingress_rates:
-    it1.it: 0.0011538461538461537
+    it1.it: 0.0008653846153846153
   slo:
     type: lat
     ttft_s: 2.0
@@ -2119,13 +2181,13 @@ applications:
     qwen2.5-14b: 0.81
     qwen2.5-32b: 0.89
   entry_data_mb:
-    qwen2.5-7b: 0.001024
-    qwen2.5-14b: 0.001024
-    qwen2.5-32b: 0.001024
+    qwen2.5-7b: 0.000108
+    qwen2.5-14b: 0.000108
+    qwen2.5-32b: 0.000108
   exit_data_mb:
-    qwen2.5-7b: 0.000288
-    qwen2.5-14b: 0.000288
-    qwen2.5-32b: 0.000288
+    qwen2.5-7b: 0.000952
+    qwen2.5-14b: 0.000952
+    qwen2.5-32b: 0.000952
   edge_data_mb:
     qwen2.5-7b:plan->search: 0.005
     qwen2.5-7b:retrieve->final: 0.5
@@ -2143,13 +2205,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 27
+      qwen2.5-14b: 27
+      qwen2.5-32b: 27
     output_tokens:
-      qwen2.5-7b: 24
-      qwen2.5-14b: 24
-      qwen2.5-32b: 24
+      qwen2.5-7b: 80
+      qwen2.5-14b: 80
+      qwen2.5-32b: 80
   - id: search
     type: tool
     tool: web_search
@@ -2159,13 +2221,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 640
-      qwen2.5-14b: 640
-      qwen2.5-32b: 640
+      qwen2.5-7b: 66
+      qwen2.5-14b: 66
+      qwen2.5-32b: 66
     output_tokens:
-      qwen2.5-7b: 72
-      qwen2.5-14b: 72
-      qwen2.5-32b: 72
+      qwen2.5-7b: 238
+      qwen2.5-14b: 238
+      qwen2.5-32b: 238
   pattern_flows:
   - id: search
     probability: 0.7
@@ -2187,7 +2249,7 @@ applications:
   template_id: transactional_tool:1
   length_class: short
   ingress_rates:
-    lu1.lu: 0.0011538461538461537
+    lu1.lu: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2196,13 +2258,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.00092
-    qwen2.5-14b: 0.00092
-    qwen2.5-32b: 0.00092
+    qwen2.5-7b: 0.000536
+    qwen2.5-14b: 0.000536
+    qwen2.5-32b: 0.000536
   exit_data_mb:
-    qwen2.5-7b: 0.000152
-    qwen2.5-14b: 0.000152
-    qwen2.5-32b: 0.000152
+    qwen2.5-7b: 0.001092
+    qwen2.5-14b: 0.001092
+    qwen2.5-32b: 0.001092
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2223,13 +2285,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 230
-      qwen2.5-14b: 230
-      qwen2.5-32b: 230
+      qwen2.5-7b: 134
+      qwen2.5-14b: 134
+      qwen2.5-32b: 134
     output_tokens:
-      qwen2.5-7b: 19
-      qwen2.5-14b: 19
-      qwen2.5-32b: 19
+      qwen2.5-7b: 137
+      qwen2.5-14b: 137
+      qwen2.5-32b: 137
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2243,13 +2305,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 269
+      qwen2.5-14b: 269
+      qwen2.5-32b: 269
     output_tokens:
-      qwen2.5-7b: 38
-      qwen2.5-14b: 38
-      qwen2.5-32b: 38
+      qwen2.5-7b: 273
+      qwen2.5-14b: 273
+      qwen2.5-32b: 273
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2272,7 +2334,7 @@ applications:
   template_id: transactional_tool:2
   length_class: short
   ingress_rates:
-    nl1.nl: 0.0011538461538461537
+    nl1.nl: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2281,13 +2343,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001228
-    qwen2.5-14b: 0.001228
-    qwen2.5-32b: 0.001228
+    qwen2.5-7b: 0.001172
+    qwen2.5-14b: 0.001172
+    qwen2.5-32b: 0.001172
   exit_data_mb:
-    qwen2.5-7b: 0.000204
-    qwen2.5-14b: 0.000204
-    qwen2.5-32b: 0.000204
+    qwen2.5-7b: 0.001248
+    qwen2.5-14b: 0.001248
+    qwen2.5-32b: 0.001248
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2308,13 +2370,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 307
-      qwen2.5-14b: 307
-      qwen2.5-32b: 307
+      qwen2.5-7b: 293
+      qwen2.5-14b: 293
+      qwen2.5-32b: 293
     output_tokens:
-      qwen2.5-7b: 26
-      qwen2.5-14b: 26
-      qwen2.5-32b: 26
+      qwen2.5-7b: 156
+      qwen2.5-14b: 156
+      qwen2.5-32b: 156
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2328,13 +2390,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 585
+      qwen2.5-14b: 585
+      qwen2.5-32b: 585
     output_tokens:
-      qwen2.5-7b: 51
-      qwen2.5-14b: 51
-      qwen2.5-32b: 51
+      qwen2.5-7b: 312
+      qwen2.5-14b: 312
+      qwen2.5-32b: 312
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2357,7 +2419,7 @@ applications:
   template_id: transactional_tool:3
   length_class: medium
   ingress_rates:
-    ny1.ny: 0.0011538461538461537
+    ny1.ny: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2366,13 +2428,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001536
-    qwen2.5-14b: 0.001536
-    qwen2.5-32b: 0.001536
+    qwen2.5-7b: 0.002548
+    qwen2.5-14b: 0.002548
+    qwen2.5-32b: 0.002548
   exit_data_mb:
-    qwen2.5-7b: 0.000256
-    qwen2.5-14b: 0.000256
-    qwen2.5-32b: 0.000256
+    qwen2.5-7b: 0.001424
+    qwen2.5-14b: 0.001424
+    qwen2.5-32b: 0.001424
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.15
@@ -2393,13 +2455,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 384
-      qwen2.5-14b: 384
-      qwen2.5-32b: 384
+      qwen2.5-7b: 637
+      qwen2.5-14b: 637
+      qwen2.5-32b: 637
     output_tokens:
-      qwen2.5-7b: 32
-      qwen2.5-14b: 32
-      qwen2.5-32b: 32
+      qwen2.5-7b: 178
+      qwen2.5-14b: 178
+      qwen2.5-32b: 178
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2413,13 +2475,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 768
-      qwen2.5-14b: 768
-      qwen2.5-32b: 768
+      qwen2.5-7b: 1274
+      qwen2.5-14b: 1274
+      qwen2.5-32b: 1274
     output_tokens:
-      qwen2.5-7b: 64
-      qwen2.5-14b: 64
-      qwen2.5-32b: 64
+      qwen2.5-7b: 356
+      qwen2.5-14b: 356
+      qwen2.5-32b: 356
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2442,7 +2504,7 @@ applications:
   template_id: transactional_tool:4
   length_class: medium
   ingress_rates:
-    pl1.pl: 0.0011538461538461537
+    pl1.pl: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2451,13 +2513,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001996
-    qwen2.5-14b: 0.001996
-    qwen2.5-32b: 0.001996
+    qwen2.5-7b: 0.005072
+    qwen2.5-14b: 0.005072
+    qwen2.5-32b: 0.005072
   exit_data_mb:
-    qwen2.5-7b: 0.000332
-    qwen2.5-14b: 0.000332
-    qwen2.5-32b: 0.000332
+    qwen2.5-7b: 0.00242
+    qwen2.5-14b: 0.00242
+    qwen2.5-32b: 0.00242
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2478,13 +2540,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 499
-      qwen2.5-14b: 499
-      qwen2.5-32b: 499
+      qwen2.5-7b: 1268
+      qwen2.5-14b: 1268
+      qwen2.5-32b: 1268
     output_tokens:
-      qwen2.5-7b: 42
-      qwen2.5-14b: 42
-      qwen2.5-32b: 42
+      qwen2.5-7b: 303
+      qwen2.5-14b: 303
+      qwen2.5-32b: 303
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2498,13 +2560,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 998
-      qwen2.5-14b: 998
-      qwen2.5-32b: 998
+      qwen2.5-7b: 2536
+      qwen2.5-14b: 2536
+      qwen2.5-32b: 2536
     output_tokens:
-      qwen2.5-7b: 83
-      qwen2.5-14b: 83
-      qwen2.5-32b: 83
+      qwen2.5-7b: 605
+      qwen2.5-14b: 605
+      qwen2.5-32b: 605
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2527,7 +2589,7 @@ applications:
   template_id: transactional_tool:5
   length_class: long
   ingress_rates:
-    pt1.pt: 0.0011538461538461537
+    pt1.pt: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2536,13 +2598,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.002764
-    qwen2.5-14b: 0.002764
-    qwen2.5-32b: 0.002764
+    qwen2.5-7b: 0.010096
+    qwen2.5-14b: 0.010096
+    qwen2.5-32b: 0.010096
   exit_data_mb:
-    qwen2.5-7b: 0.00046
-    qwen2.5-14b: 0.00046
-    qwen2.5-32b: 0.00046
+    qwen2.5-7b: 0.004116
+    qwen2.5-14b: 0.004116
+    qwen2.5-32b: 0.004116
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2563,13 +2625,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 691
-      qwen2.5-14b: 691
-      qwen2.5-32b: 691
+      qwen2.5-7b: 2524
+      qwen2.5-14b: 2524
+      qwen2.5-32b: 2524
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 515
+      qwen2.5-14b: 515
+      qwen2.5-32b: 515
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2583,13 +2645,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1382
-      qwen2.5-14b: 1382
-      qwen2.5-32b: 1382
+      qwen2.5-7b: 5049
+      qwen2.5-14b: 5049
+      qwen2.5-32b: 5049
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 1029
+      qwen2.5-14b: 1029
+      qwen2.5-32b: 1029
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2612,7 +2674,7 @@ applications:
   template_id: transactional_tool:6
   length_class: short
   ingress_rates:
-    se1.se: 0.0011538461538461537
+    se1.se: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2621,13 +2683,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.00092
-    qwen2.5-14b: 0.00092
-    qwen2.5-32b: 0.00092
+    qwen2.5-7b: 0.000536
+    qwen2.5-14b: 0.000536
+    qwen2.5-32b: 0.000536
   exit_data_mb:
-    qwen2.5-7b: 0.000152
-    qwen2.5-14b: 0.000152
-    qwen2.5-32b: 0.000152
+    qwen2.5-7b: 0.001092
+    qwen2.5-14b: 0.001092
+    qwen2.5-32b: 0.001092
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2648,13 +2710,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 230
-      qwen2.5-14b: 230
-      qwen2.5-32b: 230
+      qwen2.5-7b: 134
+      qwen2.5-14b: 134
+      qwen2.5-32b: 134
     output_tokens:
-      qwen2.5-7b: 19
-      qwen2.5-14b: 19
-      qwen2.5-32b: 19
+      qwen2.5-7b: 137
+      qwen2.5-14b: 137
+      qwen2.5-32b: 137
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2668,13 +2730,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 269
+      qwen2.5-14b: 269
+      qwen2.5-32b: 269
     output_tokens:
-      qwen2.5-7b: 38
-      qwen2.5-14b: 38
-      qwen2.5-32b: 38
+      qwen2.5-7b: 273
+      qwen2.5-14b: 273
+      qwen2.5-32b: 273
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2697,7 +2759,7 @@ applications:
   template_id: transactional_tool:7
   length_class: short
   ingress_rates:
-    si1.si: 0.0011538461538461537
+    si1.si: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2706,13 +2768,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001228
-    qwen2.5-14b: 0.001228
-    qwen2.5-32b: 0.001228
+    qwen2.5-7b: 0.001172
+    qwen2.5-14b: 0.001172
+    qwen2.5-32b: 0.001172
   exit_data_mb:
-    qwen2.5-7b: 0.000204
-    qwen2.5-14b: 0.000204
-    qwen2.5-32b: 0.000204
+    qwen2.5-7b: 0.001248
+    qwen2.5-14b: 0.001248
+    qwen2.5-32b: 0.001248
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.15
@@ -2733,13 +2795,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 307
-      qwen2.5-14b: 307
-      qwen2.5-32b: 307
+      qwen2.5-7b: 293
+      qwen2.5-14b: 293
+      qwen2.5-32b: 293
     output_tokens:
-      qwen2.5-7b: 26
-      qwen2.5-14b: 26
-      qwen2.5-32b: 26
+      qwen2.5-7b: 156
+      qwen2.5-14b: 156
+      qwen2.5-32b: 156
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2753,13 +2815,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 585
+      qwen2.5-14b: 585
+      qwen2.5-32b: 585
     output_tokens:
-      qwen2.5-7b: 51
-      qwen2.5-14b: 51
-      qwen2.5-32b: 51
+      qwen2.5-7b: 312
+      qwen2.5-14b: 312
+      qwen2.5-32b: 312
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2782,7 +2844,7 @@ applications:
   template_id: transactional_tool:8
   length_class: medium
   ingress_rates:
-    sk1.sk: 0.0011538461538461537
+    sk1.sk: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2791,13 +2853,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001536
-    qwen2.5-14b: 0.001536
-    qwen2.5-32b: 0.001536
+    qwen2.5-7b: 0.002548
+    qwen2.5-14b: 0.002548
+    qwen2.5-32b: 0.002548
   exit_data_mb:
-    qwen2.5-7b: 0.000256
-    qwen2.5-14b: 0.000256
-    qwen2.5-32b: 0.000256
+    qwen2.5-7b: 0.001424
+    qwen2.5-14b: 0.001424
+    qwen2.5-32b: 0.001424
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2818,13 +2880,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 384
-      qwen2.5-14b: 384
-      qwen2.5-32b: 384
+      qwen2.5-7b: 637
+      qwen2.5-14b: 637
+      qwen2.5-32b: 637
     output_tokens:
-      qwen2.5-7b: 32
-      qwen2.5-14b: 32
-      qwen2.5-32b: 32
+      qwen2.5-7b: 178
+      qwen2.5-14b: 178
+      qwen2.5-32b: 178
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2838,13 +2900,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 768
-      qwen2.5-14b: 768
-      qwen2.5-32b: 768
+      qwen2.5-7b: 1274
+      qwen2.5-14b: 1274
+      qwen2.5-32b: 1274
     output_tokens:
-      qwen2.5-7b: 64
-      qwen2.5-14b: 64
-      qwen2.5-32b: 64
+      qwen2.5-7b: 356
+      qwen2.5-14b: 356
+      qwen2.5-32b: 356
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2867,7 +2929,7 @@ applications:
   template_id: transactional_tool:9
   length_class: medium
   ingress_rates:
-    uk1.uk: 0.0011538461538461537
+    uk1.uk: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2876,13 +2938,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001996
-    qwen2.5-14b: 0.001996
-    qwen2.5-32b: 0.001996
+    qwen2.5-7b: 0.005072
+    qwen2.5-14b: 0.005072
+    qwen2.5-32b: 0.005072
   exit_data_mb:
-    qwen2.5-7b: 0.000332
-    qwen2.5-14b: 0.000332
-    qwen2.5-32b: 0.000332
+    qwen2.5-7b: 0.00242
+    qwen2.5-14b: 0.00242
+    qwen2.5-32b: 0.00242
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2903,13 +2965,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 499
-      qwen2.5-14b: 499
-      qwen2.5-32b: 499
+      qwen2.5-7b: 1268
+      qwen2.5-14b: 1268
+      qwen2.5-32b: 1268
     output_tokens:
-      qwen2.5-7b: 42
-      qwen2.5-14b: 42
-      qwen2.5-32b: 42
+      qwen2.5-7b: 303
+      qwen2.5-14b: 303
+      qwen2.5-32b: 303
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -2923,13 +2985,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 998
-      qwen2.5-14b: 998
-      qwen2.5-32b: 998
+      qwen2.5-7b: 2536
+      qwen2.5-14b: 2536
+      qwen2.5-32b: 2536
     output_tokens:
-      qwen2.5-7b: 83
-      qwen2.5-14b: 83
-      qwen2.5-32b: 83
+      qwen2.5-7b: 605
+      qwen2.5-14b: 605
+      qwen2.5-32b: 605
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -2952,7 +3014,7 @@ applications:
   template_id: transactional_tool:10
   length_class: long
   ingress_rates:
-    at1.at: 0.0011538461538461537
+    at1.at: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -2961,13 +3023,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.002764
-    qwen2.5-14b: 0.002764
-    qwen2.5-32b: 0.002764
+    qwen2.5-7b: 0.010096
+    qwen2.5-14b: 0.010096
+    qwen2.5-32b: 0.010096
   exit_data_mb:
-    qwen2.5-7b: 0.00046
-    qwen2.5-14b: 0.00046
-    qwen2.5-32b: 0.00046
+    qwen2.5-7b: 0.004116
+    qwen2.5-14b: 0.004116
+    qwen2.5-32b: 0.004116
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -2988,13 +3050,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 691
-      qwen2.5-14b: 691
-      qwen2.5-32b: 691
+      qwen2.5-7b: 2524
+      qwen2.5-14b: 2524
+      qwen2.5-32b: 2524
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 515
+      qwen2.5-14b: 515
+      qwen2.5-32b: 515
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -3008,13 +3070,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1382
-      qwen2.5-14b: 1382
-      qwen2.5-32b: 1382
+      qwen2.5-7b: 5049
+      qwen2.5-14b: 5049
+      qwen2.5-32b: 5049
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 1029
+      qwen2.5-14b: 1029
+      qwen2.5-32b: 1029
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -3037,7 +3099,7 @@ applications:
   template_id: transactional_tool:11
   length_class: short
   ingress_rates:
-    be1.be: 0.0011538461538461537
+    be1.be: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -3046,13 +3108,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.00092
-    qwen2.5-14b: 0.00092
-    qwen2.5-32b: 0.00092
+    qwen2.5-7b: 0.000536
+    qwen2.5-14b: 0.000536
+    qwen2.5-32b: 0.000536
   exit_data_mb:
-    qwen2.5-7b: 0.000152
-    qwen2.5-14b: 0.000152
-    qwen2.5-32b: 0.000152
+    qwen2.5-7b: 0.001092
+    qwen2.5-14b: 0.001092
+    qwen2.5-32b: 0.001092
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.15
@@ -3073,13 +3135,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 230
-      qwen2.5-14b: 230
-      qwen2.5-32b: 230
+      qwen2.5-7b: 134
+      qwen2.5-14b: 134
+      qwen2.5-32b: 134
     output_tokens:
-      qwen2.5-7b: 19
-      qwen2.5-14b: 19
-      qwen2.5-32b: 19
+      qwen2.5-7b: 137
+      qwen2.5-14b: 137
+      qwen2.5-32b: 137
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -3093,13 +3155,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 269
+      qwen2.5-14b: 269
+      qwen2.5-32b: 269
     output_tokens:
-      qwen2.5-7b: 38
-      qwen2.5-14b: 38
-      qwen2.5-32b: 38
+      qwen2.5-7b: 273
+      qwen2.5-14b: 273
+      qwen2.5-32b: 273
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -3122,7 +3184,7 @@ applications:
   template_id: transactional_tool:12
   length_class: short
   ingress_rates:
-    ch1.ch: 0.0011538461538461537
+    ch1.ch: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -3131,13 +3193,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001228
-    qwen2.5-14b: 0.001228
-    qwen2.5-32b: 0.001228
+    qwen2.5-7b: 0.001172
+    qwen2.5-14b: 0.001172
+    qwen2.5-32b: 0.001172
   exit_data_mb:
-    qwen2.5-7b: 0.000204
-    qwen2.5-14b: 0.000204
-    qwen2.5-32b: 0.000204
+    qwen2.5-7b: 0.001248
+    qwen2.5-14b: 0.001248
+    qwen2.5-32b: 0.001248
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -3158,13 +3220,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 307
-      qwen2.5-14b: 307
-      qwen2.5-32b: 307
+      qwen2.5-7b: 293
+      qwen2.5-14b: 293
+      qwen2.5-32b: 293
     output_tokens:
-      qwen2.5-7b: 26
-      qwen2.5-14b: 26
-      qwen2.5-32b: 26
+      qwen2.5-7b: 156
+      qwen2.5-14b: 156
+      qwen2.5-32b: 156
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -3178,13 +3240,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 585
+      qwen2.5-14b: 585
+      qwen2.5-32b: 585
     output_tokens:
-      qwen2.5-7b: 51
-      qwen2.5-14b: 51
-      qwen2.5-32b: 51
+      qwen2.5-7b: 312
+      qwen2.5-14b: 312
+      qwen2.5-32b: 312
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -3207,7 +3269,7 @@ applications:
   template_id: transactional_tool:13
   length_class: medium
   ingress_rates:
-    cz1.cz: 0.0011538461538461537
+    cz1.cz: 0.0008653846153846153
   slo:
     type: ddl
     deadline_s: 8.0
@@ -3216,13 +3278,13 @@ applications:
     qwen2.5-14b: 0.8
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001536
-    qwen2.5-14b: 0.001536
-    qwen2.5-32b: 0.001536
+    qwen2.5-7b: 0.002548
+    qwen2.5-14b: 0.002548
+    qwen2.5-32b: 0.002548
   exit_data_mb:
-    qwen2.5-7b: 0.000256
-    qwen2.5-14b: 0.000256
-    qwen2.5-32b: 0.000256
+    qwen2.5-7b: 0.001424
+    qwen2.5-14b: 0.001424
+    qwen2.5-32b: 0.001424
   edge_data_mb:
     qwen2.5-7b:api->file: 0.5
     qwen2.5-7b:api->final: 0.1
@@ -3243,13 +3305,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 384
-      qwen2.5-14b: 384
-      qwen2.5-32b: 384
+      qwen2.5-7b: 637
+      qwen2.5-14b: 637
+      qwen2.5-32b: 637
     output_tokens:
-      qwen2.5-7b: 32
-      qwen2.5-14b: 32
-      qwen2.5-32b: 32
+      qwen2.5-7b: 178
+      qwen2.5-14b: 178
+      qwen2.5-32b: 178
     stage_deadline_s: 3.0
   - id: api
     type: tool
@@ -3263,13 +3325,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 768
-      qwen2.5-14b: 768
-      qwen2.5-32b: 768
+      qwen2.5-7b: 1274
+      qwen2.5-14b: 1274
+      qwen2.5-32b: 1274
     output_tokens:
-      qwen2.5-7b: 64
-      qwen2.5-14b: 64
-      qwen2.5-32b: 64
+      qwen2.5-7b: 356
+      qwen2.5-14b: 356
+      qwen2.5-32b: 356
   pattern_flows:
   - id: direct
     probability: 0.55
@@ -3292,7 +3354,7 @@ applications:
   template_id: deep_research:1
   length_class: short
   ingress_rates:
-    de1.de: 0.00125
+    de1.de: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -3303,16 +3365,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.004472
+    qwen2.5-14b: 0.004472
+    qwen2.5-32b: 0.004472
   exit_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 0.0053
+    qwen2.5-14b: 0.0053
+    qwen2.5-32b: 0.0053
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000384
+    qwen2.5-7b:analyze_docs->final: 0.003312
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -3323,7 +3385,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000384
+    qwen2.5-14b:analyze_docs->final: 0.003312
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -3334,7 +3396,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000384
+    qwen2.5-32b:analyze_docs->final: 0.003312
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -3348,13 +3410,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 1118
+      qwen2.5-14b: 1118
+      qwen2.5-32b: 1118
     output_tokens:
-      qwen2.5-7b: 38
-      qwen2.5-14b: 38
-      qwen2.5-32b: 38
+      qwen2.5-7b: 331
+      qwen2.5-14b: 331
+      qwen2.5-32b: 331
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -3362,13 +3424,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 922
-      qwen2.5-14b: 922
-      qwen2.5-32b: 922
+      qwen2.5-7b: 2236
+      qwen2.5-14b: 2236
+      qwen2.5-32b: 2236
     output_tokens:
-      qwen2.5-7b: 77
-      qwen2.5-14b: 77
-      qwen2.5-32b: 77
+      qwen2.5-7b: 663
+      qwen2.5-14b: 663
+      qwen2.5-32b: 663
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -3376,13 +3438,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 2981
+      qwen2.5-14b: 2981
+      qwen2.5-32b: 2981
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 828
+      qwen2.5-14b: 828
+      qwen2.5-32b: 828
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -3396,13 +3458,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 4472
+      qwen2.5-14b: 4472
+      qwen2.5-32b: 4472
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 1325
+      qwen2.5-14b: 1325
+      qwen2.5-32b: 1325
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -3438,7 +3500,7 @@ applications:
   template_id: deep_research:2
   length_class: short
   ingress_rates:
-    es1.es: 0.00125
+    es1.es: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -3449,16 +3511,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.002456
-    qwen2.5-14b: 0.002456
-    qwen2.5-32b: 0.002456
+    qwen2.5-7b: 0.004756
+    qwen2.5-14b: 0.004756
+    qwen2.5-32b: 0.004756
   exit_data_mb:
-    qwen2.5-7b: 0.00082
-    qwen2.5-14b: 0.00082
-    qwen2.5-32b: 0.00082
+    qwen2.5-7b: 0.005624
+    qwen2.5-14b: 0.005624
+    qwen2.5-32b: 0.005624
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000512
+    qwen2.5-7b:analyze_docs->final: 0.003516
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -3469,7 +3531,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000512
+    qwen2.5-14b:analyze_docs->final: 0.003516
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -3480,7 +3542,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000512
+    qwen2.5-32b:analyze_docs->final: 0.003516
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -3494,13 +3556,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 1189
+      qwen2.5-14b: 1189
+      qwen2.5-32b: 1189
     output_tokens:
-      qwen2.5-7b: 51
-      qwen2.5-14b: 51
-      qwen2.5-32b: 51
+      qwen2.5-7b: 351
+      qwen2.5-14b: 351
+      qwen2.5-32b: 351
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -3508,13 +3570,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 2378
+      qwen2.5-14b: 2378
+      qwen2.5-32b: 2378
     output_tokens:
-      qwen2.5-7b: 102
-      qwen2.5-14b: 102
-      qwen2.5-32b: 102
+      qwen2.5-7b: 703
+      qwen2.5-14b: 703
+      qwen2.5-32b: 703
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -3522,13 +3584,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 3170
+      qwen2.5-14b: 3170
+      qwen2.5-32b: 3170
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 879
+      qwen2.5-14b: 879
+      qwen2.5-32b: 879
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -3542,13 +3604,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 4756
+      qwen2.5-14b: 4756
+      qwen2.5-32b: 4756
     output_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 1406
+      qwen2.5-14b: 1406
+      qwen2.5-32b: 1406
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -3584,7 +3646,7 @@ applications:
   template_id: deep_research:3
   length_class: medium
   ingress_rates:
-    fr1.fr: 0.00125
+    fr1.fr: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -3595,16 +3657,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.003072
-    qwen2.5-14b: 0.003072
-    qwen2.5-32b: 0.003072
+    qwen2.5-7b: 0.005056
+    qwen2.5-14b: 0.005056
+    qwen2.5-32b: 0.005056
   exit_data_mb:
-    qwen2.5-7b: 0.001024
-    qwen2.5-14b: 0.001024
-    qwen2.5-32b: 0.001024
+    qwen2.5-7b: 0.005964
+    qwen2.5-14b: 0.005964
+    qwen2.5-32b: 0.005964
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.00064
+    qwen2.5-7b:analyze_docs->final: 0.003728
     qwen2.5-7b:analyze_web->api: 0.2
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -3615,7 +3677,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.00064
+    qwen2.5-14b:analyze_docs->final: 0.003728
     qwen2.5-14b:analyze_web->api: 0.2
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -3626,7 +3688,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.00064
+    qwen2.5-32b:analyze_docs->final: 0.003728
     qwen2.5-32b:analyze_web->api: 0.2
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -3640,13 +3702,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 768
-      qwen2.5-14b: 768
-      qwen2.5-32b: 768
+      qwen2.5-7b: 1264
+      qwen2.5-14b: 1264
+      qwen2.5-32b: 1264
     output_tokens:
-      qwen2.5-7b: 64
-      qwen2.5-14b: 64
-      qwen2.5-32b: 64
+      qwen2.5-7b: 373
+      qwen2.5-14b: 373
+      qwen2.5-32b: 373
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -3654,13 +3716,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1536
-      qwen2.5-14b: 1536
-      qwen2.5-32b: 1536
+      qwen2.5-7b: 2529
+      qwen2.5-14b: 2529
+      qwen2.5-32b: 2529
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 745
+      qwen2.5-14b: 745
+      qwen2.5-32b: 745
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -3668,13 +3730,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2048
-      qwen2.5-14b: 2048
-      qwen2.5-32b: 2048
+      qwen2.5-7b: 3372
+      qwen2.5-14b: 3372
+      qwen2.5-32b: 3372
     output_tokens:
-      qwen2.5-7b: 160
-      qwen2.5-14b: 160
-      qwen2.5-32b: 160
+      qwen2.5-7b: 932
+      qwen2.5-14b: 932
+      qwen2.5-32b: 932
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -3688,13 +3750,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3072
-      qwen2.5-14b: 3072
-      qwen2.5-32b: 3072
+      qwen2.5-7b: 5058
+      qwen2.5-14b: 5058
+      qwen2.5-32b: 5058
     output_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 1491
+      qwen2.5-14b: 1491
+      qwen2.5-32b: 1491
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -3730,7 +3792,7 @@ applications:
   template_id: deep_research:4
   length_class: medium
   ingress_rates:
-    gr1.gr: 0.00125
+    gr1.gr: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -3741,16 +3803,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.003992
-    qwen2.5-14b: 0.003992
-    qwen2.5-32b: 0.003992
+    qwen2.5-7b: 0.007828
+    qwen2.5-14b: 0.007828
+    qwen2.5-32b: 0.007828
   exit_data_mb:
-    qwen2.5-7b: 0.001332
-    qwen2.5-14b: 0.001332
-    qwen2.5-32b: 0.001332
+    qwen2.5-7b: 0.008692
+    qwen2.5-14b: 0.008692
+    qwen2.5-32b: 0.008692
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000832
+    qwen2.5-7b:analyze_docs->final: 0.005432
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -3761,7 +3823,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000832
+    qwen2.5-14b:analyze_docs->final: 0.005432
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -3772,7 +3834,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000832
+    qwen2.5-32b:analyze_docs->final: 0.005432
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -3786,13 +3848,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 998
-      qwen2.5-14b: 998
-      qwen2.5-32b: 998
+      qwen2.5-7b: 1957
+      qwen2.5-14b: 1957
+      qwen2.5-32b: 1957
     output_tokens:
-      qwen2.5-7b: 83
-      qwen2.5-14b: 83
-      qwen2.5-32b: 83
+      qwen2.5-7b: 543
+      qwen2.5-14b: 543
+      qwen2.5-32b: 543
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -3800,13 +3862,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1997
-      qwen2.5-14b: 1997
-      qwen2.5-32b: 1997
+      qwen2.5-7b: 3914
+      qwen2.5-14b: 3914
+      qwen2.5-32b: 3914
     output_tokens:
-      qwen2.5-7b: 166
-      qwen2.5-14b: 166
-      qwen2.5-32b: 166
+      qwen2.5-7b: 1087
+      qwen2.5-14b: 1087
+      qwen2.5-32b: 1087
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -3814,13 +3876,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2662
-      qwen2.5-14b: 2662
-      qwen2.5-32b: 2662
+      qwen2.5-7b: 5219
+      qwen2.5-14b: 5219
+      qwen2.5-32b: 5219
     output_tokens:
-      qwen2.5-7b: 208
-      qwen2.5-14b: 208
-      qwen2.5-32b: 208
+      qwen2.5-7b: 1358
+      qwen2.5-14b: 1358
+      qwen2.5-32b: 1358
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -3834,13 +3896,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3994
-      qwen2.5-14b: 3994
-      qwen2.5-32b: 3994
+      qwen2.5-7b: 7829
+      qwen2.5-14b: 7829
+      qwen2.5-32b: 7829
     output_tokens:
-      qwen2.5-7b: 333
-      qwen2.5-14b: 333
-      qwen2.5-32b: 333
+      qwen2.5-7b: 2173
+      qwen2.5-14b: 2173
+      qwen2.5-32b: 2173
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -3876,7 +3938,7 @@ applications:
   template_id: deep_research:5
   length_class: long
   ingress_rates:
-    hr1.hr: 0.00125
+    hr1.hr: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -3887,16 +3949,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.005528
-    qwen2.5-14b: 0.005528
-    qwen2.5-32b: 0.005528
+    qwen2.5-7b: 0.012116
+    qwen2.5-14b: 0.012116
+    qwen2.5-32b: 0.012116
   exit_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.012672
+    qwen2.5-14b: 0.012672
+    qwen2.5-32b: 0.012672
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.001152
+    qwen2.5-7b:analyze_docs->final: 0.00792
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -3907,7 +3969,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.001152
+    qwen2.5-14b:analyze_docs->final: 0.00792
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -3918,7 +3980,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.001152
+    qwen2.5-32b:analyze_docs->final: 0.00792
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -3932,13 +3994,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1382
-      qwen2.5-14b: 1382
-      qwen2.5-32b: 1382
+      qwen2.5-7b: 3029
+      qwen2.5-14b: 3029
+      qwen2.5-32b: 3029
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 792
+      qwen2.5-14b: 792
+      qwen2.5-32b: 792
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -3946,13 +4008,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2765
-      qwen2.5-14b: 2765
-      qwen2.5-32b: 2765
+      qwen2.5-7b: 6058
+      qwen2.5-14b: 6058
+      qwen2.5-32b: 6058
     output_tokens:
-      qwen2.5-7b: 230
-      qwen2.5-14b: 230
-      qwen2.5-32b: 230
+      qwen2.5-7b: 1584
+      qwen2.5-14b: 1584
+      qwen2.5-32b: 1584
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -3960,13 +4022,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3686
-      qwen2.5-14b: 3686
-      qwen2.5-32b: 3686
+      qwen2.5-7b: 8078
+      qwen2.5-14b: 8078
+      qwen2.5-32b: 8078
     output_tokens:
-      qwen2.5-7b: 288
-      qwen2.5-14b: 288
-      qwen2.5-32b: 288
+      qwen2.5-7b: 1980
+      qwen2.5-14b: 1980
+      qwen2.5-32b: 1980
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -3980,13 +4042,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 5530
-      qwen2.5-14b: 5530
-      qwen2.5-32b: 5530
+      qwen2.5-7b: 12117
+      qwen2.5-14b: 12117
+      qwen2.5-32b: 12117
     output_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 3168
+      qwen2.5-14b: 3168
+      qwen2.5-32b: 3168
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4022,7 +4084,7 @@ applications:
   template_id: deep_research:6
   length_class: short
   ingress_rates:
-    hu1.hu: 0.00125
+    hu1.hu: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4033,16 +4095,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.004472
+    qwen2.5-14b: 0.004472
+    qwen2.5-32b: 0.004472
   exit_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 0.0053
+    qwen2.5-14b: 0.0053
+    qwen2.5-32b: 0.0053
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000384
+    qwen2.5-7b:analyze_docs->final: 0.003312
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4053,7 +4115,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000384
+    qwen2.5-14b:analyze_docs->final: 0.003312
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4064,7 +4126,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000384
+    qwen2.5-32b:analyze_docs->final: 0.003312
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4078,13 +4140,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 1118
+      qwen2.5-14b: 1118
+      qwen2.5-32b: 1118
     output_tokens:
-      qwen2.5-7b: 38
-      qwen2.5-14b: 38
-      qwen2.5-32b: 38
+      qwen2.5-7b: 331
+      qwen2.5-14b: 331
+      qwen2.5-32b: 331
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4092,13 +4154,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 922
-      qwen2.5-14b: 922
-      qwen2.5-32b: 922
+      qwen2.5-7b: 2236
+      qwen2.5-14b: 2236
+      qwen2.5-32b: 2236
     output_tokens:
-      qwen2.5-7b: 77
-      qwen2.5-14b: 77
-      qwen2.5-32b: 77
+      qwen2.5-7b: 663
+      qwen2.5-14b: 663
+      qwen2.5-32b: 663
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4106,13 +4168,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 2981
+      qwen2.5-14b: 2981
+      qwen2.5-32b: 2981
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 828
+      qwen2.5-14b: 828
+      qwen2.5-32b: 828
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -4126,13 +4188,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 4472
+      qwen2.5-14b: 4472
+      qwen2.5-32b: 4472
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 1325
+      qwen2.5-14b: 1325
+      qwen2.5-32b: 1325
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4168,7 +4230,7 @@ applications:
   template_id: deep_research:7
   length_class: short
   ingress_rates:
-    ie1.ie: 0.00125
+    ie1.ie: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4179,16 +4241,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.002456
-    qwen2.5-14b: 0.002456
-    qwen2.5-32b: 0.002456
+    qwen2.5-7b: 0.004756
+    qwen2.5-14b: 0.004756
+    qwen2.5-32b: 0.004756
   exit_data_mb:
-    qwen2.5-7b: 0.00082
-    qwen2.5-14b: 0.00082
-    qwen2.5-32b: 0.00082
+    qwen2.5-7b: 0.005624
+    qwen2.5-14b: 0.005624
+    qwen2.5-32b: 0.005624
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000512
+    qwen2.5-7b:analyze_docs->final: 0.003516
     qwen2.5-7b:analyze_web->api: 0.2
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4199,7 +4261,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000512
+    qwen2.5-14b:analyze_docs->final: 0.003516
     qwen2.5-14b:analyze_web->api: 0.2
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4210,7 +4272,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000512
+    qwen2.5-32b:analyze_docs->final: 0.003516
     qwen2.5-32b:analyze_web->api: 0.2
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4224,13 +4286,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 1189
+      qwen2.5-14b: 1189
+      qwen2.5-32b: 1189
     output_tokens:
-      qwen2.5-7b: 51
-      qwen2.5-14b: 51
-      qwen2.5-32b: 51
+      qwen2.5-7b: 351
+      qwen2.5-14b: 351
+      qwen2.5-32b: 351
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4238,13 +4300,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 2378
+      qwen2.5-14b: 2378
+      qwen2.5-32b: 2378
     output_tokens:
-      qwen2.5-7b: 102
-      qwen2.5-14b: 102
-      qwen2.5-32b: 102
+      qwen2.5-7b: 703
+      qwen2.5-14b: 703
+      qwen2.5-32b: 703
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4252,13 +4314,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 3170
+      qwen2.5-14b: 3170
+      qwen2.5-32b: 3170
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 879
+      qwen2.5-14b: 879
+      qwen2.5-32b: 879
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -4272,13 +4334,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 4756
+      qwen2.5-14b: 4756
+      qwen2.5-32b: 4756
     output_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 1406
+      qwen2.5-14b: 1406
+      qwen2.5-32b: 1406
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4314,7 +4376,7 @@ applications:
   template_id: deep_research:8
   length_class: medium
   ingress_rates:
-    il1.il: 0.00125
+    il1.il: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4325,16 +4387,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.003072
-    qwen2.5-14b: 0.003072
-    qwen2.5-32b: 0.003072
+    qwen2.5-7b: 0.005056
+    qwen2.5-14b: 0.005056
+    qwen2.5-32b: 0.005056
   exit_data_mb:
-    qwen2.5-7b: 0.001024
-    qwen2.5-14b: 0.001024
-    qwen2.5-32b: 0.001024
+    qwen2.5-7b: 0.005964
+    qwen2.5-14b: 0.005964
+    qwen2.5-32b: 0.005964
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.00064
+    qwen2.5-7b:analyze_docs->final: 0.003728
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4345,7 +4407,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.00064
+    qwen2.5-14b:analyze_docs->final: 0.003728
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4356,7 +4418,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.00064
+    qwen2.5-32b:analyze_docs->final: 0.003728
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4370,13 +4432,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 768
-      qwen2.5-14b: 768
-      qwen2.5-32b: 768
+      qwen2.5-7b: 1264
+      qwen2.5-14b: 1264
+      qwen2.5-32b: 1264
     output_tokens:
-      qwen2.5-7b: 64
-      qwen2.5-14b: 64
-      qwen2.5-32b: 64
+      qwen2.5-7b: 373
+      qwen2.5-14b: 373
+      qwen2.5-32b: 373
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4384,13 +4446,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1536
-      qwen2.5-14b: 1536
-      qwen2.5-32b: 1536
+      qwen2.5-7b: 2529
+      qwen2.5-14b: 2529
+      qwen2.5-32b: 2529
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 745
+      qwen2.5-14b: 745
+      qwen2.5-32b: 745
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4398,13 +4460,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2048
-      qwen2.5-14b: 2048
-      qwen2.5-32b: 2048
+      qwen2.5-7b: 3372
+      qwen2.5-14b: 3372
+      qwen2.5-32b: 3372
     output_tokens:
-      qwen2.5-7b: 160
-      qwen2.5-14b: 160
-      qwen2.5-32b: 160
+      qwen2.5-7b: 932
+      qwen2.5-14b: 932
+      qwen2.5-32b: 932
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -4418,13 +4480,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3072
-      qwen2.5-14b: 3072
-      qwen2.5-32b: 3072
+      qwen2.5-7b: 5058
+      qwen2.5-14b: 5058
+      qwen2.5-32b: 5058
     output_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 1491
+      qwen2.5-14b: 1491
+      qwen2.5-32b: 1491
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4460,7 +4522,7 @@ applications:
   template_id: deep_research:9
   length_class: medium
   ingress_rates:
-    it1.it: 0.00125
+    it1.it: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4471,16 +4533,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.003992
-    qwen2.5-14b: 0.003992
-    qwen2.5-32b: 0.003992
+    qwen2.5-7b: 0.007828
+    qwen2.5-14b: 0.007828
+    qwen2.5-32b: 0.007828
   exit_data_mb:
-    qwen2.5-7b: 0.001332
-    qwen2.5-14b: 0.001332
-    qwen2.5-32b: 0.001332
+    qwen2.5-7b: 0.008692
+    qwen2.5-14b: 0.008692
+    qwen2.5-32b: 0.008692
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000832
+    qwen2.5-7b:analyze_docs->final: 0.005432
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4491,7 +4553,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000832
+    qwen2.5-14b:analyze_docs->final: 0.005432
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4502,7 +4564,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000832
+    qwen2.5-32b:analyze_docs->final: 0.005432
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4516,13 +4578,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 998
-      qwen2.5-14b: 998
-      qwen2.5-32b: 998
+      qwen2.5-7b: 1957
+      qwen2.5-14b: 1957
+      qwen2.5-32b: 1957
     output_tokens:
-      qwen2.5-7b: 83
-      qwen2.5-14b: 83
-      qwen2.5-32b: 83
+      qwen2.5-7b: 543
+      qwen2.5-14b: 543
+      qwen2.5-32b: 543
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4530,13 +4592,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1997
-      qwen2.5-14b: 1997
-      qwen2.5-32b: 1997
+      qwen2.5-7b: 3914
+      qwen2.5-14b: 3914
+      qwen2.5-32b: 3914
     output_tokens:
-      qwen2.5-7b: 166
-      qwen2.5-14b: 166
-      qwen2.5-32b: 166
+      qwen2.5-7b: 1087
+      qwen2.5-14b: 1087
+      qwen2.5-32b: 1087
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4544,13 +4606,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2662
-      qwen2.5-14b: 2662
-      qwen2.5-32b: 2662
+      qwen2.5-7b: 5219
+      qwen2.5-14b: 5219
+      qwen2.5-32b: 5219
     output_tokens:
-      qwen2.5-7b: 208
-      qwen2.5-14b: 208
-      qwen2.5-32b: 208
+      qwen2.5-7b: 1358
+      qwen2.5-14b: 1358
+      qwen2.5-32b: 1358
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -4564,13 +4626,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3994
-      qwen2.5-14b: 3994
-      qwen2.5-32b: 3994
+      qwen2.5-7b: 7829
+      qwen2.5-14b: 7829
+      qwen2.5-32b: 7829
     output_tokens:
-      qwen2.5-7b: 333
-      qwen2.5-14b: 333
-      qwen2.5-32b: 333
+      qwen2.5-7b: 2173
+      qwen2.5-14b: 2173
+      qwen2.5-32b: 2173
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4606,7 +4668,7 @@ applications:
   template_id: deep_research:10
   length_class: long
   ingress_rates:
-    lu1.lu: 0.00125
+    lu1.lu: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4617,16 +4679,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.005528
-    qwen2.5-14b: 0.005528
-    qwen2.5-32b: 0.005528
+    qwen2.5-7b: 0.012116
+    qwen2.5-14b: 0.012116
+    qwen2.5-32b: 0.012116
   exit_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.012672
+    qwen2.5-14b: 0.012672
+    qwen2.5-32b: 0.012672
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.001152
+    qwen2.5-7b:analyze_docs->final: 0.00792
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4637,7 +4699,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.001152
+    qwen2.5-14b:analyze_docs->final: 0.00792
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4648,7 +4710,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.001152
+    qwen2.5-32b:analyze_docs->final: 0.00792
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4662,13 +4724,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1382
-      qwen2.5-14b: 1382
-      qwen2.5-32b: 1382
+      qwen2.5-7b: 3029
+      qwen2.5-14b: 3029
+      qwen2.5-32b: 3029
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 792
+      qwen2.5-14b: 792
+      qwen2.5-32b: 792
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4676,13 +4738,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2765
-      qwen2.5-14b: 2765
-      qwen2.5-32b: 2765
+      qwen2.5-7b: 6058
+      qwen2.5-14b: 6058
+      qwen2.5-32b: 6058
     output_tokens:
-      qwen2.5-7b: 230
-      qwen2.5-14b: 230
-      qwen2.5-32b: 230
+      qwen2.5-7b: 1584
+      qwen2.5-14b: 1584
+      qwen2.5-32b: 1584
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4690,13 +4752,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3686
-      qwen2.5-14b: 3686
-      qwen2.5-32b: 3686
+      qwen2.5-7b: 8078
+      qwen2.5-14b: 8078
+      qwen2.5-32b: 8078
     output_tokens:
-      qwen2.5-7b: 288
-      qwen2.5-14b: 288
-      qwen2.5-32b: 288
+      qwen2.5-7b: 1980
+      qwen2.5-14b: 1980
+      qwen2.5-32b: 1980
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -4710,13 +4772,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 5530
-      qwen2.5-14b: 5530
-      qwen2.5-32b: 5530
+      qwen2.5-7b: 12117
+      qwen2.5-14b: 12117
+      qwen2.5-32b: 12117
     output_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 3168
+      qwen2.5-14b: 3168
+      qwen2.5-32b: 3168
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4752,7 +4814,7 @@ applications:
   template_id: deep_research:11
   length_class: short
   ingress_rates:
-    nl1.nl: 0.00125
+    nl1.nl: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4763,16 +4825,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.001844
-    qwen2.5-14b: 0.001844
-    qwen2.5-32b: 0.001844
+    qwen2.5-7b: 0.004472
+    qwen2.5-14b: 0.004472
+    qwen2.5-32b: 0.004472
   exit_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 0.0053
+    qwen2.5-14b: 0.0053
+    qwen2.5-32b: 0.0053
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000384
+    qwen2.5-7b:analyze_docs->final: 0.003312
     qwen2.5-7b:analyze_web->api: 0.2
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4783,7 +4845,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000384
+    qwen2.5-14b:analyze_docs->final: 0.003312
     qwen2.5-14b:analyze_web->api: 0.2
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4794,7 +4856,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000384
+    qwen2.5-32b:analyze_docs->final: 0.003312
     qwen2.5-32b:analyze_web->api: 0.2
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4808,13 +4870,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 1118
+      qwen2.5-14b: 1118
+      qwen2.5-32b: 1118
     output_tokens:
-      qwen2.5-7b: 38
-      qwen2.5-14b: 38
-      qwen2.5-32b: 38
+      qwen2.5-7b: 331
+      qwen2.5-14b: 331
+      qwen2.5-32b: 331
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4822,13 +4884,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 922
-      qwen2.5-14b: 922
-      qwen2.5-32b: 922
+      qwen2.5-7b: 2236
+      qwen2.5-14b: 2236
+      qwen2.5-32b: 2236
     output_tokens:
-      qwen2.5-7b: 77
-      qwen2.5-14b: 77
-      qwen2.5-32b: 77
+      qwen2.5-7b: 663
+      qwen2.5-14b: 663
+      qwen2.5-32b: 663
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4836,13 +4898,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 2981
+      qwen2.5-14b: 2981
+      qwen2.5-32b: 2981
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 828
+      qwen2.5-14b: 828
+      qwen2.5-32b: 828
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -4856,13 +4918,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 4472
+      qwen2.5-14b: 4472
+      qwen2.5-32b: 4472
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 1325
+      qwen2.5-14b: 1325
+      qwen2.5-32b: 1325
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -4898,7 +4960,7 @@ applications:
   template_id: deep_research:12
   length_class: short
   ingress_rates:
-    ny1.ny: 0.00125
+    ny1.ny: 0.0009375
   slo:
     type: cmp
     ttft_s: 4.0
@@ -4909,16 +4971,16 @@ applications:
     qwen2.5-14b: 0.77
     qwen2.5-32b: 0.91
   entry_data_mb:
-    qwen2.5-7b: 0.002456
-    qwen2.5-14b: 0.002456
-    qwen2.5-32b: 0.002456
+    qwen2.5-7b: 0.004756
+    qwen2.5-14b: 0.004756
+    qwen2.5-32b: 0.004756
   exit_data_mb:
-    qwen2.5-7b: 0.00082
-    qwen2.5-14b: 0.00082
-    qwen2.5-32b: 0.00082
+    qwen2.5-7b: 0.005624
+    qwen2.5-14b: 0.005624
+    qwen2.5-32b: 0.005624
   edge_data_mb:
     qwen2.5-7b:analyze_docs->file: 0.5
-    qwen2.5-7b:analyze_docs->final: 0.000512
+    qwen2.5-7b:analyze_docs->final: 0.003516
     qwen2.5-7b:analyze_web->api: 0.01
     qwen2.5-7b:analyze_web->verify: 0.02
     qwen2.5-7b:api->verify: 0.02
@@ -4929,7 +4991,7 @@ applications:
     qwen2.5-7b:search->analyze_web: 0.08
     qwen2.5-7b:verify->final: 0.02
     qwen2.5-14b:analyze_docs->file: 0.5
-    qwen2.5-14b:analyze_docs->final: 0.000512
+    qwen2.5-14b:analyze_docs->final: 0.003516
     qwen2.5-14b:analyze_web->api: 0.01
     qwen2.5-14b:analyze_web->verify: 0.02
     qwen2.5-14b:api->verify: 0.02
@@ -4940,7 +5002,7 @@ applications:
     qwen2.5-14b:search->analyze_web: 0.08
     qwen2.5-14b:verify->final: 0.02
     qwen2.5-32b:analyze_docs->file: 0.5
-    qwen2.5-32b:analyze_docs->final: 0.000512
+    qwen2.5-32b:analyze_docs->final: 0.003516
     qwen2.5-32b:analyze_web->api: 0.01
     qwen2.5-32b:analyze_web->verify: 0.02
     qwen2.5-32b:api->verify: 0.02
@@ -4954,13 +5016,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 1189
+      qwen2.5-14b: 1189
+      qwen2.5-32b: 1189
     output_tokens:
-      qwen2.5-7b: 51
-      qwen2.5-14b: 51
-      qwen2.5-32b: 51
+      qwen2.5-7b: 351
+      qwen2.5-14b: 351
+      qwen2.5-32b: 351
     stage_deadline_s: 5.0
   - id: search
     type: tool
@@ -4968,13 +5030,13 @@ applications:
   - id: analyze_web
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 2378
+      qwen2.5-14b: 2378
+      qwen2.5-32b: 2378
     output_tokens:
-      qwen2.5-7b: 102
-      qwen2.5-14b: 102
-      qwen2.5-32b: 102
+      qwen2.5-7b: 703
+      qwen2.5-14b: 703
+      qwen2.5-32b: 703
     stage_deadline_s: 12.0
   - id: retrieve
     type: tool
@@ -4982,13 +5044,13 @@ applications:
   - id: analyze_docs
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 3170
+      qwen2.5-14b: 3170
+      qwen2.5-32b: 3170
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 879
+      qwen2.5-14b: 879
+      qwen2.5-32b: 879
     stage_deadline_s: 15.0
   - id: api
     type: tool
@@ -5002,13 +5064,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 4756
+      qwen2.5-14b: 4756
+      qwen2.5-32b: 4756
     output_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 1406
+      qwen2.5-14b: 1406
+      qwen2.5-32b: 1406
   pattern_flows:
   - id: parallel-core
     probability: 0.65
@@ -5044,7 +5106,7 @@ applications:
   template_id: coding_agent:1
   length_class: short
   ingress_rates:
-    pl1.pl: 0.00125
+    pl1.pl: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -5055,13 +5117,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.002456
-    qwen2.5-14b: 0.002456
-    qwen2.5-32b: 0.002456
+    qwen2.5-7b: 0.000364
+    qwen2.5-14b: 0.000364
+    qwen2.5-32b: 0.000364
   exit_data_mb:
-    qwen2.5-7b: 0.00046
-    qwen2.5-14b: 0.00046
-    qwen2.5-32b: 0.00046
+    qwen2.5-7b: 0.003928
+    qwen2.5-14b: 0.003928
+    qwen2.5-32b: 0.003928
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -5097,13 +5159,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 91
+      qwen2.5-14b: 91
+      qwen2.5-32b: 91
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 491
+      qwen2.5-14b: 491
+      qwen2.5-32b: 491
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -5111,13 +5173,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 183
+      qwen2.5-14b: 183
+      qwen2.5-32b: 183
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 818
+      qwen2.5-14b: 818
+      qwen2.5-32b: 818
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -5125,13 +5187,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 366
+      qwen2.5-14b: 366
+      qwen2.5-32b: 366
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 1309
+      qwen2.5-14b: 1309
+      qwen2.5-32b: 1309
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -5142,13 +5204,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 274
+      qwen2.5-14b: 274
+      qwen2.5-32b: 274
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 818
+      qwen2.5-14b: 818
+      qwen2.5-32b: 818
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -5156,13 +5218,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 183
+      qwen2.5-14b: 183
+      qwen2.5-32b: 183
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 982
+      qwen2.5-14b: 982
+      qwen2.5-32b: 982
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -5204,7 +5266,7 @@ applications:
   template_id: coding_agent:2
   length_class: short
   ingress_rates:
-    pt1.pt: 0.00125
+    pt1.pt: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -5215,13 +5277,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.003276
-    qwen2.5-14b: 0.003276
-    qwen2.5-32b: 0.003276
+    qwen2.5-7b: 0.0004
+    qwen2.5-14b: 0.0004
+    qwen2.5-32b: 0.0004
   exit_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 0.003944
+    qwen2.5-14b: 0.003944
+    qwen2.5-32b: 0.003944
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -5257,13 +5319,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 819
-      qwen2.5-14b: 819
-      qwen2.5-32b: 819
+      qwen2.5-7b: 100
+      qwen2.5-14b: 100
+      qwen2.5-32b: 100
     output_tokens:
-      qwen2.5-7b: 77
-      qwen2.5-14b: 77
-      qwen2.5-32b: 77
+      qwen2.5-7b: 493
+      qwen2.5-14b: 493
+      qwen2.5-32b: 493
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -5271,13 +5333,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 199
+      qwen2.5-14b: 199
+      qwen2.5-32b: 199
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 822
+      qwen2.5-14b: 822
+      qwen2.5-32b: 822
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -5285,13 +5347,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3277
-      qwen2.5-14b: 3277
-      qwen2.5-32b: 3277
+      qwen2.5-7b: 398
+      qwen2.5-14b: 398
+      qwen2.5-32b: 398
     output_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 1315
+      qwen2.5-14b: 1315
+      qwen2.5-32b: 1315
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -5302,13 +5364,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 298
+      qwen2.5-14b: 298
+      qwen2.5-32b: 298
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 822
+      qwen2.5-14b: 822
+      qwen2.5-32b: 822
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -5316,13 +5378,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 199
+      qwen2.5-14b: 199
+      qwen2.5-32b: 199
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 986
+      qwen2.5-14b: 986
+      qwen2.5-32b: 986
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -5364,7 +5426,7 @@ applications:
   template_id: coding_agent:3
   length_class: medium
   ingress_rates:
-    se1.se: 0.00125
+    se1.se: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -5375,13 +5437,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.004096
-    qwen2.5-14b: 0.004096
-    qwen2.5-32b: 0.004096
+    qwen2.5-7b: 0.000432
+    qwen2.5-14b: 0.000432
+    qwen2.5-32b: 0.000432
   exit_data_mb:
-    qwen2.5-7b: 0.000768
-    qwen2.5-14b: 0.000768
-    qwen2.5-32b: 0.000768
+    qwen2.5-7b: 0.003964
+    qwen2.5-14b: 0.003964
+    qwen2.5-32b: 0.003964
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -5417,13 +5479,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1024
-      qwen2.5-14b: 1024
-      qwen2.5-32b: 1024
+      qwen2.5-7b: 108
+      qwen2.5-14b: 108
+      qwen2.5-32b: 108
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 495
+      qwen2.5-14b: 495
+      qwen2.5-32b: 495
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -5431,13 +5493,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2048
-      qwen2.5-14b: 2048
-      qwen2.5-32b: 2048
+      qwen2.5-7b: 217
+      qwen2.5-14b: 217
+      qwen2.5-32b: 217
     output_tokens:
-      qwen2.5-7b: 160
-      qwen2.5-14b: 160
-      qwen2.5-32b: 160
+      qwen2.5-7b: 826
+      qwen2.5-14b: 826
+      qwen2.5-32b: 826
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -5445,13 +5507,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 4096
-      qwen2.5-14b: 4096
-      qwen2.5-32b: 4096
+      qwen2.5-7b: 433
+      qwen2.5-14b: 433
+      qwen2.5-32b: 433
     output_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 1321
+      qwen2.5-14b: 1321
+      qwen2.5-32b: 1321
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -5462,13 +5524,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3072
-      qwen2.5-14b: 3072
-      qwen2.5-32b: 3072
+      qwen2.5-7b: 325
+      qwen2.5-14b: 325
+      qwen2.5-32b: 325
     output_tokens:
-      qwen2.5-7b: 160
-      qwen2.5-14b: 160
-      qwen2.5-32b: 160
+      qwen2.5-7b: 826
+      qwen2.5-14b: 826
+      qwen2.5-32b: 826
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -5476,13 +5538,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2048
-      qwen2.5-14b: 2048
-      qwen2.5-32b: 2048
+      qwen2.5-7b: 217
+      qwen2.5-14b: 217
+      qwen2.5-32b: 217
     output_tokens:
-      qwen2.5-7b: 192
-      qwen2.5-14b: 192
-      qwen2.5-32b: 192
+      qwen2.5-7b: 991
+      qwen2.5-14b: 991
+      qwen2.5-32b: 991
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -5524,7 +5586,7 @@ applications:
   template_id: coding_agent:4
   length_class: medium
   ingress_rates:
-    si1.si: 0.00125
+    si1.si: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -5535,13 +5597,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.005324
-    qwen2.5-14b: 0.005324
-    qwen2.5-32b: 0.005324
+    qwen2.5-7b: 0.000632
+    qwen2.5-14b: 0.000632
+    qwen2.5-32b: 0.000632
   exit_data_mb:
-    qwen2.5-7b: 0.001
-    qwen2.5-14b: 0.001
-    qwen2.5-32b: 0.001
+    qwen2.5-7b: 0.004768
+    qwen2.5-14b: 0.004768
+    qwen2.5-32b: 0.004768
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -5577,13 +5639,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1331
-      qwen2.5-14b: 1331
-      qwen2.5-32b: 1331
+      qwen2.5-7b: 158
+      qwen2.5-14b: 158
+      qwen2.5-32b: 158
     output_tokens:
-      qwen2.5-7b: 125
-      qwen2.5-14b: 125
-      qwen2.5-32b: 125
+      qwen2.5-7b: 596
+      qwen2.5-14b: 596
+      qwen2.5-32b: 596
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -5591,13 +5653,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2662
-      qwen2.5-14b: 2662
-      qwen2.5-32b: 2662
+      qwen2.5-7b: 316
+      qwen2.5-14b: 316
+      qwen2.5-32b: 316
     output_tokens:
-      qwen2.5-7b: 208
-      qwen2.5-14b: 208
-      qwen2.5-32b: 208
+      qwen2.5-7b: 993
+      qwen2.5-14b: 993
+      qwen2.5-32b: 993
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -5605,13 +5667,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 5325
-      qwen2.5-14b: 5325
-      qwen2.5-32b: 5325
+      qwen2.5-7b: 632
+      qwen2.5-14b: 632
+      qwen2.5-32b: 632
     output_tokens:
-      qwen2.5-7b: 333
-      qwen2.5-14b: 333
-      qwen2.5-32b: 333
+      qwen2.5-7b: 1589
+      qwen2.5-14b: 1589
+      qwen2.5-32b: 1589
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -5622,13 +5684,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3994
-      qwen2.5-14b: 3994
-      qwen2.5-32b: 3994
+      qwen2.5-7b: 474
+      qwen2.5-14b: 474
+      qwen2.5-32b: 474
     output_tokens:
-      qwen2.5-7b: 208
-      qwen2.5-14b: 208
-      qwen2.5-32b: 208
+      qwen2.5-7b: 993
+      qwen2.5-14b: 993
+      qwen2.5-32b: 993
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -5636,13 +5698,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2662
-      qwen2.5-14b: 2662
-      qwen2.5-32b: 2662
+      qwen2.5-7b: 316
+      qwen2.5-14b: 316
+      qwen2.5-32b: 316
     output_tokens:
-      qwen2.5-7b: 250
-      qwen2.5-14b: 250
-      qwen2.5-32b: 250
+      qwen2.5-7b: 1192
+      qwen2.5-14b: 1192
+      qwen2.5-32b: 1192
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -5684,7 +5746,7 @@ applications:
   template_id: coding_agent:5
   length_class: long
   ingress_rates:
-    sk1.sk: 0.00125
+    sk1.sk: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -5695,13 +5757,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.007372
-    qwen2.5-14b: 0.007372
-    qwen2.5-32b: 0.007372
+    qwen2.5-7b: 0.000924
+    qwen2.5-14b: 0.000924
+    qwen2.5-32b: 0.000924
   exit_data_mb:
-    qwen2.5-7b: 0.001384
-    qwen2.5-14b: 0.001384
-    qwen2.5-32b: 0.001384
+    qwen2.5-7b: 0.005736
+    qwen2.5-14b: 0.005736
+    qwen2.5-32b: 0.005736
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -5737,13 +5799,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 231
+      qwen2.5-14b: 231
+      qwen2.5-32b: 231
     output_tokens:
-      qwen2.5-7b: 173
-      qwen2.5-14b: 173
-      qwen2.5-32b: 173
+      qwen2.5-7b: 717
+      qwen2.5-14b: 717
+      qwen2.5-32b: 717
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -5751,13 +5813,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3686
-      qwen2.5-14b: 3686
-      qwen2.5-32b: 3686
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
     output_tokens:
-      qwen2.5-7b: 288
-      qwen2.5-14b: 288
-      qwen2.5-32b: 288
+      qwen2.5-7b: 1195
+      qwen2.5-14b: 1195
+      qwen2.5-32b: 1195
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -5765,13 +5827,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 7373
-      qwen2.5-14b: 7373
-      qwen2.5-32b: 7373
+      qwen2.5-7b: 922
+      qwen2.5-14b: 922
+      qwen2.5-32b: 922
     output_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 1912
+      qwen2.5-14b: 1912
+      qwen2.5-32b: 1912
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -5782,13 +5844,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 5530
-      qwen2.5-14b: 5530
-      qwen2.5-32b: 5530
+      qwen2.5-7b: 692
+      qwen2.5-14b: 692
+      qwen2.5-32b: 692
     output_tokens:
-      qwen2.5-7b: 288
-      qwen2.5-14b: 288
-      qwen2.5-32b: 288
+      qwen2.5-7b: 1195
+      qwen2.5-14b: 1195
+      qwen2.5-32b: 1195
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -5796,13 +5858,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3686
-      qwen2.5-14b: 3686
-      qwen2.5-32b: 3686
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
     output_tokens:
-      qwen2.5-7b: 346
-      qwen2.5-14b: 346
-      qwen2.5-32b: 346
+      qwen2.5-7b: 1434
+      qwen2.5-14b: 1434
+      qwen2.5-32b: 1434
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -5844,7 +5906,7 @@ applications:
   template_id: coding_agent:6
   length_class: short
   ingress_rates:
-    uk1.uk: 0.00125
+    uk1.uk: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -5855,13 +5917,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.002456
-    qwen2.5-14b: 0.002456
-    qwen2.5-32b: 0.002456
+    qwen2.5-7b: 0.000364
+    qwen2.5-14b: 0.000364
+    qwen2.5-32b: 0.000364
   exit_data_mb:
-    qwen2.5-7b: 0.00046
-    qwen2.5-14b: 0.00046
-    qwen2.5-32b: 0.00046
+    qwen2.5-7b: 0.003928
+    qwen2.5-14b: 0.003928
+    qwen2.5-32b: 0.003928
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -5897,13 +5959,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 91
+      qwen2.5-14b: 91
+      qwen2.5-32b: 91
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 491
+      qwen2.5-14b: 491
+      qwen2.5-32b: 491
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -5911,13 +5973,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 183
+      qwen2.5-14b: 183
+      qwen2.5-32b: 183
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 818
+      qwen2.5-14b: 818
+      qwen2.5-32b: 818
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -5925,13 +5987,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 366
+      qwen2.5-14b: 366
+      qwen2.5-32b: 366
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 1309
+      qwen2.5-14b: 1309
+      qwen2.5-32b: 1309
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -5942,13 +6004,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 274
+      qwen2.5-14b: 274
+      qwen2.5-32b: 274
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 818
+      qwen2.5-14b: 818
+      qwen2.5-32b: 818
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -5956,13 +6018,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 183
+      qwen2.5-14b: 183
+      qwen2.5-32b: 183
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 982
+      qwen2.5-14b: 982
+      qwen2.5-32b: 982
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -6004,7 +6066,7 @@ applications:
   template_id: coding_agent:7
   length_class: short
   ingress_rates:
-    at1.at: 0.00125
+    at1.at: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -6015,13 +6077,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.003276
-    qwen2.5-14b: 0.003276
-    qwen2.5-32b: 0.003276
+    qwen2.5-7b: 0.0004
+    qwen2.5-14b: 0.0004
+    qwen2.5-32b: 0.0004
   exit_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 0.003944
+    qwen2.5-14b: 0.003944
+    qwen2.5-32b: 0.003944
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -6057,13 +6119,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 819
-      qwen2.5-14b: 819
-      qwen2.5-32b: 819
+      qwen2.5-7b: 100
+      qwen2.5-14b: 100
+      qwen2.5-32b: 100
     output_tokens:
-      qwen2.5-7b: 77
-      qwen2.5-14b: 77
-      qwen2.5-32b: 77
+      qwen2.5-7b: 493
+      qwen2.5-14b: 493
+      qwen2.5-32b: 493
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -6071,13 +6133,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 199
+      qwen2.5-14b: 199
+      qwen2.5-32b: 199
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 822
+      qwen2.5-14b: 822
+      qwen2.5-32b: 822
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -6085,13 +6147,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3277
-      qwen2.5-14b: 3277
-      qwen2.5-32b: 3277
+      qwen2.5-7b: 398
+      qwen2.5-14b: 398
+      qwen2.5-32b: 398
     output_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 1315
+      qwen2.5-14b: 1315
+      qwen2.5-32b: 1315
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -6102,13 +6164,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 298
+      qwen2.5-14b: 298
+      qwen2.5-32b: 298
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 822
+      qwen2.5-14b: 822
+      qwen2.5-32b: 822
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -6116,13 +6178,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 199
+      qwen2.5-14b: 199
+      qwen2.5-32b: 199
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 986
+      qwen2.5-14b: 986
+      qwen2.5-32b: 986
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -6164,7 +6226,7 @@ applications:
   template_id: coding_agent:8
   length_class: medium
   ingress_rates:
-    be1.be: 0.00125
+    be1.be: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -6175,13 +6237,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.004096
-    qwen2.5-14b: 0.004096
-    qwen2.5-32b: 0.004096
+    qwen2.5-7b: 0.000432
+    qwen2.5-14b: 0.000432
+    qwen2.5-32b: 0.000432
   exit_data_mb:
-    qwen2.5-7b: 0.000768
-    qwen2.5-14b: 0.000768
-    qwen2.5-32b: 0.000768
+    qwen2.5-7b: 0.003964
+    qwen2.5-14b: 0.003964
+    qwen2.5-32b: 0.003964
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -6217,13 +6279,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1024
-      qwen2.5-14b: 1024
-      qwen2.5-32b: 1024
+      qwen2.5-7b: 108
+      qwen2.5-14b: 108
+      qwen2.5-32b: 108
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 495
+      qwen2.5-14b: 495
+      qwen2.5-32b: 495
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -6231,13 +6293,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2048
-      qwen2.5-14b: 2048
-      qwen2.5-32b: 2048
+      qwen2.5-7b: 217
+      qwen2.5-14b: 217
+      qwen2.5-32b: 217
     output_tokens:
-      qwen2.5-7b: 160
-      qwen2.5-14b: 160
-      qwen2.5-32b: 160
+      qwen2.5-7b: 826
+      qwen2.5-14b: 826
+      qwen2.5-32b: 826
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -6245,13 +6307,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 4096
-      qwen2.5-14b: 4096
-      qwen2.5-32b: 4096
+      qwen2.5-7b: 433
+      qwen2.5-14b: 433
+      qwen2.5-32b: 433
     output_tokens:
-      qwen2.5-7b: 256
-      qwen2.5-14b: 256
-      qwen2.5-32b: 256
+      qwen2.5-7b: 1321
+      qwen2.5-14b: 1321
+      qwen2.5-32b: 1321
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -6262,13 +6324,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3072
-      qwen2.5-14b: 3072
-      qwen2.5-32b: 3072
+      qwen2.5-7b: 325
+      qwen2.5-14b: 325
+      qwen2.5-32b: 325
     output_tokens:
-      qwen2.5-7b: 160
-      qwen2.5-14b: 160
-      qwen2.5-32b: 160
+      qwen2.5-7b: 826
+      qwen2.5-14b: 826
+      qwen2.5-32b: 826
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -6276,13 +6338,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2048
-      qwen2.5-14b: 2048
-      qwen2.5-32b: 2048
+      qwen2.5-7b: 217
+      qwen2.5-14b: 217
+      qwen2.5-32b: 217
     output_tokens:
-      qwen2.5-7b: 192
-      qwen2.5-14b: 192
-      qwen2.5-32b: 192
+      qwen2.5-7b: 991
+      qwen2.5-14b: 991
+      qwen2.5-32b: 991
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -6324,7 +6386,7 @@ applications:
   template_id: coding_agent:9
   length_class: medium
   ingress_rates:
-    ch1.ch: 0.00125
+    ch1.ch: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -6335,13 +6397,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.005324
-    qwen2.5-14b: 0.005324
-    qwen2.5-32b: 0.005324
+    qwen2.5-7b: 0.000632
+    qwen2.5-14b: 0.000632
+    qwen2.5-32b: 0.000632
   exit_data_mb:
-    qwen2.5-7b: 0.001
-    qwen2.5-14b: 0.001
-    qwen2.5-32b: 0.001
+    qwen2.5-7b: 0.004768
+    qwen2.5-14b: 0.004768
+    qwen2.5-32b: 0.004768
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -6377,13 +6439,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1331
-      qwen2.5-14b: 1331
-      qwen2.5-32b: 1331
+      qwen2.5-7b: 158
+      qwen2.5-14b: 158
+      qwen2.5-32b: 158
     output_tokens:
-      qwen2.5-7b: 125
-      qwen2.5-14b: 125
-      qwen2.5-32b: 125
+      qwen2.5-7b: 596
+      qwen2.5-14b: 596
+      qwen2.5-32b: 596
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -6391,13 +6453,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2662
-      qwen2.5-14b: 2662
-      qwen2.5-32b: 2662
+      qwen2.5-7b: 316
+      qwen2.5-14b: 316
+      qwen2.5-32b: 316
     output_tokens:
-      qwen2.5-7b: 208
-      qwen2.5-14b: 208
-      qwen2.5-32b: 208
+      qwen2.5-7b: 993
+      qwen2.5-14b: 993
+      qwen2.5-32b: 993
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -6405,13 +6467,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 5325
-      qwen2.5-14b: 5325
-      qwen2.5-32b: 5325
+      qwen2.5-7b: 632
+      qwen2.5-14b: 632
+      qwen2.5-32b: 632
     output_tokens:
-      qwen2.5-7b: 333
-      qwen2.5-14b: 333
-      qwen2.5-32b: 333
+      qwen2.5-7b: 1589
+      qwen2.5-14b: 1589
+      qwen2.5-32b: 1589
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -6422,13 +6484,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3994
-      qwen2.5-14b: 3994
-      qwen2.5-32b: 3994
+      qwen2.5-7b: 474
+      qwen2.5-14b: 474
+      qwen2.5-32b: 474
     output_tokens:
-      qwen2.5-7b: 208
-      qwen2.5-14b: 208
-      qwen2.5-32b: 208
+      qwen2.5-7b: 993
+      qwen2.5-14b: 993
+      qwen2.5-32b: 993
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -6436,13 +6498,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2662
-      qwen2.5-14b: 2662
-      qwen2.5-32b: 2662
+      qwen2.5-7b: 316
+      qwen2.5-14b: 316
+      qwen2.5-32b: 316
     output_tokens:
-      qwen2.5-7b: 250
-      qwen2.5-14b: 250
-      qwen2.5-32b: 250
+      qwen2.5-7b: 1192
+      qwen2.5-14b: 1192
+      qwen2.5-32b: 1192
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -6484,7 +6546,7 @@ applications:
   template_id: coding_agent:10
   length_class: long
   ingress_rates:
-    cz1.cz: 0.00125
+    cz1.cz: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -6495,13 +6557,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.007372
-    qwen2.5-14b: 0.007372
-    qwen2.5-32b: 0.007372
+    qwen2.5-7b: 0.000924
+    qwen2.5-14b: 0.000924
+    qwen2.5-32b: 0.000924
   exit_data_mb:
-    qwen2.5-7b: 0.001384
-    qwen2.5-14b: 0.001384
-    qwen2.5-32b: 0.001384
+    qwen2.5-7b: 0.005736
+    qwen2.5-14b: 0.005736
+    qwen2.5-32b: 0.005736
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -6537,13 +6599,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 231
+      qwen2.5-14b: 231
+      qwen2.5-32b: 231
     output_tokens:
-      qwen2.5-7b: 173
-      qwen2.5-14b: 173
-      qwen2.5-32b: 173
+      qwen2.5-7b: 717
+      qwen2.5-14b: 717
+      qwen2.5-32b: 717
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -6551,13 +6613,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3686
-      qwen2.5-14b: 3686
-      qwen2.5-32b: 3686
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
     output_tokens:
-      qwen2.5-7b: 288
-      qwen2.5-14b: 288
-      qwen2.5-32b: 288
+      qwen2.5-7b: 1195
+      qwen2.5-14b: 1195
+      qwen2.5-32b: 1195
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -6565,13 +6627,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 7373
-      qwen2.5-14b: 7373
-      qwen2.5-32b: 7373
+      qwen2.5-7b: 922
+      qwen2.5-14b: 922
+      qwen2.5-32b: 922
     output_tokens:
-      qwen2.5-7b: 461
-      qwen2.5-14b: 461
-      qwen2.5-32b: 461
+      qwen2.5-7b: 1912
+      qwen2.5-14b: 1912
+      qwen2.5-32b: 1912
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -6582,13 +6644,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 5530
-      qwen2.5-14b: 5530
-      qwen2.5-32b: 5530
+      qwen2.5-7b: 692
+      qwen2.5-14b: 692
+      qwen2.5-32b: 692
     output_tokens:
-      qwen2.5-7b: 288
-      qwen2.5-14b: 288
-      qwen2.5-32b: 288
+      qwen2.5-7b: 1195
+      qwen2.5-14b: 1195
+      qwen2.5-32b: 1195
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -6596,13 +6658,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3686
-      qwen2.5-14b: 3686
-      qwen2.5-32b: 3686
+      qwen2.5-7b: 461
+      qwen2.5-14b: 461
+      qwen2.5-32b: 461
     output_tokens:
-      qwen2.5-7b: 346
-      qwen2.5-14b: 346
-      qwen2.5-32b: 346
+      qwen2.5-7b: 1434
+      qwen2.5-14b: 1434
+      qwen2.5-32b: 1434
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -6644,7 +6706,7 @@ applications:
   template_id: coding_agent:11
   length_class: short
   ingress_rates:
-    de1.de: 0.00125
+    de1.de: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -6655,13 +6717,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.002456
-    qwen2.5-14b: 0.002456
-    qwen2.5-32b: 0.002456
+    qwen2.5-7b: 0.000364
+    qwen2.5-14b: 0.000364
+    qwen2.5-32b: 0.000364
   exit_data_mb:
-    qwen2.5-7b: 0.00046
-    qwen2.5-14b: 0.00046
-    qwen2.5-32b: 0.00046
+    qwen2.5-7b: 0.003928
+    qwen2.5-14b: 0.003928
+    qwen2.5-32b: 0.003928
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -6697,13 +6759,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 614
-      qwen2.5-14b: 614
-      qwen2.5-32b: 614
+      qwen2.5-7b: 91
+      qwen2.5-14b: 91
+      qwen2.5-32b: 91
     output_tokens:
-      qwen2.5-7b: 58
-      qwen2.5-14b: 58
-      qwen2.5-32b: 58
+      qwen2.5-7b: 491
+      qwen2.5-14b: 491
+      qwen2.5-32b: 491
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -6711,13 +6773,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 183
+      qwen2.5-14b: 183
+      qwen2.5-32b: 183
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 818
+      qwen2.5-14b: 818
+      qwen2.5-32b: 818
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -6725,13 +6787,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 366
+      qwen2.5-14b: 366
+      qwen2.5-32b: 366
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 1309
+      qwen2.5-14b: 1309
+      qwen2.5-32b: 1309
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -6742,13 +6804,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1843
-      qwen2.5-14b: 1843
-      qwen2.5-32b: 1843
+      qwen2.5-7b: 274
+      qwen2.5-14b: 274
+      qwen2.5-32b: 274
     output_tokens:
-      qwen2.5-7b: 96
-      qwen2.5-14b: 96
-      qwen2.5-32b: 96
+      qwen2.5-7b: 818
+      qwen2.5-14b: 818
+      qwen2.5-32b: 818
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -6756,13 +6818,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1229
-      qwen2.5-14b: 1229
-      qwen2.5-32b: 1229
+      qwen2.5-7b: 183
+      qwen2.5-14b: 183
+      qwen2.5-32b: 183
     output_tokens:
-      qwen2.5-7b: 115
-      qwen2.5-14b: 115
-      qwen2.5-32b: 115
+      qwen2.5-7b: 982
+      qwen2.5-14b: 982
+      qwen2.5-32b: 982
   pattern_flows:
   - id: serial-test
     probability: 0.6
@@ -6804,7 +6866,7 @@ applications:
   template_id: coding_agent:12
   length_class: short
   ingress_rates:
-    es1.es: 0.00125
+    es1.es: 0.0009375
   slo:
     type: cmp
     ttft_s: 5.0
@@ -6815,13 +6877,13 @@ applications:
     qwen2.5-14b: 0.7
     qwen2.5-32b: 0.86
   entry_data_mb:
-    qwen2.5-7b: 0.003276
-    qwen2.5-14b: 0.003276
-    qwen2.5-32b: 0.003276
+    qwen2.5-7b: 0.0004
+    qwen2.5-14b: 0.0004
+    qwen2.5-32b: 0.0004
   exit_data_mb:
-    qwen2.5-7b: 0.000616
-    qwen2.5-14b: 0.000616
-    qwen2.5-32b: 0.000616
+    qwen2.5-7b: 0.003944
+    qwen2.5-14b: 0.003944
+    qwen2.5-32b: 0.003944
   edge_data_mb:
     qwen2.5-7b:design->edit: 0.5
     qwen2.5-7b:edit->implement: 0.4
@@ -6857,13 +6919,13 @@ applications:
   - id: plan
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 819
-      qwen2.5-14b: 819
-      qwen2.5-32b: 819
+      qwen2.5-7b: 100
+      qwen2.5-14b: 100
+      qwen2.5-32b: 100
     output_tokens:
-      qwen2.5-7b: 77
-      qwen2.5-14b: 77
-      qwen2.5-32b: 77
+      qwen2.5-7b: 493
+      qwen2.5-14b: 493
+      qwen2.5-32b: 493
     stage_deadline_s: 6.0
   - id: read
     type: tool
@@ -6871,13 +6933,13 @@ applications:
   - id: design
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 199
+      qwen2.5-14b: 199
+      qwen2.5-32b: 199
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 822
+      qwen2.5-14b: 822
+      qwen2.5-32b: 822
     stage_deadline_s: 14.0
   - id: edit
     type: tool
@@ -6885,13 +6947,13 @@ applications:
   - id: implement
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 3277
-      qwen2.5-14b: 3277
-      qwen2.5-32b: 3277
+      qwen2.5-7b: 398
+      qwen2.5-14b: 398
+      qwen2.5-32b: 398
     output_tokens:
-      qwen2.5-7b: 205
-      qwen2.5-14b: 205
-      qwen2.5-32b: 205
+      qwen2.5-7b: 1315
+      qwen2.5-14b: 1315
+      qwen2.5-32b: 1315
     stage_deadline_s: 24.0
   - id: unit
     type: tool
@@ -6902,13 +6964,13 @@ applications:
   - id: inspect
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 2458
-      qwen2.5-14b: 2458
-      qwen2.5-32b: 2458
+      qwen2.5-7b: 298
+      qwen2.5-14b: 298
+      qwen2.5-32b: 298
     output_tokens:
-      qwen2.5-7b: 128
-      qwen2.5-14b: 128
-      qwen2.5-32b: 128
+      qwen2.5-7b: 822
+      qwen2.5-14b: 822
+      qwen2.5-32b: 822
     stage_deadline_s: 32.0
   - id: verify
     type: tool
@@ -6916,13 +6978,13 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen2.5-7b: 1638
-      qwen2.5-14b: 1638
-      qwen2.5-32b: 1638
+      qwen2.5-7b: 199
+      qwen2.5-14b: 199
+      qwen2.5-32b: 199
     output_tokens:
-      qwen2.5-7b: 154
-      qwen2.5-14b: 154
-      qwen2.5-32b: 154
+      qwen2.5-7b: 986
+      qwen2.5-14b: 986
+      qwen2.5-32b: 986
   pattern_flows:
   - id: serial-test
     probability: 0.6

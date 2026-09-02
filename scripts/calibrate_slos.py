@@ -30,7 +30,7 @@ def weighted_quantile(values: list[float], weights: list[float], quantile: float
 def collect_reference_metrics(
     scenario,
     profile: ProfileBackend | None,
-    trace: ArrivalTrace | None,
+    trace: ArrivalTrace,
     slots: int,
     policy_name: str,
     seed: int,
@@ -99,7 +99,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--profile")
-    parser.add_argument("--trace")
+    parser.add_argument("--arrival-scale", type=float, default=0.5)
     parser.add_argument("--slots", type=int, default=3600)
     parser.add_argument("--policy", default="greedy")
     parser.add_argument("--seed", type=int, default=2026)
@@ -113,7 +113,9 @@ def main() -> int:
     raw = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
     scenario = ScenarioLoader.load(scenario_path)
     profile = ProfileBackend.from_csv(args.profile) if args.profile else None
-    trace = ArrivalTrace.from_csv(args.trace) if args.trace else None
+    trace = ArrivalTrace.stationary_poisson_intensity(
+        scenario, args.slots, rate_scale=args.arrival_scale
+    )
     records = collect_reference_metrics(
         scenario, profile, trace, args.slots, args.policy, args.seed
     )
@@ -144,13 +146,11 @@ def main() -> int:
         "ttft_multiplier": args.ttft_multiplier,
         "tbt_multiplier": args.tbt_multiplier,
         "deadline_multiplier": args.deadline_multiplier,
+        "arrival_process": "stationary_poisson_intensity",
+        "arrival_scale": args.arrival_scale,
         "profile_sha256": (
             hashlib.sha256(Path(args.profile).read_bytes()).hexdigest()
             if args.profile else None
-        ),
-        "trace_sha256": (
-            hashlib.sha256(Path(args.trace).read_bytes()).hexdigest()
-            if args.trace else None
         ),
     }
     output = Path(args.output).resolve()

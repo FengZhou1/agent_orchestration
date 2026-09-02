@@ -3,16 +3,16 @@ metadata:
   generated_by: scripts/build_benchmark_scenarios.py
   generated_on: '2026-09-01'
   seed: 2026
-  source_catalog_sha256: deb8f6c1c7303aead393505515a92ec6c8ebfef29d0a8e5eb26590611daddd4b
+  source_catalog_sha256: 6d9488f927fffede8cb2f5b2906782d04e0349b9c48ac9d797152e051325a547
   data_sources:
     arrivals:
-      name: BurstGPT v2
-      url: https://github.com/HPMLL/BurstGPT
-      role: request timestamps and burst structure
+      name: stationary Poisson arrivals
+      url: docs/experiment_protocol.md
+      role: parameterized application request rates and load sweeps
     tokens:
-      name: TraceLab v2 and Azure LLM Inference Trace 2024
-      url: https://tracelab.cs.washington.edu/
-      role: paired input-output token features
+      name: JITServe Table 2
+      url: https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf
+      role: application-conditioned input and output token statistics
     workflows:
       name: TraceLab v2 and BFCL V3/V4
       url: https://gorilla.cs.berkeley.edu/leaderboard
@@ -29,6 +29,67 @@ metadata:
       name: SNDlib 1.0
       url: https://sndlib.put.poznan.pl/networks.overview.action
       role: Abilene and GEANT topology and coordinates
+  jitserve_workload_profiles:
+    interactive_retrieval:
+      workload: Chatbot
+      request_type: Single
+      input:
+        mean: 93
+        std: 244
+        p50: 27
+        p95: 391
+      output:
+        mean: 318
+        std: 313
+        p50: 225
+        p95: 1024
+    transactional_tool:
+      workload: Deep Research
+      request_type: Single
+      input:
+        mean: 1911
+        std: 2781
+        p50: 403
+        p95: 7573
+      output:
+        mean: 534
+        std: 644
+        p50: 410
+        p95: 1544
+    deep_research:
+      workload: Deep Research
+      request_type: Compound
+      input:
+        mean: 12223
+        std: 8407
+        p50: 10807
+        p95: 29282
+      output:
+        mean: 3541
+        std: 2370
+        p50: 3148
+        p95: 7525
+    coding_agent:
+      workload: Chatbot
+      request_type: Compound
+      input:
+        mean: 1300
+        std: 912
+        p50: 1097
+        p95: 2767
+      output:
+        mean: 4458
+        std: 1176
+        p50: 4417
+        p95: 6452
+  arrival_process:
+    distribution: stationary Poisson
+    base_total_rate_rps: 0.045
+    load_scales:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 3.0
   units:
     arrival_rate: request/s
     service_rate: request/s
@@ -38,7 +99,8 @@ metadata:
   quality_status: reference values; replace with pinned benchmark runs
   slo_status: reference thresholds; replace with low-load P95 calibration
   cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
-  default_workload: stable reference; formal runs use capacity-relative arrival traces
+  default_workload: JITServe Table 2 token characteristics with stationary Poisson
+    arrivals
   infrastructure_status: deterministic reference fixture
   stateless_service_status: reference 2--8 request/s/core range
   calibration_inputs: {}

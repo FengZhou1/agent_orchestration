@@ -57,6 +57,28 @@ def export_catalogs(scenario_path: str | Path, output: str | Path) -> None:
         yaml.safe_dump(workflow, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+    workload_rows = []
+    for family, profile in scenario.metadata.get(
+        "jitserve_workload_profiles", {}
+    ).items():
+        workload_rows.append(
+            {
+                "family": family,
+                "source_workload": profile["workload"],
+                "source_request_type": profile["request_type"],
+                **{
+                    f"input_{metric}": value
+                    for metric, value in profile["input"].items()
+                },
+                **{
+                    f"output_{metric}": value
+                    for metric, value in profile["output"].items()
+                },
+            }
+        )
+    pd.DataFrame(workload_rows).to_csv(
+        destination / "jitserve_workload_catalog.csv", index=False
+    )
     service_rows = []
     for service in scenario.tools.values():
         for server, rate in service.service_rate.items():

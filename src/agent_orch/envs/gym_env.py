@@ -8,8 +8,7 @@ import numpy as np
 
 from agent_orch.baselines import GreedyPolicy
 from agent_orch.capacity import CapacityPlanner
-from agent_orch.performance.llm import service_demand
-from agent_orch.performance.network import NetworkBackend
+from agent_orch.routing import PhysicalRouter
 from agent_orch.schema.models import (
     DeploymentDecision,
     NodeType,
@@ -26,8 +25,6 @@ class StructuredActionLayout:
     candidates: tuple[str, ...]
     servers: tuple[str, ...]
     model_groups: tuple[tuple[str, str], ...]
-    llm_groups: tuple[tuple[str, str, str, str], ...]
-    tool_groups: tuple[tuple[str, str, str, str], ...]
     deployment_groups: tuple[tuple[Any, ...], ...]
     deployment_widths: tuple[int, ...]
 
@@ -41,25 +38,6 @@ class StructuredActionLayout:
             for app in scenario.applications.values()
             for ingress in app.ingress_rates
         )
-        llm_groups = tuple(
-            (app.id, ingress, node.id, model)
-            for app in scenario.applications.values()
-            for ingress in app.ingress_rates
-            for node in app.nodes.values()
-            if node.type is NodeType.LLM
-            for model in models
-        )
-        tool_groups_list: list[tuple[str, str, str, str]] = []
-        for app in scenario.applications.values():
-            edges = {
-                edge
-                for flow in app.pattern_flows
-                for edge in flow.edges
-                if app.nodes[edge[1]].type is NodeType.TOOL
-            }
-            for source, target in sorted(edges):
-                for source_server in servers:
-                    tool_groups_list.append((app.id, source, target, source_server))
         deployment_groups: list[tuple[Any, ...]] = [
             ("llm", candidate_id) for candidate_id in candidates
         ]
@@ -75,8 +53,6 @@ class StructuredActionLayout:
             candidates,
             servers,
             model_groups,
-            llm_groups,
-            tuple(tool_groups_list),
             tuple(deployment_groups),
             deployment_widths,
         )
@@ -88,15 +64,6 @@ class StructuredActionLayout:
     @property
     def model_action_size(self) -> int:
         return len(self.model_groups) * len(self.models)
-
-    @property
-    def llm_action_size(self) -> int:
-        return len(self.llm_groups) * len(self.candidates)
-
-    @property
-    def tool_action_size(self) -> int:
-        return len(self.tool_groups) * len(self.servers)
-
 
 class AgentOrchestrationEnv(gym.Env):
     metadata = {"render_modes": []}
@@ -112,6 +79,7 @@ class AgentOrchestrationEnv(gym.Env):
         seed: int = 0,
         arrival_trace: ArrivalTrace | None = None,
         llm_profile_backend: Any | None = None,
+        gamma: float = 0.99,
     ):
         super().__init__()
         self.scenario = scenario
@@ -121,11 +89,14 @@ class AgentOrchestrationEnv(gym.Env):
         self.planner = CapacityPlanner(scenario)
         self.simulator = Simulator(scenario, llm_profile_backend=llm_profile_backend)
         self.simulator.set_arrival_trace(arrival_trace)
-        self.network = NetworkBackend(scenario.links)
+        self.physical_router = PhysicalRouter(scenario)
         self._seed = seed
+        self.gamma = gamma
         self.phase = self.DEPLOYMENT
         self.current_deployment = self.planner.initial_deployment()
         self.last_routing = GreedyPolicy(scenario, seed).routing(self.current_deployment)
+        self._last_slot_components = self._empty_slot_components()
+        self._last_constraint_cost = 0.0
         self.cost_min, self.cost_max = self._fixed_cost_bounds()
         self.arrival_scale = max(
             1.0,
@@ -165,6 +136,8 @@ class AgentOrchestrationEnv(gym.Env):
         self.last_routing = GreedyPolicy(self.scenario, self._seed).routing(
             self.current_deployment
         )
+        self._last_slot_components = self._empty_slot_components()
+        self._last_constraint_cost = 0.0
         self.phase = self.DEPLOYMENT
         return self._observation(), {"discount": 1.0, "phase": "deployment"}
 
@@ -176,11 +149,13 @@ class AgentOrchestrationEnv(gym.Env):
     def _step_deployment(self, selected: np.ndarray):
         before = self._potential(self.current_deployment) if self.potential_shaping else 0.0
         proposed = self.decode_deployment(selected)
-        constraint_cost = self._deployment_constraint_cost(proposed)
-        invalid = constraint_cost > 0.0
+        resource_excess = self.planner.resource_excess(proposed)
+        constraint_cost = resource_excess + self._missing_service_count(proposed)
+        invalid = resource_excess > 1.0e-12
         if not invalid:
             self.current_deployment = proposed
         self.phase = self.ROUTING
+        self._last_constraint_cost = constraint_cost
         after = self._potential(self.current_deployment) if self.potential_shaping else 0.0
         reward = after - before
         info = {
@@ -206,11 +181,13 @@ class AgentOrchestrationEnv(gym.Env):
         metrics = transition.metrics
         reward, reward_components = self._slot_reward(metrics, arrival_rates)
         constraint_cost = self._slot_constraint_cost(metrics)
+        self._last_slot_components = reward_components
+        self._last_constraint_cost = constraint_cost
         terminated = self.simulator.slot >= self.max_slots
         if not terminated and self.simulator.slot % self.scenario.simulation.deployment_period_slots == 0:
             self.phase = self.DEPLOYMENT
         info = {
-            "discount": 0.99,
+            "discount": self.gamma,
             "phase": "routing",
             "metrics": metrics,
             "reward_components": reward_components,
@@ -224,16 +201,12 @@ class AgentOrchestrationEnv(gym.Env):
             len(self.layout.model_groups), len(self.layout.models)
         )
         model_share: dict[tuple[str, str, str], float] = {}
-        llm_share: dict[tuple[str, str, str, str], float] = {}
-        tool_route: dict[tuple[str, str, str, str, str], float] = {}
-
         active_models = {
             candidate.model
             for candidate_id, active in self.current_deployment.llm_active.items()
             if active
             for candidate in [self.scenario.candidates[candidate_id]]
         }
-        model_group_values: dict[tuple[str, str], dict[str, float]] = {}
         for group_index, group in enumerate(self.layout.model_groups):
             weights = {
                 model: model_raw[group_index, index]
@@ -241,78 +214,13 @@ class AgentOrchestrationEnv(gym.Env):
                 if model in active_models
             }
             normalized = _normalized_or_uniform(weights)
-            model_group_values[group] = normalized
             for model in self.layout.models:
                 model_share[(*group, model)] = normalized.get(model, 0.0)
-
-        for group_index, (app_id, ingress, node_id, model) in enumerate(
-            self.layout.llm_groups
-        ):
-            app = self.scenario.applications[app_id]
-            node = app.nodes[node_id]
-            candidates: dict[str, float] = {}
-            for candidate_id in self.layout.candidates:
-                candidate = self.scenario.candidates[candidate_id]
-                if (
-                    not self.current_deployment.llm_active.get(candidate_id, 0)
-                    or candidate.model != model
-                ):
-                    continue
-                config = self.scenario.llm_configs[candidate.config]
-                demand = service_demand(
-                    self.scenario.models[model],
-                    config,
-                    node.prompt_tokens[model],
-                    node.output_tokens[model],
-                    self.scenario.simulation.prefill_chunk_tokens,
-                )
-                utilization = (
-                    self.simulator.last_metrics.llm_utilization.get(candidate_id, 0.0)
-                    if self.simulator.last_metrics
-                    else 0.0
-                )
-                propagation = sum(
-                    self.network.links[edge].propagation_ms
-                    for edge in self.network.path(ingress, candidate.server)
-                ) / 1000.0
-                response = demand.service_s / max(
-                    0.05, 1.0 - min(utilization, 0.95)
-                )
-                candidates[candidate_id] = 1.0 / max(1e-9, propagation + response)
-            conditional = _normalized_or_uniform(candidates)
-            x = model_group_values[(app_id, ingress)].get(model, 0.0)
-            for candidate_id, probability in conditional.items():
-                llm_share[(app_id, ingress, node_id, candidate_id)] = x * probability
-
-        for group_index, (app_id, source, target, source_server) in enumerate(
-            self.layout.tool_groups
-        ):
-            tool_id = self.scenario.applications[app_id].nodes[target].tool or ""
-            destinations: dict[str, float] = {}
-            for server in self.layout.servers:
-                replicas = self.current_deployment.tool_replicas.get((tool_id, server), 0)
-                if replicas <= 0:
-                    continue
-                propagation = sum(
-                    self.network.links[edge].propagation_ms
-                    for edge in self.network.path(source_server, server)
-                ) / 1000.0
-                utilization = (
-                    self.simulator.last_metrics.tool_utilization.get(
-                        f"{tool_id}@{server}", 0.0
-                    )
-                    if self.simulator.last_metrics
-                    else 0.0
-                )
-                process = 1.0 / (
-                    replicas * self.scenario.tools[tool_id].service_rate[server]
-                )
-                response = process / max(0.05, 1.0 - min(utilization, 0.95))
-                destinations[server] = 1.0 / max(1e-9, propagation + response)
-            normalized = _normalized_or_uniform(destinations)
-            for server, probability in normalized.items():
-                tool_route[(app_id, source, target, source_server, server)] = probability
-        return RoutingDecision(model_share, llm_share, tool_route)
+        return self.physical_router.route(
+            self.current_deployment,
+            model_share,
+            self.simulator.last_metrics,
+        )
 
     def decode_deployment(self, selected: np.ndarray) -> DeploymentDecision:
         if selected.shape != (len(self.layout.deployment_groups),):
@@ -393,6 +301,11 @@ class AgentOrchestrationEnv(gym.Env):
         return np.asarray(masks, dtype=np.int8)
 
     def _deployment_constraint_cost(self, deployment: DeploymentDecision) -> float:
+        return self._missing_service_count(deployment) + self.planner.resource_excess(
+            deployment
+        )
+
+    def _missing_service_count(self, deployment: DeploymentDecision) -> float:
         missing = float(sum(deployment.llm_active.values()) == 0)
         required_tools = {
             node.tool
@@ -409,7 +322,17 @@ class AgentOrchestrationEnv(gym.Env):
                 )
                 == 0
             )
-        return missing + self.planner.resource_excess(deployment)
+        return missing
+
+    @staticmethod
+    def _empty_slot_components() -> dict[str, float]:
+        return {
+            "utility": 0.0,
+            "cost_normalized": 0.0,
+            "latency_normalized": 0.0,
+            "goodput_normalized": 0.0,
+            "quality_normalized": 0.0,
+        }
 
     def _slot_reward(
         self,
@@ -592,7 +515,6 @@ class AgentOrchestrationEnv(gym.Env):
     def _feature_vector(self) -> np.ndarray:
         features: list[float] = [
             self.simulator.slot / max(1, self.max_slots),
-            float(self.phase),
         ]
         features.extend(
             float(self.current_deployment.llm_active.get(candidate_id, 0))
@@ -611,17 +533,14 @@ class AgentOrchestrationEnv(gym.Env):
             for ingress, rate in app.ingress_rates.items()
         )
         metrics = self.simulator.last_metrics
-        current_rates = self.simulator.current_arrival_rates()
-        reward_components = (
-            self._slot_reward(metrics, current_rates)[1] if metrics else {}
-        )
+        reward_components = self._last_slot_components
         features.extend(
             [
                 reward_components.get("cost_normalized", 0.0),
                 reward_components.get("latency_normalized", 0.0),
                 metrics.slo_attainment if metrics else 0.0,
                 metrics.quality if metrics else 0.0,
-                self._slot_constraint_cost(metrics) if metrics else 0.0,
+                self._last_constraint_cost,
             ]
         )
         features.extend(
@@ -669,7 +588,7 @@ class RoutingOnlyEnv(AgentOrchestrationEnv):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         observation, info = super().reset(seed=seed, options=options)
         self.phase = self.ROUTING
-        info = {"discount": 0.99, "phase": "routing"}
+        info = {"discount": self.gamma, "phase": "routing"}
         return self._observation(), info
 
     def _step_routing(self, action: dict[str, Any]):
@@ -698,16 +617,30 @@ class DeploymentOnlyEnv(AgentOrchestrationEnv):
             and self.simulator.slot < self.max_slots
         ):
             arrival_rates = self.simulator.current_arrival_rates()
-            routing = GreedyPolicy(
-                self.scenario, self._seed + self.simulator.slot
-            ).routing(self.current_deployment, self.simulator.last_metrics)
+            if any(self.current_deployment.llm_active.values()):
+                routing = GreedyPolicy(
+                    self.scenario, self._seed + self.simulator.slot
+                ).routing(self.current_deployment, self.simulator.last_metrics)
+            else:
+                routing = self.decode_routing(
+                    {
+                        "model": np.zeros(
+                            self.layout.model_action_size, dtype=np.float32
+                        )
+                    }
+                )
             transition = self.simulator.step(self.current_deployment, routing)
             self.last_routing = routing
             interval_metrics.append(transition.metrics)
-            slot_reward, _ = self._slot_reward(transition.metrics, arrival_rates)
+            slot_reward, slot_components = self._slot_reward(
+                transition.metrics, arrival_rates
+            )
+            slot_constraint = self._slot_constraint_cost(transition.metrics)
+            self._last_slot_components = slot_components
+            self._last_constraint_cost = slot_constraint
             interval_reward += discount * slot_reward
-            interval_constraint += self._slot_constraint_cost(transition.metrics)
-            discount *= 0.99
+            interval_constraint += slot_constraint
+            discount *= self.gamma
             evaluated_slots += 1
 
         reward += interval_reward

@@ -25,9 +25,9 @@ METHOD_ORDER = [
     "Greedy",
     "PPO-Route",
     "PPO-Deploy",
-    "Joint-PPO",
-    "Joint+Potential",
-    "Joint+ICM",
+    "DTS-PPO",
+    "DTS-PPO-RND (Unconstrained)",
+    "DTS-PPO-RND",
 ]
 
 BASELINE_LABELS = {
@@ -39,9 +39,11 @@ BASELINE_LABELS = {
 }
 
 RL_LABELS = {
-    ("route", "vanilla"): "PPO-Route",
-    ("deploy", "vanilla"): "PPO-Deploy",
-    ("joint", "vanilla"): "Joint-PPO",
+    ("route", "no-rnd"): "PPO-Route",
+    ("deploy", "no-rnd"): "PPO-Deploy",
+    ("joint", "no-rnd"): "DTS-PPO",
+    ("joint", "unconstrained-rnd"): "DTS-PPO-RND (Unconstrained)",
+    ("joint", "rnd"): "DTS-PPO-RND",
     ("joint", "potential"): "Joint+Potential",
     ("joint", "icm"): "Joint+ICM",
 }
@@ -50,6 +52,20 @@ METRICS = {
     "mean_cost": "Average Cost",
     "mean_latency_s": "Mean Response Time (s)",
     "mean_quality": "Quality Score",
+}
+
+BASELINE_METRICS = {
+    "mean_cost": "Average Cost",
+    "mean_latency_s": "Mean Response Time (s)",
+    "mean_goodput_rps": "Goodput (req/s)",
+    "mean_quality": "Quality Score",
+    "mean_slo_attainment": "SLO Attainment (%)",
+    "mean_violations": "Violated Constraints per Slot",
+    "violation_slot_fraction": "Slots with Any Violation (%)",
+}
+BASELINE_PLOT_SCALE = {
+    "mean_slo_attainment": 100.0,
+    "violation_slot_fraction": 100.0,
 }
 
 
@@ -110,6 +126,7 @@ def load_results(results: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         "mean_quality",
         "mean_slo_attainment",
         "mean_violations",
+        "violation_slot_fraction",
     ]
     unified = pd.concat([baseline[common], rl[common]], ignore_index=True)
     unified["method"] = pd.Categorical(
@@ -132,6 +149,105 @@ def _save(fig: plt.Figure, output: Path, stem: str) -> None:
     fig.savefig(output / f"{stem}.pdf")
     fig.savefig(output / f"{stem}.png", dpi=400)
     plt.close(fig)
+
+
+def load_baseline_summary(path: Path) -> pd.DataFrame:
+    baseline = pd.read_parquet(path).copy()
+    baseline["method"] = baseline["policy"].map(BASELINE_LABELS)
+    if baseline["method"].isna().any():
+        unknown = sorted(baseline.loc[baseline["method"].isna(), "policy"].unique())
+        raise ValueError(f"Unknown baseline policies: {unknown}")
+    return baseline
+
+
+def plot_baseline_metrics(
+    baseline: pd.DataFrame, summary: pd.DataFrame, output: Path
+) -> None:
+    order = [label for label in METHOD_ORDER[:5] if label in set(baseline["method"])]
+    colors = dict(zip(order, sns.color_palette("colorblind", len(order))))
+    fig, axes = plt.subplots(3, 3, figsize=(7.16, 6.2))
+    for axis, (metric, label) in zip(axes.flat, BASELINE_METRICS.items()):
+        table = summary[summary.metric == metric].set_index("method").loc[order]
+        scale = BASELINE_PLOT_SCALE.get(metric, 1.0)
+        means = scale * table["mean"].to_numpy(dtype=float)
+        lower = scale * table["ci95_low"].to_numpy(dtype=float)
+        upper = scale * table["ci95_high"].to_numpy(dtype=float)
+        x = np.arange(len(order))
+        axis.bar(
+            x,
+            means,
+            color=[colors[method] for method in order],
+            edgecolor="black",
+            linewidth=0.5,
+            yerr=np.vstack([means - lower, upper - means]),
+            capsize=2,
+        )
+        for index, method in enumerate(order):
+            raw = scale * baseline.loc[
+                baseline.method == method, metric
+            ].to_numpy(dtype=float)
+            axis.scatter(
+                np.full(len(raw), index), raw, color="black", s=7, alpha=0.45, zorder=3
+            )
+        axis.set_ylabel(label)
+        axis.set_xticks(x, order, rotation=25, ha="right")
+        axis.grid(axis="x", visible=False)
+        axis.grid(axis="y", alpha=0.25)
+    for axis in axes.flat[len(BASELINE_METRICS):]:
+        axis.set_visible(False)
+    fig.subplots_adjust(hspace=0.52, wspace=0.38)
+    _save(fig, output, "fig_baseline_metrics")
+
+
+def plot_baseline_tradeoff(baseline: pd.DataFrame, output: Path) -> None:
+    aggregate = (
+        baseline.groupby("method", as_index=False)
+        .agg(
+            cost=("mean_cost", "mean"),
+            quality=("mean_quality", "mean"),
+            latency=("mean_latency_s", "mean"),
+        )
+    )
+    fig, axis = plt.subplots(figsize=(3.5, 2.8))
+    norm = plt.Normalize(aggregate.latency.min(), aggregate.latency.max())
+    cmap = plt.get_cmap("viridis_r")
+    for row in aggregate.itertuples(index=False):
+        axis.scatter(
+            row.cost,
+            row.quality,
+            s=42,
+            color=cmap(norm(row.latency)),
+            edgecolor="black",
+            linewidth=0.5,
+            zorder=3,
+        )
+        axis.annotate(
+            row.method,
+            (row.cost, row.quality),
+            xytext=(4, 4),
+            textcoords="offset points",
+            fontsize=6.5,
+        )
+    colorbar = fig.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=axis, pad=0.02
+    )
+    colorbar.set_label("Mean Response Time (s)")
+    axis.set_xlabel("Average Cost")
+    axis.set_ylabel("Quality Score")
+    axis.grid(alpha=0.25)
+    _save(fig, output, "fig_baseline_tradeoff")
+
+
+def write_baseline_tables(
+    baseline: pd.DataFrame, summary: pd.DataFrame, output: Path
+) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    baseline.to_parquet(output / "baseline_seed_summary.parquet", index=False)
+    summary.to_csv(output / "baseline_bootstrap_summary.csv", index=False)
+    wide = summary.pivot(
+        index="method", columns="metric", values=["mean", "ci95_low", "ci95_high"]
+    ).reindex(METHOD_ORDER[:5])
+    wide.to_csv(output / "baseline_bootstrap_summary_wide.csv")
 
 
 def plot_main_performance(
@@ -192,7 +308,9 @@ def plot_pareto(unified: pd.DataFrame, output: Path) -> None:
         "Greedy": (4, 4),
         "PPO-Route": (4, -10),
         "PPO-Deploy": (4, 4),
-        "Joint-PPO": (4, -10),
+        "DTS-PPO": (4, -10),
+        "DTS-PPO-RND (Unconstrained)": (-55, -10),
+        "DTS-PPO-RND": (4, 4),
         "Joint+Potential": (-55, -10),
         "Joint+ICM": (4, 4),
     }
@@ -233,9 +351,9 @@ def plot_rl_ablation(rl: pd.DataFrame, output: Path) -> None:
     order = [
         "PPO-Route",
         "PPO-Deploy",
-        "Joint-PPO",
-        "Joint+Potential",
-        "Joint+ICM",
+        "DTS-PPO",
+        "DTS-PPO-RND (Unconstrained)",
+        "DTS-PPO-RND",
     ]
     colors = dict(zip(order, sns.color_palette("colorblind", len(order))))
     fig, axes = plt.subplots(1, 3, figsize=(7.16, 2.5))
@@ -257,7 +375,11 @@ def plot_rl_ablation(rl: pd.DataFrame, output: Path) -> None:
                 np.full(len(value), index), value, color="black", s=7, alpha=0.45, zorder=3
             )
         axis.set_ylabel(label)
-        axis.set_xticks(np.arange(len(order)), ["Route", "Deploy", "Joint", "+Pot.", "+ICM"], rotation=25)
+        axis.set_xticks(
+            np.arange(len(order)),
+            ["Route", "Deploy", "DTS", "Unconst.", "DTS+RND"],
+            rotation=25,
+        )
         axis.grid(axis="x", visible=False)
         axis.grid(axis="y", alpha=0.25)
     fig.subplots_adjust(wspace=0.32)
@@ -272,7 +394,9 @@ def _bootstrap_interval(values: np.ndarray, samples: int = 5_000) -> tuple[float
 
 def load_training_history(results: Path) -> pd.DataFrame:
     records = []
-    pattern = re.compile(r"-(joint|deploy|route)-(vanilla|potential|icm)-s(\d+)-")
+    pattern = re.compile(
+        r"-(joint|deploy|route)-(rnd|no-rnd|unconstrained-rnd|potential|icm)-s(\d+)-"
+    )
     for path in (results / "rl_matrix").glob("*/training_history.json"):
         match = pattern.search(path.parent.name)
         if not match:
@@ -290,13 +414,22 @@ def load_training_history(results: Path) -> pd.DataFrame:
 
 def plot_convergence(history: pd.DataFrame, output: Path) -> None:
     panels = [
-        ("Joint PPO variants", ["Joint-PPO", "Joint+Potential", "Joint+ICM"]),
+        (
+            "Joint PPO variants",
+            ["DTS-PPO", "DTS-PPO-RND (Unconstrained)", "DTS-PPO-RND"],
+        ),
         ("Deployment policy", ["PPO-Deploy"]),
         ("Routing policy", ["PPO-Route"]),
     ]
     palette = dict(
         zip(
-            ["Joint-PPO", "Joint+Potential", "Joint+ICM", "PPO-Deploy", "PPO-Route"],
+            [
+                "DTS-PPO",
+                "DTS-PPO-RND (Unconstrained)",
+                "DTS-PPO-RND",
+                "PPO-Deploy",
+                "PPO-Route",
+            ],
             sns.color_palette("colorblind", 5),
         )
     )
@@ -328,7 +461,13 @@ def _row_bootstrap_band(values: np.ndarray, samples: int = 2_000) -> tuple[np.nd
 
 
 def plot_overhead(rl: pd.DataFrame, output: Path) -> None:
-    order = ["PPO-Route", "PPO-Deploy", "Joint-PPO", "Joint+Potential", "Joint+ICM"]
+    order = [
+        "PPO-Route",
+        "PPO-Deploy",
+        "DTS-PPO",
+        "DTS-PPO-RND (Unconstrained)",
+        "DTS-PPO-RND",
+    ]
     fig, axes = plt.subplots(1, 2, figsize=(3.5, 2.35))
     specifications = [
         ("train_wall_time_s", "Training Time (min)", 1.0 / 60.0),
@@ -399,7 +538,7 @@ def write_tables(unified: pd.DataFrame, summary: pd.DataFrame, output: Path) -> 
         ["method"],
         list(METRICS),
         "seed",
-        ("Joint-PPO",),
+        ("DTS-PPO-RND",),
     )
     comparisons.to_csv(output / "paired_comparisons_vs_joint_ppo.csv", index=False)
     latex = unified.groupby("method", observed=True)[list(METRICS)].agg(["mean", "std"])
@@ -413,6 +552,10 @@ def write_tables(unified: pd.DataFrame, summary: pd.DataFrame, output: Path) -> 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", default="results")
+    parser.add_argument(
+        "--baseline-summary",
+        help="Baseline summary Parquet; when set, only baseline figures are generated",
+    )
     parser.add_argument("--output", default="results/figures")
     parser.add_argument("--analysis-output", default="results/analysis")
     args = parser.parse_args()
@@ -421,6 +564,20 @@ def main() -> int:
     figure_output = Path(args.output).resolve()
     analysis_output = Path(args.analysis_output).resolve()
     figure_output.mkdir(parents=True, exist_ok=True)
+    if args.baseline_summary:
+        baseline = load_baseline_summary(Path(args.baseline_summary).resolve())
+        summary = bootstrap_summary(
+            baseline,
+            ["method"],
+            list(BASELINE_METRICS),
+            samples=10_000,
+            seed=2026,
+        )
+        write_baseline_tables(baseline, summary, analysis_output)
+        plot_baseline_metrics(baseline, summary, figure_output)
+        plot_baseline_tradeoff(baseline, figure_output)
+        print(figure_output)
+        return 0
     unified, rl, _ = load_results(results)
     summary = _bootstrap_table(unified)
     write_tables(unified, summary, analysis_output)
