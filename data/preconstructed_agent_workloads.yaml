@@ -1,9 +1,10 @@
-schema_version: 1
+schema_version: 2
 status: preconstructed_reference
 token_distribution:
   family: truncated_lognormal
   parameterization: p50_p95
   sigma_formula: log(p95 / p50) / 1.645
+  llm_node_fields: [input_tokens, output_tokens]
   context_update: P_next = min(context_window, P_current + O_current + returned_tool_tokens + stage_overhead)
 
 applications:
@@ -14,12 +15,12 @@ applications:
       user_input_tokens: {p50: 27, p95: 391}
       final_output_tokens: {p50: 225, p95: 1024}
     nodes:
-      plan: {type: llm, mean_input_tokens: 96, mean_output_tokens: 40}
-      direct_answer: {type: llm, mean_input_tokens: 140, mean_output_tokens: 400}
+      plan: {type: llm, input_tokens: {p50: 96, p95: 480}, output_tokens: {p50: 40, p95: 128}}
+      direct_answer: {type: llm, input_tokens: {p50: 140, p95: 650}, output_tokens: {p50: 320, p95: 1024}}
       dense_retrieval: {type: stateless_service, mean_service_seconds: 0.04, return_tokens: {p50: 700, p95: 1800}}
       hybrid_search: {type: stateless_service, mean_service_seconds: 0.85, return_tokens: {p50: 1000, p95: 3000}}
-      evidence: {type: llm, mean_input_tokens: 1450, mean_output_tokens: 96}
-      final: {type: llm, mean_input_tokens: 1720, mean_output_tokens: 320}
+      evidence: {type: llm, input_tokens: {p50: 1450, p95: 3800}, output_tokens: {p50: 96, p95: 300}}
+      final: {type: llm, input_tokens: {p50: 1720, p95: 4800}, output_tokens: {p50: 320, p95: 1024}}
     choices:
       - llm_node: plan
         options:
@@ -34,14 +35,14 @@ applications:
       per_call_input_tokens: {p50: 512, p95: 2048}
       per_call_output_tokens: {p50: 24, p95: 80}
     nodes:
-      intent: {type: llm, mean_input_tokens: 735, mean_output_tokens: 34}
+      intent: {type: llm, input_tokens: {p50: 512, p95: 2048}, output_tokens: {p50: 24, p95: 80}}
       db_single: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 160, p95: 700}}
       api_single: {type: stateless_service, mean_service_seconds: 0.35, return_tokens: {p50: 160, p95: 700}}
       db_chain: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 160, p95: 700}}
       api_chain: {type: stateless_service, mean_service_seconds: 0.35, return_tokens: {p50: 160, p95: 700}}
-      verification: {type: llm, mean_input_tokens: 1080, mean_output_tokens: 32}
+      verification: {type: llm, input_tokens: {p50: 1080, p95: 3300}, output_tokens: {p50: 32, p95: 96}}
       compensation: {type: stateless_service, mean_service_seconds: 0.20, return_tokens: {p50: 96, p95: 320}}
-      final: {type: llm, mean_input_tokens: 1400, mean_output_tokens: 128}
+      final: {type: llm, input_tokens: {p50: 1400, p95: 4200}, output_tokens: {p50: 128, p95: 512}}
     choices:
       - llm_node: intent
         options:
@@ -60,16 +61,16 @@ applications:
       cumulative_input_tokens: {p50: 10807, p95: 29282}
       cumulative_output_tokens: {p50: 3148, p95: 7525}
     nodes:
-      planning: {type: llm, mean_input_tokens: 512, mean_output_tokens: 128}
+      planning: {type: llm, input_tokens: {p50: 512, p95: 2048}, output_tokens: {p50: 128, p95: 512}}
       search_a: {type: stateless_service, mean_service_seconds: 1.8, return_tokens: {p50: 900, p95: 2800}}
       search_b: {type: stateless_service, mean_service_seconds: 2.2, return_tokens: {p50: 900, p95: 2800}}
-      draft_a: {type: llm, mean_input_tokens: 2800, mean_output_tokens: 620}
-      draft_b: {type: llm, mean_input_tokens: 3100, mean_output_tokens: 560}
-      reflection: {type: llm, mean_input_tokens: 7500, mean_output_tokens: 520}
+      draft_a: {type: llm, input_tokens: {p50: 2800, p95: 8500}, output_tokens: {p50: 620, p95: 1800}}
+      draft_b: {type: llm, input_tokens: {p50: 3100, p95: 9200}, output_tokens: {p50: 560, p95: 1700}}
+      reflection: {type: llm, input_tokens: {p50: 7500, p95: 22000}, output_tokens: {p50: 520, p95: 1600}}
       targeted_search_a: {type: stateless_service, mean_service_seconds: 1.2, return_tokens: {p50: 700, p95: 2200}}
       targeted_search_b: {type: stateless_service, mean_service_seconds: 1.5, return_tokens: {p50: 700, p95: 2200}}
-      refinement: {type: llm, mean_input_tokens: 12000, mean_output_tokens: 720}
-      summary: {type: llm, mean_input_tokens: 14500, mean_output_tokens: 650}
+      refinement: {type: llm, input_tokens: {p50: 12000, p95: 30000}, output_tokens: {p50: 720, p95: 2200}}
+      summary: {type: llm, input_tokens: {p50: 14500, p95: 32000}, output_tokens: {p50: 650, p95: 2000}}
     mandatory_parallel:
       - llm_node: planning
         branches:
@@ -94,18 +95,18 @@ applications:
       cumulative_output_tokens: {p50: 4417, p95: 6452}
       late_context_tokens: {p50: 15000, p95: 32000}
     nodes:
-      analysis: {type: llm, mean_input_tokens: 1300, mean_output_tokens: 700}
+      analysis: {type: llm, input_tokens: {p50: 1300, p95: 2767}, output_tokens: {p50: 700, p95: 1800}}
       read_repository: {type: stateless_service, mean_service_seconds: 0.18, return_tokens: {p50: 1200, p95: 5000}}
       symbol_search: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 500, p95: 1800}}
-      diagnosis: {type: llm, mean_input_tokens: 4200, mean_output_tokens: 900}
+      diagnosis: {type: llm, input_tokens: {p50: 4200, p95: 12000}, output_tokens: {p50: 900, p95: 2400}}
       edit_first: {type: stateless_service, mean_service_seconds: 0.08, return_tokens: {p50: 80, p95: 240}}
       test_first: {type: stateless_service, mean_service_seconds: 2.5, return_tokens: {p50: 400, p95: 1600}}
-      review: {type: llm, mean_input_tokens: 8500, mean_output_tokens: 800}
+      review: {type: llm, input_tokens: {p50: 8500, p95: 22000}, output_tokens: {p50: 800, p95: 2100}}
       read_test_logs: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 400, p95: 1600}}
-      debug: {type: llm, mean_input_tokens: 12500, mean_output_tokens: 1100}
+      debug: {type: llm, input_tokens: {p50: 12500, p95: 30000}, output_tokens: {p50: 1100, p95: 3000}}
       edit_retry: {type: stateless_service, mean_service_seconds: 0.08, return_tokens: {p50: 80, p95: 240}}
       test_retry: {type: stateless_service, mean_service_seconds: 2.5, return_tokens: {p50: 400, p95: 1600}}
-      final: {type: llm, mean_input_tokens: 15000, mean_output_tokens: 850}
+      final: {type: llm, input_tokens: {p50: 15000, p95: 32000}, output_tokens: {p50: 850, p95: 2400}}
     mandatory_parallel:
       - llm_node: analysis
         branches:

@@ -182,6 +182,8 @@ python scripts/validate_llm_model.py `
 
 验证程序报告 TTFT、TBT、完整响应时延和稳定容量的误差，其有效性判据与 `docs/experiment_protocol.md` 一致。
 
+论文中的 LLM 排队近似可使用 LLMServingSim 2.0 进行分解验证，包含 Roofline 处理时延、稳态有效并发度和 Allen--Cunneen 排队时延。完整步骤和结果口径见 [docs/llmservingsim_queue_validation.md](docs/llmservingsim_queue_validation.md)。
+
 ## 输出与量纲
 
 实验结果以 JSON Lines、Parquet 和运行清单等形式写入 `results/`。所有时间均以秒为单位，到达率与处理率均以请求/秒为单位，单请求数据量以 MB 为单位，链路负载和链路容量以 Mbit/s 为单位，计算量以 FLOPs 为单位，显存访问量以字节为单位。控制时隙长度不改变 Mbps 负载和单请求序列化时延。
