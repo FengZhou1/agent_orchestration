@@ -1,0 +1,120 @@
+schema_version: 1
+status: preconstructed_reference
+token_distribution:
+  family: truncated_lognormal
+  parameterization: p50_p95
+  sigma_formula: log(p95 / p50) / 1.645
+  context_update: P_next = min(context_window, P_current + O_current + returned_tool_tokens + stage_overhead)
+
+applications:
+  interactive_rag:
+    label: Retrieval-Augmented Interactive Agent
+    slo_class: latency_sensitive
+    request_anchors:
+      user_input_tokens: {p50: 27, p95: 391}
+      final_output_tokens: {p50: 225, p95: 1024}
+    nodes:
+      plan: {type: llm, mean_input_tokens: 96, mean_output_tokens: 40}
+      direct_answer: {type: llm, mean_input_tokens: 140, mean_output_tokens: 400}
+      dense_retrieval: {type: stateless_service, mean_service_seconds: 0.04, return_tokens: {p50: 700, p95: 1800}}
+      hybrid_search: {type: stateless_service, mean_service_seconds: 0.85, return_tokens: {p50: 1000, p95: 3000}}
+      evidence: {type: llm, mean_input_tokens: 1450, mean_output_tokens: 96}
+      final: {type: llm, mean_input_tokens: 1720, mean_output_tokens: 320}
+    choices:
+      - llm_node: plan
+        options:
+          - {probability: 0.15, chains: [[direct_answer]]}
+          - {probability: 0.55, chains: [[dense_retrieval, evidence, final]]}
+          - {probability: 0.30, chains: [[hybrid_search, evidence, final]]}
+
+  transactional_tool:
+    label: Transactional Tool Agent
+    slo_class: deadline_sensitive
+    request_anchors:
+      per_call_input_tokens: {p50: 512, p95: 2048}
+      per_call_output_tokens: {p50: 24, p95: 80}
+    nodes:
+      intent: {type: llm, mean_input_tokens: 735, mean_output_tokens: 34}
+      db_single: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 160, p95: 700}}
+      api_single: {type: stateless_service, mean_service_seconds: 0.35, return_tokens: {p50: 160, p95: 700}}
+      db_chain: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 160, p95: 700}}
+      api_chain: {type: stateless_service, mean_service_seconds: 0.35, return_tokens: {p50: 160, p95: 700}}
+      verification: {type: llm, mean_input_tokens: 1080, mean_output_tokens: 32}
+      compensation: {type: stateless_service, mean_service_seconds: 0.20, return_tokens: {p50: 96, p95: 320}}
+      final: {type: llm, mean_input_tokens: 1400, mean_output_tokens: 128}
+    choices:
+      - llm_node: intent
+        options:
+          - {probability: 0.55, chains: [[db_single, verification]]}
+          - {probability: 0.30, chains: [[api_single, verification]]}
+          - {probability: 0.15, chains: [[db_chain, api_chain, verification]]}
+      - llm_node: verification
+        options:
+          - {probability: 0.75, chains: [[final]]}
+          - {probability: 0.25, chains: [[compensation, final]]}
+
+  deep_research:
+    label: Deep Research Agent
+    slo_class: compound
+    request_anchors:
+      cumulative_input_tokens: {p50: 10807, p95: 29282}
+      cumulative_output_tokens: {p50: 3148, p95: 7525}
+    nodes:
+      planning: {type: llm, mean_input_tokens: 512, mean_output_tokens: 128}
+      search_a: {type: stateless_service, mean_service_seconds: 1.8, return_tokens: {p50: 900, p95: 2800}}
+      search_b: {type: stateless_service, mean_service_seconds: 2.2, return_tokens: {p50: 900, p95: 2800}}
+      draft_a: {type: llm, mean_input_tokens: 2800, mean_output_tokens: 620}
+      draft_b: {type: llm, mean_input_tokens: 3100, mean_output_tokens: 560}
+      reflection: {type: llm, mean_input_tokens: 7500, mean_output_tokens: 520}
+      targeted_search_a: {type: stateless_service, mean_service_seconds: 1.2, return_tokens: {p50: 700, p95: 2200}}
+      targeted_search_b: {type: stateless_service, mean_service_seconds: 1.5, return_tokens: {p50: 700, p95: 2200}}
+      refinement: {type: llm, mean_input_tokens: 12000, mean_output_tokens: 720}
+      summary: {type: llm, mean_input_tokens: 14500, mean_output_tokens: 650}
+    mandatory_parallel:
+      - llm_node: planning
+        branches:
+          - [search_a, draft_a]
+          - [search_b, draft_b]
+        join_node: reflection
+    choices:
+      - llm_node: reflection
+        options:
+          - {probability: 0.65, chains: [[summary]]}
+          - probability: 0.35
+            parallel_branches:
+              - [targeted_search_a]
+              - [targeted_search_b]
+            join_chain: [refinement, summary]
+
+  coding_agent:
+    label: Coding Agent
+    slo_class: compound
+    request_anchors:
+      initial_input_tokens: {p50: 1097, p95: 2767}
+      cumulative_output_tokens: {p50: 4417, p95: 6452}
+      late_context_tokens: {p50: 15000, p95: 32000}
+    nodes:
+      analysis: {type: llm, mean_input_tokens: 1300, mean_output_tokens: 700}
+      read_repository: {type: stateless_service, mean_service_seconds: 0.18, return_tokens: {p50: 1200, p95: 5000}}
+      symbol_search: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 500, p95: 1800}}
+      diagnosis: {type: llm, mean_input_tokens: 4200, mean_output_tokens: 900}
+      edit_first: {type: stateless_service, mean_service_seconds: 0.08, return_tokens: {p50: 80, p95: 240}}
+      test_first: {type: stateless_service, mean_service_seconds: 2.5, return_tokens: {p50: 400, p95: 1600}}
+      review: {type: llm, mean_input_tokens: 8500, mean_output_tokens: 800}
+      read_test_logs: {type: stateless_service, mean_service_seconds: 0.12, return_tokens: {p50: 400, p95: 1600}}
+      debug: {type: llm, mean_input_tokens: 12500, mean_output_tokens: 1100}
+      edit_retry: {type: stateless_service, mean_service_seconds: 0.08, return_tokens: {p50: 80, p95: 240}}
+      test_retry: {type: stateless_service, mean_service_seconds: 2.5, return_tokens: {p50: 400, p95: 1600}}
+      final: {type: llm, mean_input_tokens: 15000, mean_output_tokens: 850}
+    mandatory_parallel:
+      - llm_node: analysis
+        branches:
+          - [read_repository]
+          - [symbol_search]
+        join_node: diagnosis
+    mandatory_chain: [diagnosis, edit_first, test_first, review]
+    choices:
+      - llm_node: review
+        options:
+          - {probability: 0.60, chains: [[final]]}
+          - {probability: 0.40, chains: [[read_test_logs, debug, edit_retry, test_retry, final]]}
