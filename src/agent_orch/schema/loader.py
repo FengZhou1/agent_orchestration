@@ -43,7 +43,10 @@ class ScenarioLoader:
         servers = {item["id"]: ServerSpec(**item) for item in raw["servers"]}
         links = tuple(LinkSpec(**item) for item in raw["links"])
         models = {item["id"]: ModelSpec(**item) for item in raw["models"]}
-        configs = {item["id"]: LLMConfigSpec(**item) for item in raw["llm_configs"]}
+        configs = {}
+        for item in raw["llm_configs"]:
+            values = dict(item)
+            configs[values["id"]] = LLMConfigSpec(**values)
         tools = {item["id"]: ToolSpec(**item) for item in raw["tools"]}
         candidates = {
             item["id"]: CandidateInstance(**item) for item in raw["candidates"]
@@ -155,11 +158,11 @@ class ScenarioLoader:
                 raise ValueError(f"Invalid GPU memory utilization in {config.id}")
             if config.max_model_len <= 0 or config.max_num_batched_tokens <= 0:
                 raise ValueError(f"Invalid vLLM token limits in {config.id}")
-            if config.max_num_seqs <= 0 or config.effective_concurrency <= 0:
+            if config.max_num_seqs <= 0:
                 raise ValueError(f"Invalid concurrency in {config.id}")
 
         for tool in scenario.tools.values():
-            if tool.arrival_scv < 0.0 or tool.service_scv < 0.0:
+            if tool.arrival_scv < 0.0:
                 raise ValueError(f"Invalid variability parameter in {tool.id}")
 
         for tool in scenario.tools.values():

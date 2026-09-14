@@ -43,7 +43,7 @@ def predict_profile_rows(frame: pd.DataFrame, scenario: Scenario) -> pd.DataFram
             row.arrival_rate_rps,
             demand.service_s,
             demand.service_s**2,
-            config.effective_concurrency,
+            config.max_num_seqs,
             scenario.simulation.overload_delay_s,
         )
         output_tokens = max(1, round(row.output_tokens))
@@ -51,7 +51,7 @@ def predict_profile_rows(frame: pd.DataFrame, scenario: Scenario) -> pd.DataFram
             "ttft_s": wait + demand.prefill_s,
             "tbt_s": demand.decode_s / (output_tokens - 1) if output_tokens > 1 else 0.0,
             "response_s": wait + demand.service_s,
-            "stable_capacity_rps": config.effective_concurrency / demand.service_s,
+            "stable_capacity_rps": config.max_num_seqs / demand.service_s,
         }
         record = row._asdict()
         record["predicted_utilization"] = utilization

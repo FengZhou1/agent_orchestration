@@ -16,7 +16,6 @@ from agent_orch.agents import (
     train_ppo,
 )
 from agent_orch.action_decoder import ActionDecoder
-from agent_orch.backends import ProfileBackend
 from agent_orch.baselines import make_policy
 from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnlyEnv
 from agent_orch.metrics import summarize_slot_metrics
@@ -38,7 +37,6 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--slots", type=int, default=10)
     run.add_argument("--seed", type=int, default=7)
     run.add_argument("--output", default="results")
-    run.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
     run.add_argument("--arrival-scale", type=float, default=1.0)
     train = subparsers.add_parser("train")
     train.add_argument("--scenario", required=True)
@@ -53,7 +51,6 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--unconstrained", action="store_true")
     train.add_argument("--mode", choices=["joint", "deploy", "route"], default="joint")
     train.add_argument("--output", default="checkpoints")
-    train.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
     train.add_argument("--arrival-scale", type=float, default=1.0)
     train.add_argument(
         "--device",
@@ -78,8 +75,7 @@ def _load_arrivals(
 def _run(args: argparse.Namespace) -> int:
     scenario_path = Path(args.scenario).resolve()
     scenario = ScenarioLoader.load(scenario_path)
-    profile = ProfileBackend.from_csv(args.profile) if args.profile else None
-    simulator = Simulator(scenario, llm_profile_backend=profile)
+    simulator = Simulator(scenario)
     simulator.set_arrival_trace(
         _load_arrivals(scenario, args.slots, args.arrival_scale)
     )
@@ -113,7 +109,6 @@ def _run(args: argparse.Namespace) -> int:
         "slots": args.slots,
         "arrival_process": "stationary_poisson_intensity",
         "arrival_scale": args.arrival_scale,
-        "profile": str(Path(args.profile).resolve()) if args.profile else None,
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
@@ -138,7 +133,6 @@ def main() -> int:
                 "Potential shaping is a standalone comparison; use --exploration none"
             )
         scenario = ScenarioLoader.load(args.scenario)
-        profile = ProfileBackend.from_csv(args.profile) if args.profile else None
         arrival_trace = _load_arrivals(
             scenario,
             args.max_slots,
@@ -155,7 +149,6 @@ def main() -> int:
             potential_shaping=args.potential_shaping,
             seed=args.seed,
             arrival_trace=arrival_trace,
-            llm_profile_backend=profile,
         )
         config = PPOConfig(
             constrained=not args.unconstrained,

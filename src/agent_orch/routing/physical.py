@@ -85,9 +85,6 @@ class PhysicalRouter:
                 for source_server in self.scenario.servers:
                     conditional = self._service_conditional_probabilities(
                         deployment,
-                        app,
-                        source,
-                        target,
                         service_id,
                         source_server,
                         previous_metrics,
@@ -152,9 +149,6 @@ class PhysicalRouter:
     def _service_conditional_probabilities(
         self,
         deployment: DeploymentDecision,
-        app: ApplicationSpec,
-        source_node: str,
-        target_node: str,
         service_id: str,
         source_server: str,
         previous_metrics: SlotMetrics | None,
@@ -177,9 +171,8 @@ class PhysicalRouter:
             )
             if utilization >= 1.0:
                 continue
-            data_mb = self._tool_edge_data(app, source_node, target_node)
             network_delay = self._network_delay(
-                source_server, destination, data_mb, previous_metrics
+                source_server, destination, previous_metrics
             )
             if network_delay is None:
                 continue
@@ -189,7 +182,6 @@ class PhysicalRouter:
                 rate,
                 replicas,
                 service.arrival_scv,
-                service.service_scv,
                 self.scenario.simulation.overload_delay_s,
             )
             if overloaded:
@@ -216,7 +208,6 @@ class PhysicalRouter:
         self,
         source: str,
         target: str,
-        data_mb: float,
         previous_metrics: SlotMetrics | None,
     ) -> float | None:
         try:
@@ -234,7 +225,7 @@ class PhysicalRouter:
             if utilization >= 1.0:
                 return None
             loads[edge] = utilization * self.network.links[edge].capacity_mbps
-        return self.network.path_delay(source, target, data_mb, loads)
+        return self.network.path_delay(source, target, loads)
 
     def _llm_predecessor_network_delay(
         self,
@@ -254,12 +245,7 @@ class PhysicalRouter:
                         edge_probability.get(edge, 0.0) + flow.probability
                     )
         if not edge_probability:
-            return self._network_delay(
-                ingress,
-                destination,
-                app.entry_data_mb.get(model, 0.0),
-                previous_metrics,
-            )
+            return self._network_delay(ingress, destination, previous_metrics)
 
         weighted_delays: list[tuple[float, float]] = []
         for (source_id, target_id), probability in edge_probability.items():
@@ -268,13 +254,9 @@ class PhysicalRouter:
             )
             if not locations:
                 return None
-            data_mb = app.edge_data_mb.get((model, source_id, target_id), 0.0)
             for source_server, location_probability in locations.items():
                 delay = self._network_delay(
-                    source_server,
-                    destination,
-                    data_mb,
-                    previous_metrics,
+                    source_server, destination, previous_metrics
                 )
                 if delay is None:
                     return None
@@ -306,17 +288,6 @@ class PhysicalRouter:
                 if replicas > 0:
                     weights[server_id] = float(replicas)
         return _normalize(weights)
-
-    @staticmethod
-    def _tool_edge_data(
-        app: ApplicationSpec, source: str, target: str
-    ) -> float:
-        values = [
-            app.edge_data_mb.get((model, source, target), 0.0)
-            for model in app.quality
-        ]
-        return sum(values) / len(values) if values else 0.0
-
 
 def _normalize(values: Mapping[str, float]) -> dict[str, float]:
     positive = {key: max(0.0, float(value)) for key, value in values.items()}

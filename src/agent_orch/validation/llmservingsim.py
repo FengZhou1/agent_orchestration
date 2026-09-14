@@ -266,17 +266,29 @@ def read_simulator_output(path: str | Path) -> pd.DataFrame:
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"simulator output is missing columns: {sorted(missing)}")
+    # "queuing_delay" is the first admission wait only. A request that was
+    # preempted and re-queued is absent from the running set again, so the
+    # service time the queueing model needs is latency minus the *total* time
+    # spent outside the running set, which the instrumented simulator writes as
+    # "waiting_time". Older outputs only have the first-admission column.
+    if "waiting_time" in frame.columns:
+        total_waiting = frame["waiting_time"].astype(float) / 1e9
+    else:
+        total_waiting = frame["queuing_delay"].astype(float) / 1e9
     result = pd.DataFrame(
         {
             "request_id": frame["request id"].astype(int),
             "arrival_ns": frame["arrival"].astype(float),
-            "waiting_s": frame["queuing_delay"].astype(float) / 1e9,
+            "waiting_s": total_waiting,
+            "first_waiting_s": frame["queuing_delay"].astype(float) / 1e9,
             "ttft_s": frame["TTFT"].astype(float) / 1e9,
             "tbt_s": frame["TPOT"].astype(float) / 1e9,
             "response_s": frame["latency"].astype(float) / 1e9,
             "end_s": frame["end_time"].astype(float) / 1e9,
         }
     )
+    if "num_preemptions" in frame.columns:
+        result["preemptions"] = frame["num_preemptions"].astype(int)
     result["prefill_s"] = result["ttft_s"] - result["waiting_s"]
     result["decode_s"] = result["response_s"] - result["ttft_s"]
     result["service_s"] = result["response_s"] - result["waiting_s"]
@@ -344,6 +356,87 @@ def saturated_throughput(frame: pd.DataFrame) -> float:
     if elapsed <= 0.0 or completed <= 0:
         raise ValueError("invalid completion interval")
     return completed / elapsed
+
+
+def concurrency_curve(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """In-service concurrency over time from the per-request intervals."""
+    starts = frame["arrival_ns"].to_numpy(dtype=float) / 1e9 + frame["waiting_s"].to_numpy(dtype=float)
+    ends = frame["end_s"].to_numpy(dtype=float)
+    events: list[tuple[float, int]] = []
+    for start, end in zip(starts, ends):
+        if end < start:
+            raise ValueError("negative in-service interval")
+        events.append((float(start), 1))
+        events.append((float(end), -1))
+    events.sort()
+    times: list[float] = []
+    levels: list[int] = []
+    level = 0
+    for time, delta in events:
+        if times and time == times[-1]:
+            level += delta
+            levels[-1] = level
+        else:
+            level += delta
+            times.append(time)
+            levels.append(level)
+    return np.asarray(times), np.asarray(levels)
+
+
+def _step_average(times, levels, start: float, end: float) -> float:
+    """Time average of a right-continuous step function on [start, end]."""
+    if end <= start:
+        raise ValueError("empty averaging window")
+    total = 0.0
+    for index in range(len(times) - 1):
+        low = max(times[index], start)
+        high = min(times[index + 1], end)
+        if high > low:
+            total += levels[index] * (high - low)
+    return total / (end - start)
+
+
+def steady_state_throughput(frame: pd.DataFrame) -> dict[str, float]:
+    """Capacity measured while arrivals are still flowing.
+
+    ``saturated_throughput`` divides the completions inside the 10-90 percentile
+    window of the completion times by that window. On a short trace the service
+    time exceeds the arrival burst, so that window is the drain of a single
+    admitted wave and the result is the arrival burst rate, not the service
+    rate. Here the window opens when the running set first reaches its plateau
+    and closes at the last arrival, so the queue is never starved and the
+    completion rate equals the sustained service rate.
+    """
+    times, levels = concurrency_curve(frame)
+    arrivals = frame["arrival_ns"].to_numpy(dtype=float) / 1e9
+    ends = frame["end_s"].to_numpy(dtype=float)
+    # Skip the initial fill: one service time after the first arrival the pool
+    # is populated and the completion stream reflects the service rate. The
+    # window closes at the last arrival, before the queue can be starved.
+    mean_service_all = float(frame["service_s"].mean())
+    start = float(arrivals.min() + mean_service_all)
+    stop = float(arrivals.max())
+    if stop <= start:
+        raise ValueError(
+            "arrival span is shorter than one service time: the trace never "
+            "reaches steady state, so throughput is not measurable on it"
+        )
+    completed = int(np.count_nonzero((ends >= start) & (ends <= stop)))
+    in_window = (ends >= start) & (ends <= stop)
+    mean_concurrency = _step_average(times, levels, start, stop)
+    mean_service = float(frame["service_s"].mean())
+    window_service = float(frame.loc[in_window, "service_s"].mean()) if completed else float("nan")
+    return {
+        "steady_state_throughput_rps": completed / (stop - start),
+        "peak_concurrency": float(levels.max()),
+        "mean_concurrency": mean_concurrency,
+        "mean_service_s": mean_service,
+        "window_service_s": window_service,
+        "little_throughput_rps": mean_concurrency / window_service if window_service else float("nan"),
+        "window_seconds": stop - start,
+        "arrival_span_s": float(arrivals.max() - arrivals.min()),
+        "completed_in_window": completed,
+    }
 
 
 def calibrate_effective_concurrency(

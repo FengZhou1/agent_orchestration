@@ -11,7 +11,7 @@ Edge = tuple[str, str]
 
 
 class NetworkBackend:
-    """Multi-hop network model with Mbps load and per-request serialization delay."""
+    """Multi-hop network model with aggregate offered load and load-proportional delay."""
 
     def __init__(
         self,
@@ -66,16 +66,16 @@ class NetworkBackend:
         self,
         source: str,
         target: str,
-        data_mb_per_request: float,
         loads_mbps: dict[Edge, float],
     ) -> float:
         delay = 0.0
         for edge in self.path(source, target):
             link = self.links[edge]
-            if loads_mbps.get(edge, 0.0) >= link.capacity_mbps:
+            offered_mbit = loads_mbps.get(edge, 0.0) * self.slot_seconds
+            if offered_mbit >= link.capacity_mbps * self.slot_seconds:
                 return self.overload_delay_s
             delay += link.propagation_ms / 1000.0
-            delay += data_mb_per_request * 8.0 / link.capacity_mbps
+            delay += offered_mbit / link.capacity_mbps
         return delay
 
     def first_token_return_delay(

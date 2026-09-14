@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 import math
-from typing import TYPE_CHECKING
 
 from agent_orch.schema.models import (
     DeploymentDecision,
@@ -15,15 +14,11 @@ from agent_orch.schema.models import (
 
 from .llm import ServiceDemand, service_demand
 from .network import Edge, NetworkBackend
-from .queueing import llm_waiting_time, tool_response_time
-
-if TYPE_CHECKING:
-    from agent_orch.backends import ProfileBackend
+from .queueing import erlang_c, tool_response_time
 
 
 LLMClass = tuple[str, str, str]
 ToolPool = tuple[str, str]
-
 
 @dataclass
 class AnalyticalResult:
@@ -35,14 +30,29 @@ class AnalyticalResult:
     link_load_mbps: dict[Edge, float]
     node_server_distribution: dict[tuple[str, str, str, str, str], dict[str, float]]
     violations: list[str] = field(default_factory=list)
+    llm_instance_performance: dict[str, "LLMInstancePerformance"] = field(
+        default_factory=dict
+    )
+
+
+@dataclass(frozen=True)
+class LLMInstancePerformance:
+    arrival_rate_rps: float
+    active_concurrency: float
+    active_kv_tokens: float
+    resident_capacity: int
+    kv_slack: float
+    mean_service_s: float
+    second_service_moment_s2: float
+    utilization: float
+    admission_wait_s: float
+    stable: bool
+    fixed_point_residual: float
 
 
 class AnalyticalBackend:
-    def __init__(
-        self, scenario: Scenario, profile_backend: "ProfileBackend | None" = None
-    ):
+    def __init__(self, scenario: Scenario):
         self.scenario = scenario
-        self.profile_backend = profile_backend
         self.network = NetworkBackend(
             scenario.links,
             scenario.simulation.slot_seconds,
@@ -69,6 +79,7 @@ class AnalyticalBackend:
         for edge, utilization in self.network.utilization(link_loads).items():
             if utilization >= 1.0:
                 violations.append(f"link_overload:{edge}")
+        instance_metrics = getattr(self, "_last_llm_instance_performance", {})
         return AnalyticalResult(
             llm_perf,
             llm_util,
@@ -78,6 +89,7 @@ class AnalyticalBackend:
             link_loads,
             distributions,
             violations,
+            instance_metrics,
         )
 
     def llm_arrivals(
@@ -110,9 +122,7 @@ class AnalyticalBackend:
         dict[str, bool],
         list[str],
     ]:
-        if self.profile_backend is not None:
-            return self._profile_llm_performance(deployment, arrivals)
-        demands: dict[LLMClass, ServiceDemand] = {}
+        class_workload: dict[LLMClass, tuple[float, float, int, float]] = {}
         rates_by_instance: dict[str, float] = defaultdict(float)
         for key, rate in arrivals.items():
             app_id, node_id, candidate_id = key
@@ -121,224 +131,150 @@ class AnalyticalBackend:
             candidate = self.scenario.candidates[candidate_id]
             if deployment.llm_active.get(candidate_id, 0) != 1:
                 continue
-            model = self.scenario.models[candidate.model]
-            config = self.scenario.llm_configs[candidate.config]
             node = self.scenario.applications[app_id].nodes[node_id]
-            demand = service_demand(
-                model,
-                config,
-                node.prompt_tokens[candidate.model],
-                node.output_tokens[candidate.model],
-                self.scenario.simulation.prefill_chunk_tokens,
+            prompt = node.prompt_tokens[candidate.model]
+            output = node.output_tokens[candidate.model]
+            iterations = math.ceil(
+                prompt / self.scenario.simulation.prefill_chunk_tokens
+            ) + max(0, round(output) - 1)
+            kv_work = (
+                (1.0 + prompt / self.scenario.simulation.prefill_chunk_tokens)
+                * prompt
+                / 2.0
+                + prompt * output
+                + (1.0 + output) * output / 2.0
             )
-            demands[key] = demand
+            class_workload[key] = (prompt, output, iterations, kv_work)
             rates_by_instance[candidate_id] += rate
 
         perf: dict[LLMClass, LLMClassPerformance] = {}
         utilization: dict[str, float] = {}
         kv_stable: dict[str, bool] = {}
         violations: list[str] = []
+        instance_metrics: dict[str, LLMInstancePerformance] = {}
         for candidate_id, total_rate in rates_by_instance.items():
             candidate = self.scenario.candidates[candidate_id]
             config = self.scenario.llm_configs[candidate.config]
-            keys = [key for key in demands if key[2] == candidate_id]
+            model = self.scenario.models[candidate.model]
+            keys = [key for key in class_workload if key[2] == candidate_id]
+            nmax = max(1, int(config.max_num_seqs))
+            kv_slack = max(
+                0.0,
+                1.0
+                - max(
+                    (class_workload[key][0] + class_workload[key][1])
+                    / config.kv_token_capacity
+                    for key in keys
+                ),
+            )
+            active_kv = sum(
+                arrivals[key] * class_workload[key][3] for key in keys
+            ) / max(
+                sum(arrivals[key] * class_workload[key][2] for key in keys),
+                1.0e-12,
+            )
+            resident_capacity = min(
+                nmax,
+                int((kv_slack * config.kv_token_capacity) / max(active_kv, 1.0e-12)),
+            )
+
+            def demand_at(concurrency: float) -> dict[LLMClass, ServiceDemand]:
+                return {
+                    key: service_demand(
+                        model,
+                        config,
+                        class_workload[key][0],
+                        class_workload[key][1],
+                        self.scenario.simulation.prefill_chunk_tokens,
+                        concurrency=concurrency,
+                    )
+                    for key in keys
+                }
+
+            def weighted_mean(concurrency: float) -> float:
+                demands = demand_at(max(1.0, concurrency))
+                return sum(
+                    arrivals[key] * demands[key].service_s for key in keys
+                ) / total_rate
+
+            # The fixed point is the least non-negative solution of Little's
+            # law under the state-dependent Roofline service demand. It is not
+            # clipped to the resident limit; crossing that limit is overload.
+            batch = 0.0
+            converged = False
+            residual = math.inf
+            for _ in range(500):
+                target = total_rate * weighted_mean(batch)
+                residual = abs(target - batch)
+                if residual <= 1.0e-6 * max(1.0, target):
+                    batch = target
+                    converged = True
+                    break
+                batch = target
+                if batch > resident_capacity:
+                    break
+
+            demands = demand_at(max(1.0, batch))
             mean = sum(arrivals[key] * demands[key].service_s for key in keys) / total_rate
             second = sum(
                 arrivals[key] * demands[key].service_s**2 for key in keys
             ) / total_rate
-            wait, rho, overloaded = llm_waiting_time(
-                total_rate,
-                mean,
-                second,
-                config.effective_concurrency,
-                self.scenario.simulation.overload_delay_s,
+            stable = (
+                converged
+                and resident_capacity >= 1
+                and batch < resident_capacity
+                and kv_slack > 0.0
             )
-            utilization[candidate_id] = rho
-            if overloaded:
-                violations.append(f"llm_queue_overload:{candidate_id}")
-
-            weighted_iterations = sum(
-                arrivals[key]
-                * (
-                    math.ceil(
-                        self.scenario.applications[key[0]].nodes[key[1]].prompt_tokens[
-                            candidate.model
-                        ]
-                        / self.scenario.simulation.prefill_chunk_tokens
-                    )
-                    + max(
-                        0,
-                        round(
-                            self.scenario.applications[key[0]].nodes[key[1]].output_tokens[
-                                candidate.model
-                            ]
-                        )
-                        - 1,
-                    )
-                )
-                for key in keys
+            utilization_value = (
+                batch / resident_capacity if resident_capacity > 0 else math.inf
             )
-            mean_iteration = (
-                sum(arrivals[key] * demands[key].service_s for key in keys)
-                / weighted_iterations
-                if weighted_iterations > 0
-                else 0.0
-            )
-            max_context = max(
-                self.scenario.applications[key[0]].nodes[key[1]].prompt_tokens[
-                    candidate.model
-                ]
-                + self.scenario.applications[key[0]].nodes[key[1]].output_tokens[
-                    candidate.model
-                ]
-                for key in keys
-            )
-            delta = max_context / config.kv_token_capacity
-            kv_demand_rate = sum(
-                arrivals[key] * demands[key].kv_work_tokens for key in keys
-            )
-            kv_supply_rate = (
-                (1.0 - delta) * config.kv_token_capacity / mean_iteration
-                if mean_iteration > 0 and delta < 1.0
-                else 0.0
-            )
-            stable = delta < 1.0 and kv_demand_rate < kv_supply_rate
+            utilization[candidate_id] = utilization_value
             kv_stable[candidate_id] = stable
             if not stable:
+                violations.append(f"llm_queue_overload:{candidate_id}")
+            if resident_capacity < 1 or kv_slack <= 0.0:
                 violations.append(f"llm_kv_overload:{candidate_id}")
 
+            if stable:
+                variability = second / (2.0 * mean * mean)
+                denominator = resident_capacity / mean - total_rate
+                wait = (
+                    variability
+                    * erlang_c(resident_capacity, utilization_value)
+                    / max(denominator, 1.0e-12)
+                )
+            else:
+                wait = self.scenario.simulation.overload_delay_s
+
+            instance_metrics[candidate_id] = LLMInstancePerformance(
+                arrival_rate_rps=total_rate,
+                active_concurrency=batch,
+                active_kv_tokens=active_kv,
+                resident_capacity=resident_capacity,
+                kv_slack=kv_slack,
+                mean_service_s=mean,
+                second_service_moment_s2=second,
+                utilization=utilization_value,
+                admission_wait_s=wait,
+                stable=stable,
+                fixed_point_residual=residual,
+            )
             for key in keys:
                 demand = demands[key]
-                app_id, node_id, _ = key
-                output = max(
-                    1,
-                    round(
-                        self.scenario.applications[app_id].nodes[node_id].output_tokens[
-                            candidate.model
-                        ]
-                    ),
-                )
+                output = max(1, round(class_workload[key][1]))
                 tbt = demand.decode_s / (output - 1) if output > 1 else 0.0
                 perf[key] = LLMClassPerformance(
                     service_s=demand.service_s,
                     prefill_s=demand.prefill_s,
                     decode_s=demand.decode_s,
-                    ttft_s=(
-                        wait + demand.prefill_s
-                        + (self.scenario.simulation.overload_delay_s if not stable else 0.0)
-                    ),
+                    ttft_s=wait + demand.prefill_s,
                     tbt_s=tbt,
-                    response_s=(
-                        wait + demand.service_s
-                        + (self.scenario.simulation.overload_delay_s if not stable else 0.0)
-                    ),
+                    response_s=wait + demand.service_s,
                 )
-
         for key, rate in arrivals.items():
             if rate > 0.0 and key not in perf:
                 violations.append(f"llm_unserved:{key[2]}")
-        return perf, utilization, kv_stable, violations
-
-    def _profile_llm_performance(
-        self,
-        deployment: DeploymentDecision,
-        arrivals: dict[LLMClass, float],
-    ) -> tuple[
-        dict[LLMClass, LLMClassPerformance],
-        dict[str, float],
-        dict[str, bool],
-        list[str],
-    ]:
-        assert self.profile_backend is not None
-        perf: dict[LLMClass, LLMClassPerformance] = {}
-        utilization: dict[str, float] = {}
-        kv_stable: dict[str, bool] = {}
-        violations: list[str] = []
-        by_instance: dict[str, list[LLMClass]] = defaultdict(list)
-        for key, rate in arrivals.items():
-            if rate > 0.0:
-                by_instance[key[2]].append(key)
-        for candidate_id, keys in by_instance.items():
-            if deployment.llm_active.get(candidate_id, 0) != 1:
-                violations.append(f"llm_unserved:{candidate_id}")
-                continue
-            candidate = self.scenario.candidates[candidate_id]
-            config = self.scenario.llm_configs[candidate.config]
-            total_rate = sum(arrivals[key] for key in keys)
-            long_rate = sum(
-                arrivals[key]
-                for key in keys
-                if (
-                    self.scenario.applications[key[0]].nodes[key[1]].prompt_tokens[
-                        candidate.model
-                    ]
-                    + self.scenario.applications[key[0]].nodes[key[1]].output_tokens[
-                        candidate.model
-                    ]
-                    >= 1024
-                )
-            )
-            long_fraction = long_rate / total_rate if total_rate > 0.0 else 0.0
-            composition = {
-                family: sum(
-                    arrivals[key]
-                    for key in keys
-                    if self.scenario.applications[key[0]].family == family
-                )
-                / total_rate
-                if total_rate > 0.0
-                else 0.0
-                for family in (
-                    "interactive_retrieval",
-                    "transactional_tool",
-                    "deep_research",
-                    "coding_agent",
-                )
-            }
-            capacities = []
-            kv_values = []
-            for key in keys:
-                app_id, node_id, _ = key
-                node = self.scenario.applications[app_id].nodes[node_id]
-                estimate = self.profile_backend.estimate(
-                    candidate.model,
-                    candidate.config,
-                    node.prompt_tokens[candidate.model],
-                    node.output_tokens[candidate.model],
-                    total_rate,
-                    long_fraction,
-                    composition,
-                )
-                capacities.append(estimate.stable_capacity_rps)
-                kv_values.append(estimate.kv_tokens)
-                perf[key] = LLMClassPerformance(
-                    service_s=estimate.response_s,
-                    prefill_s=estimate.ttft_s,
-                    decode_s=max(0.0, estimate.response_s - estimate.ttft_s),
-                    ttft_s=estimate.ttft_s,
-                    tbt_s=estimate.tbt_s,
-                    response_s=estimate.response_s,
-                )
-            capacity = min(capacities) if capacities else 0.0
-            utilization[candidate_id] = total_rate / capacity if capacity > 0.0 else 1.0e6
-            stable = total_rate < capacity and max(kv_values, default=0.0) < config.kv_token_capacity
-            kv_stable[candidate_id] = stable
-            if total_rate >= capacity:
-                violations.append(f"llm_queue_overload:{candidate_id}")
-            if max(kv_values, default=0.0) >= config.kv_token_capacity:
-                violations.append(f"llm_kv_overload:{candidate_id}")
-            if total_rate >= capacity or not stable:
-                penalty = self.scenario.simulation.overload_delay_s
-                for key in keys:
-                    value = perf[key]
-                    perf[key] = LLMClassPerformance(
-                        service_s=value.service_s,
-                        prefill_s=value.prefill_s,
-                        decode_s=value.decode_s,
-                        ttft_s=value.ttft_s + penalty,
-                        tbt_s=value.tbt_s,
-                        response_s=value.response_s + penalty,
-                    )
+        self._last_llm_instance_performance = instance_metrics
         return perf, utilization, kv_stable, violations
 
     def node_distributions(
@@ -440,7 +376,6 @@ class AnalyticalBackend:
                 spec.service_rate[server],
                 replicas,
                 spec.arrival_scv,
-                spec.service_scv,
                 self.scenario.simulation.overload_delay_s,
             )
             delays[pool] = wait + process

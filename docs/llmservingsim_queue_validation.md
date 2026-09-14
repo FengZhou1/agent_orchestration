@@ -19,6 +19,7 @@ $env:PYTHONPATH="src"
 ```powershell
 python scripts/run_llmservingsim_validation.py prepare
 python scripts/run_llmservingsim_validation.py sanity
+python scripts/run_llmservingsim_validation.py instrument-check
 python scripts/run_llmservingsim_validation.py run-calibration --workers 1
 python scripts/run_llmservingsim_validation.py calibrate
 python scripts/run_llmservingsim_validation.py run-queue --workers 1
@@ -40,9 +41,12 @@ python scripts/run_llmservingsim_validation.py all --workers 1
 - `provenance.json`：模拟器提交、配置与插桩哈希；
 - `service_predictions.csv`：处理时延校准和留出测试；
 - `capacity_observations.csv`：各工作负载组成的饱和吞吐；
+- `capacity_predictions.csv`：仿真容量与三种诊断模型的容量对比；
 - `calibration.json`：有效计算速率、带宽和固定并发度；
 - `queue_predictions.csv`：三种诊断模型的逐次运行结果；
 - `queue_error_summary.csv` 和 `validity.json`：误差与有效性判定；
+- `instrumentation_check.json`：排队指标插桩的无扰动验证；
+- `validation_report.md`：实验结论及论文模型修改建议；
 - `figures/`：PNG 和 PDF 图。
 
 远端临时文件位于 LLMServingSim 的 `outputs/queue_validation/`，该目录已被其 `.gitignore` 忽略。排队时延插桩只改变 CSV 指标的赋值时机，不改变请求调度、批处理或完成时间。

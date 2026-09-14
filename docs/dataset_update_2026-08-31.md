@@ -9,7 +9,7 @@
 | 参数层次 | 主要数据源 | 在仿真中的用途 |
 |---|---|---|
 | 请求到达 | 参数化平稳泊松过程 | 将场景平均到达率和负载缩放系数形成的泊松强度输入分析型排队模型 |
-| LLM 请求特征 | JITServe Table 2 | 四类 Single/Compound 工作负载的输入、输出 token 统计 |
+| LLM 请求特征 | preconstructed_agent_workloads.yaml | 四类 Agent 工作流、概率组合、并行分支和节点级输入输出 token 统计 |
 | Agent 工作流 | TraceLab v2 | LLM 步骤、无状态服务调用和并行调用结构 |
 | 调用质量 | BFCL V3/V4 | 多步、并行和可执行函数调用任务，以及应用相关质量得分 |
 | 无状态服务结构 | Alibaba Microservices v2021 | 调用图深度、扇出、复用和调用率分布 |

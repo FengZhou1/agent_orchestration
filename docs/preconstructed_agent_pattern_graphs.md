@@ -38,7 +38,7 @@ P_{a,i}+O_{a,i}+D_{a,i}+A_{a,i+1}
 | 深度研究 | 请求级累计输入以 Deep-Research-Compound 的 P50=10807、P95=29282 为校准范围；累计输出以 P50=3148、P95=7525 为校准范围 | 规划、并行检索与撰写、反思、可选细化和总结；后期上下文约 10--30k tokens | 每个搜索分支：P50=900、P95=2800 tokens |
 | 编码 Agent | 初始任务输入以 Compound 请求 P50=1097、P95=2767 为起点；累计输出以 P50=4417、P95=6452 为参考；后期上下文扩展至约 15--32k tokens | 代码读取与符号搜索并行，随后编辑、测试、审查，并以 0.40 概率执行一次展开后的调试重试 | 文件内容：P50=1200、P95=5000；测试日志：P50=400、P95=1600 tokens |
 
-JITServe Table 2 用于校准交互式和 compound 请求的总体长度量级；Agentix 的 BFCL 工作负载用于校准短输出、多次工具调用的事务型 Agent；Agentic AI Workload Characteristics 与 TraceLab 用于校准 Agent 会话中的上下文增长、重复 LLM 进入和编码工具组成。
+四类应用的图结构、概率选择、并行分支和节点级 token 特征统一由 `data/preconstructed_agent_workloads.yaml` 定义；Agentix 的 BFCL 工作负载、Agentic AI Workload Characteristics 与 TraceLab 作为该预构建配置的设计依据。
 
 ## 4. 四类概率图
 
@@ -66,7 +66,6 @@ JITServe Table 2 用于校准交互式和 compound 请求的总体长度量级�
 
 ## 6. 参考来源
 
-- JITServe: https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf
 - Agentix: https://www.usenix.org/system/files/conference/nsdi26/nsdi26spring_luo_prepub.pdf
 - Agentic AI Workload Characteristics: https://arxiv.org/pdf/2605.26297
 - AgentSysBench: https://arxiv.org/pdf/2608.15127

@@ -26,7 +26,7 @@ def prefill_work(
     model: ModelSpec,
     new_tokens: float,
     context_tokens: float,
-    concurrency: int,
+    concurrency: float,
 ) -> tuple[float, float]:
     u = new_tokens
     chi = context_tokens
@@ -44,7 +44,7 @@ def prefill_work(
 def decode_work(
     model: ModelSpec,
     context_tokens: float,
-    concurrency: int,
+    concurrency: float,
 ) -> tuple[float, float]:
     chi = context_tokens
     nu = concurrency
@@ -62,10 +62,13 @@ def service_demand(
     prompt_tokens: float,
     output_tokens: float,
     chunk_tokens: int,
+    concurrency: float | None = None,
 ) -> ServiceDemand:
     prompt = max(1, int(round(prompt_tokens)))
     output = max(1, int(round(output_tokens)))
-    concurrency = max(1, int(config.effective_concurrency))
+    if concurrency is None:
+        concurrency = 1.0
+    concurrency = max(1.0, float(concurrency))
 
     prefill = 0.0
     chunks = math.ceil(prompt / chunk_tokens)
@@ -90,4 +93,3 @@ def service_demand(
         + (1.0 + output) * output / 2.0
     )
     return ServiceDemand(prefill, decode, service, mean_iteration, kv_work)
-

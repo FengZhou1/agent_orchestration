@@ -63,7 +63,6 @@ llm_configs:
     reserved_memory_gb_per_gpu: 16
     effective_flops: 80000000000000
     effective_bandwidth_bytes_s: 700000000000
-    effective_concurrency: 8
     kv_token_capacity: 65536
     running_cost_per_slot: 1.0
     load_cost: 2.0
@@ -74,7 +73,6 @@ llm_configs:
     reserved_memory_gb_per_gpu: 40
     effective_flops: 180000000000000
     effective_bandwidth_bytes_s: 1500000000000
-    effective_concurrency: 8
     kv_token_capacity: 131072
     running_cost_per_slot: 2.5
     load_cost: 5.0

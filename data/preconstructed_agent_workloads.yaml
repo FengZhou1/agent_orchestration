@@ -11,6 +11,7 @@ applications:
   interactive_rag:
     label: Retrieval-Augmented Interactive Agent
     slo_class: latency_sensitive
+    slo: {type: lat, ttft_s: 2.0, tbt_s: 0.15}
     request_anchors:
       user_input_tokens: {p50: 27, p95: 391}
       final_output_tokens: {p50: 225, p95: 1024}
@@ -31,6 +32,7 @@ applications:
   transactional_tool:
     label: Transactional Tool Agent
     slo_class: deadline_sensitive
+    slo: {type: ddl, deadline_s: 8.0}
     request_anchors:
       per_call_input_tokens: {p50: 512, p95: 2048}
       per_call_output_tokens: {p50: 24, p95: 80}
@@ -57,6 +59,7 @@ applications:
   deep_research:
     label: Deep Research Agent
     slo_class: compound
+    slo: {type: cmp, ttft_s: 4.0, tbt_s: 0.20, deadline_s: 25.0}
     request_anchors:
       cumulative_input_tokens: {p50: 10807, p95: 29282}
       cumulative_output_tokens: {p50: 3148, p95: 7525}
@@ -90,6 +93,7 @@ applications:
   coding_agent:
     label: Coding Agent
     slo_class: compound
+    slo: {type: cmp, ttft_s: 5.0, tbt_s: 0.25, deadline_s: 40.0}
     request_anchors:
       initial_input_tokens: {p50: 1097, p95: 2767}
       cumulative_output_tokens: {p50: 4417, p95: 6452}

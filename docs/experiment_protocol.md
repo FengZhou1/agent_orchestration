@@ -4,7 +4,7 @@
 
 实验采用分层参数化方法：公开工作负载统计确定 LLM 请求特征，泊松过程生成应用请求到达，仿真器用于评估编排策略，受控基准测试用于校准组件性能。
 
-- JITServe Table 2 提供 Chatbot 与 Deep Research 在 Single 和 Compound 请求下的输入、输出 token 均值、标准差、P50 和 P95。
+- `data/preconstructed_agent_workloads.yaml` 提供四类 Agent 的调用图、概率选择、并行分支、LLM 节点输入输出 token 的 P50/P95 统计以及无状态服务处理时间。
 - TraceLab v2 和 BFCL V3/V4 提供 Agent 执行模式、概率 pattern flow 以及调用质量任务。
 - Alibaba Microservices v2021 提供无状态服务图的深度、扇出、复用、调用率和响应时间参考分布；DeathStarBench 或等价的本地测试程序提供低负载处理时间、SCV、稳定处理率和序列化数据量。
 - Alibaba GPU Trace v2026 提供 GPU 类型、GPU 数量和 CPU 容量的服务器级联合记录，不用于生成请求到达或 LLM 推理时延。
@@ -18,11 +18,13 @@
 | 场景 | 物理网络 | 模型数 | 应用数 | 无状态服务数 | 用途 |
 |---|---:|---:|---:|---:|---|
 | Toy | 4 个节点 | 2 | 2 | 3 | 冒烟测试、公式验证、路由验证和穷举检查 |
-| Main | Abilene：12 个节点、15 条链路 | 3 | 20 | 6 | 主要算法对比和消融实验 |
-| Scale | GEANT：22 个节点、36 条链路 | 3 | 50 | 8 | 可扩展性和决策开销实验 |
-| Stress | Abilene/GEANT | 3 | 20/50 | 6/8 | 到达突发、服务降速、链路降容和 GPU 不可用实验 |
+| Main | Abilene：12 个节点、15 条链路 | 4 | 20 | 6 | 主要算法对比和消融实验 |
+| Scale | GEANT：22 个节点、36 条链路 | 4 | 50 | 8 | 可扩展性和决策开销实验 |
+| Stress | Abilene/GEANT | 4 | 20/50 | 6/8 | 到达突发、服务降速、链路降容和 GPU 不可用实验 |
 
-代码仓库中的基准场景由 `scripts/build_benchmark_scenarios.py` 生成。三个 BF16 模型档位分别为 Qwen2.5-7B、Qwen2.5-14B 和 Qwen2.5-32B。候选配置采用 A10、L20 和 H20 GPU，并固定以下 vLLM 参数：显存利用率为 0.9，上下文窗口为 32768，批处理 token 上限为 8192，序列数上限为 128，开启 chunked prefill，prefill chunk 为 512 tokens，关闭 prefix caching。
+代码仓库中的基准场景由 `scripts/build_benchmark_scenarios.py` 生成。四个 BF16 模型档位分别为 Qwen3-4B、Qwen3-8B、Qwen3-14B 和 Qwen3-32B。候选部署配置包括 A10 上的 4B，L20 上的 4B、8B 和 14B，H20 上的 8B、14B 和 32B，以及双卡 L20 上的 32B。Main 场景交错配置 4 台 A10、5 台双卡 L20 和 3 台 H20；Scale 场景配置 7 台 A10、9 台双卡 L20 和 6 台 H20。vLLM 的显存利用率为 0.9，上下文窗口为 32768，批处理 token 上限为 8192，序列数上限为 128，开启 chunked prefill，prefill chunk 为 512 tokens，关闭 prefix caching。
+
+主实验以 4B 作为模型规模下界，使候选模型能够覆盖多步规划、工具选择和结果综合等 Agent 任务；0.6B 和 1.7B 模型不进入主实验。各候选配置在预留模型权重和运行时显存后，均可容纳至少一个长度为 32768 tokens 的请求。A10 节点保留为低成本 4B 服务节点，双卡 L20 与 H20 节点为 8B--32B 模型提供主要部署容量。
 
 Main 场景包含四类应用，每类设置五个模板：
 
@@ -31,14 +33,14 @@ Main 场景包含四类应用，每类设置五个模板：
 3. 深度研究：compound，包含两条并行无状态服务分支；
 4. 编码 Agent：compound，包含串行和并行测试模式。
 
-四类应用分别映射到 JITServe 的 Chatbot-Single、Deep Research-Single、Deep Research-Compound 和 Chatbot-Compound。每类应用的五个模板依次使用 P50、P50 与均值的几何中点、均值、均值与 P95 的几何中点及 P95，并按 pattern flow 的节点访问概率将请求级 token 总量分配到各 LLM 节点。每个模板在优化模型中作为一种应用类型，因此不增加请求级优化变量。
+四类应用分别对应预构建负载文件中的四类 Agent。每类应用按截断对数正态分布的五个分位档位生成负载模板，并依据配置中的概率选择将所有可行调用组合展开为 pattern flows；并行分支作为同一 pattern flow 中的多条调用链保留。每个模板在优化模型中作为一种应用类型，因此不增加请求级优化变量。
 
 ## 到达过程与数据划分
 
 - 路由时隙：1 秒；
 - 部署周期：60 个时隙；
 - 训练或评估窗口：3,600 个时隙；
-- Main 场景基准总到达率：0.045 request/s；
+- Main 场景基准总到达率：0.004 request/s；
 - 负载档位：基准到达率的 0.5、1、2 和 3 倍；
 - 分析型仿真在全部对比算法间共享相同的泊松到达强度；随机种子用于算法训练与随机路由。
 
@@ -75,7 +77,7 @@ Main 场景包含 Web 检索、信息检索、代码执行、文件处理、结�
 ## 保真度与验收条件
 
 - 每个应用输入分析型排队模型的泊松强度与场景设定值一致，各算法使用完全相同的到达强度。
-- 各应用模板的请求级输入、输出 token 总量与 JITServe 目标锚点的误差不超过节点取整误差。
+- 各应用模板的 LLM 节点输入、输出 token 均处于预构建负载文件给定的 P50--P95 范围内。
 - 工作流深度、无状态服务调用数、并行宽度和 pattern flow 频率与数据来源中的经验分布一致。
 - 无状态服务处理时间来自低负载内部计时，不得将包含排队和网络的生产端到端 RT 直接作为处理时间。
 - 在留出的 LLM profile 运行点上，中位绝对百分比误差不超过 10%，P95 误差不超过 20%。超过该误差范围的区域直接使用 profile 后端或 LLMServingSim 回放结果，不将其声明为分析预测。
@@ -95,20 +97,18 @@ python scripts/prepare_llm_profiles.py `
   --input <normalized-LLMServingSim-output.csv> `
   --source-version <pinned-commit> `
   --output data/processed/llm_profile.csv
-python scripts/estimate_reference_capacity.py `
+python scripts/calibrate_load_levels.py `
   --scenario configs/benchmarks/main_abilene.yaml `
-  --profile data/processed/llm_profile.csv
+  --output data/processed/load_levels.json
 python scripts/calibrate_slos.py `
   --scenario configs/benchmarks/main_abilene.yaml `
-  --profile data/processed/llm_profile.csv `
-  --arrival-scale 0.5 `
-  --output configs/generated/main_abilene_slo.yaml
+  --low-load-fraction 0.20 `
+  --output configs/benchmarks/main_abilene_calibrated.yaml
 python scripts/generate_composition_sweep.py `
   --scenario configs/benchmarks/main_abilene.yaml --family-sweep `
   --output configs/generated/family_composition
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
-  --arrival-scale 1.0 --seeds 0,1,2,3,4 `
-  --profile data/processed/llm_profile.csv `
-  --output results/baseline_main.parquet
+  --scenario configs/benchmarks/main_abilene_calibrated.yaml --slots 3600 `
+  --load-levels data/processed/load_levels.json --seeds 0,1,2,3,4 `
+  --output results/baseline_levels
 ```

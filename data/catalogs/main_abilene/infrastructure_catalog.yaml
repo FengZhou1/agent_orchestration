@@ -1,18 +1,18 @@
 metadata:
   role: main
   generated_by: scripts/build_benchmark_scenarios.py
-  generated_on: '2026-09-01'
+  generated_on: '2026-09-11'
   seed: 2026
-  source_catalog_sha256: 6d9488f927fffede8cb2f5b2906782d04e0349b9c48ac9d797152e051325a547
+  source_catalog_sha256: 647e3da5d6de2dc5e47f8b47fcf09797753b9d5dd8d7853e9bfc44ed3d748814
   data_sources:
     arrivals:
       name: stationary Poisson arrivals
       url: docs/experiment_protocol.md
       role: parameterized application request rates and load sweeps
     tokens:
-      name: JITServe Table 2
-      url: https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf
-      role: application-conditioned input and output token statistics
+      name: preconstructed agent workload catalog
+      url: data/preconstructed_agent_workloads.yaml
+      role: application-conditioned workflow and LLM token characteristics
     workflows:
       name: TraceLab v2 and BFCL V3/V4
       url: https://gorilla.cs.berkeley.edu/leaderboard
@@ -29,62 +29,21 @@ metadata:
       name: SNDlib 1.0
       url: https://sndlib.put.poznan.pl/networks.overview.action
       role: Abilene and GEANT topology and coordinates
-  jitserve_workload_profiles:
-    interactive_retrieval:
-      workload: Chatbot
-      request_type: Single
-      input:
-        mean: 93
-        std: 244
-        p50: 27
-        p95: 391
-      output:
-        mean: 318
-        std: 313
-        p50: 225
-        p95: 1024
-    transactional_tool:
-      workload: Deep Research
-      request_type: Single
-      input:
-        mean: 1911
-        std: 2781
-        p50: 403
-        p95: 7573
-      output:
-        mean: 534
-        std: 644
-        p50: 410
-        p95: 1544
-    deep_research:
-      workload: Deep Research
-      request_type: Compound
-      input:
-        mean: 12223
-        std: 8407
-        p50: 10807
-        p95: 29282
-      output:
-        mean: 3541
-        std: 2370
-        p50: 3148
-        p95: 7525
-    coding_agent:
-      workload: Chatbot
-      request_type: Compound
-      input:
-        mean: 1300
-        std: 912
-        p50: 1097
-        p95: 2767
-      output:
-        mean: 4458
-        std: 1176
-        p50: 4417
-        p95: 6452
+  preconstructed_workload_source: C:\Users\01\Desktop\agent\experiments\agent_orchestration\data\preconstructed_agent_workloads.yaml
+  preconstructed_workload_families:
+  - interactive_rag
+  - transactional_tool
+  - deep_research
+  - coding_agent
+  preconstructed_quantiles:
+  - 0.5
+  - 0.65
+  - 0.8
+  - 0.9
+  - 0.95
   arrival_process:
     distribution: stationary Poisson
-    base_total_rate_rps: 0.045
+    base_total_rate_rps: 0.004
     load_scales:
     - 0.5
     - 1.0
@@ -99,60 +58,62 @@ metadata:
   quality_status: reference values; replace with pinned benchmark runs
   slo_status: reference thresholds; replace with low-load P95 calibration
   cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
-  default_workload: JITServe Table 2 token characteristics with stationary Poisson
-    arrivals
+  default_workload: preconstructed agent workflow characteristics with stationary
+    Poisson arrivals
   infrastructure_status: deterministic reference fixture
   stateless_service_status: reference 2--8 request/s/core range
   calibration_inputs: {}
+  preconstructed_workload_path: C:\Users\01\Desktop\agent\experiments\agent_orchestration\data\preconstructed_agent_workloads.yaml
+  preconstructed_workload_sha256: 1a9be7a459f4bcb056fb02950de68dbd25d699e289bf32b128778939fbe0fd6a
 servers:
 - id: ATLAM5
-  cpu_cores: 64
-  memory_gb: 256.0
-  gpu_count: 1
-  gpu_memory_gb: 96.0
-  gpu_type: H20
-- id: ATLAng
-  cpu_cores: 56
-  memory_gb: 224.0
-  gpu_count: 2
-  gpu_memory_gb: 48.0
-  gpu_type: L20
-- id: CHINng
-  cpu_cores: 32
-  memory_gb: 128.0
-  gpu_count: 1
-  gpu_memory_gb: 24.0
-  gpu_type: A10
-- id: DNVRng
-  cpu_cores: 72
-  memory_gb: 288.0
-  gpu_count: 1
-  gpu_memory_gb: 96.0
-  gpu_type: H20
-- id: HSTNng
   cpu_cores: 48
   memory_gb: 192.0
   gpu_count: 2
   gpu_memory_gb: 48.0
   gpu_type: L20
-- id: IPLSng
-  cpu_cores: 72
-  memory_gb: 288.0
+- id: ATLAng
+  cpu_cores: 40
+  memory_gb: 160.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
+- id: CHINng
+  cpu_cores: 64
+  memory_gb: 256.0
   gpu_count: 1
   gpu_memory_gb: 96.0
   gpu_type: H20
-- id: KSCYng
+- id: DNVRng
+  cpu_cores: 56
+  memory_gb: 224.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: HSTNng
   cpu_cores: 32
   memory_gb: 128.0
   gpu_count: 1
   gpu_memory_gb: 24.0
   gpu_type: A10
-- id: LOSAng
-  cpu_cores: 72
-  memory_gb: 288.0
+- id: IPLSng
+  cpu_cores: 56
+  memory_gb: 224.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
+- id: KSCYng
+  cpu_cores: 64
+  memory_gb: 256.0
   gpu_count: 1
   gpu_memory_gb: 96.0
   gpu_type: H20
+- id: LOSAng
+  cpu_cores: 40
+  memory_gb: 160.0
+  gpu_count: 1
+  gpu_memory_gb: 24.0
+  gpu_type: A10
 - id: NYCMng
   cpu_cores: 48
   memory_gb: 192.0
@@ -166,17 +127,17 @@ servers:
   gpu_memory_gb: 96.0
   gpu_type: H20
 - id: STTLng
-  cpu_cores: 48
-  memory_gb: 192.0
-  gpu_count: 2
-  gpu_memory_gb: 48.0
-  gpu_type: L20
-- id: WASHng
-  cpu_cores: 40
-  memory_gb: 160.0
+  cpu_cores: 32
+  memory_gb: 128.0
   gpu_count: 1
   gpu_memory_gb: 24.0
   gpu_type: A10
+- id: WASHng
+  cpu_cores: 56
+  memory_gb: 224.0
+  gpu_count: 2
+  gpu_memory_gb: 48.0
+  gpu_type: L20
 links:
 - source: ATLAng
   target: ATLAM5

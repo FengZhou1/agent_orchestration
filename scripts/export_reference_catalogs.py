@@ -58,26 +58,30 @@ def export_catalogs(scenario_path: str | Path, output: str | Path) -> None:
         encoding="utf-8",
     )
     workload_rows = []
-    for family, profile in scenario.metadata.get(
-        "jitserve_workload_profiles", {}
-    ).items():
+    for app in scenario.applications.values():
+        input_tokens = sum(
+            app.visit_probability(node.id) * node.prompt_tokens[MODEL]
+            for node in app.nodes.values()
+            if node.type.value == "llm"
+        )
+        output_tokens = sum(
+            app.visit_probability(node.id) * node.output_tokens[MODEL]
+            for node in app.nodes.values()
+            if node.type.value == "llm"
+        )
         workload_rows.append(
             {
-                "family": family,
-                "source_workload": profile["workload"],
-                "source_request_type": profile["request_type"],
-                **{
-                    f"input_{metric}": value
-                    for metric, value in profile["input"].items()
-                },
-                **{
-                    f"output_{metric}": value
-                    for metric, value in profile["output"].items()
-                },
+                "application": app.id,
+                "family": app.family,
+                "template_id": app.template_id,
+                "length_class": app.length_class,
+                "input_tokens": round(input_tokens),
+                "output_tokens": round(output_tokens),
+                "pattern_flow_count": len(app.pattern_flows),
             }
         )
     pd.DataFrame(workload_rows).to_csv(
-        destination / "jitserve_workload_catalog.csv", index=False
+        destination / "preconstructed_workload_catalog.csv", index=False
     )
     service_rows = []
     for service in scenario.tools.values():
@@ -90,7 +94,6 @@ def export_catalogs(scenario_path: str | Path, output: str | Path) -> None:
                     "memory_gb": service.memory_gb,
                     "stable_rate_rps": rate,
                     "arrival_scv": service.arrival_scv,
-                    "service_scv": service.service_scv,
                     "running_cost_per_slot": service.running_cost_per_slot,
                     "source_status": "reference range; replace with pinned low-load measurements",
                 }
@@ -167,12 +170,12 @@ def export_catalogs(scenario_path: str | Path, output: str | Path) -> None:
             "scenario_id": scenario.id,
             "data_sources": scenario.metadata.get("data_sources", {}),
             "profile_load_fractions": [0.20, 0.40, 0.60, 0.80, 0.95, 1.05],
-            "profile_compositions": "balanced plus four 60/20/10/10 family skews",
+            "workload_catalog": "preconstructed application patterns and quantile templates",
         },
     ).write(destination / "manifest.json")
 
 
-MODEL = "qwen2.5-14b"
+MODEL = "qwen3-14b"
 
 
 def main() -> int:

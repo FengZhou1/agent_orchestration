@@ -222,13 +222,9 @@ class WorkflowEvaluator:
         )
         if not pairs:
             return self.scenario.simulation.overload_delay_s
-        app = self.scenario.applications[app_id]
-        data_mb = app.edge_data_mb.get((model, source, target), 0.0)
         return sum(
             probability
-            * self.backend.network.path_delay(
-                u, v, data_mb, result.link_load_mbps
-            )
+            * self.backend.network.path_delay(u, v, result.link_load_mbps)
             for u, v, probability in pairs
         )
 
@@ -241,14 +237,13 @@ class WorkflowEvaluator:
         node_id: str,
         result: AnalyticalResult,
     ) -> float:
-        app = self.scenario.applications[app_id]
         distribution = result.node_server_distribution.get(
             (app_id, ingress, model, flow_id, node_id), {}
         )
         return sum(
             probability
             * self.backend.network.path_delay(
-                ingress, server, app.entry_data_mb[model], result.link_load_mbps
+                ingress, server, result.link_load_mbps
             )
             for server, probability in distribution.items()
         )
@@ -262,14 +257,13 @@ class WorkflowEvaluator:
         final_node: str,
         result: AnalyticalResult,
     ) -> float:
-        app = self.scenario.applications[app_id]
         distribution = result.node_server_distribution.get(
             (app_id, ingress, model, flow_id, final_node), {}
         )
         return sum(
             probability
             * self.backend.network.path_delay(
-                server, ingress, app.exit_data_mb[model], result.link_load_mbps
+                server, ingress, result.link_load_mbps
             )
             for server, probability in distribution.items()
         )

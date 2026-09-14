@@ -74,7 +74,6 @@ class AgentOrchestrationEnv(gym.Env):
         potential_shaping: bool = False,
         seed: int = 0,
         arrival_trace: ArrivalTrace | None = None,
-        llm_profile_backend: Any | None = None,
         gamma: float = 0.99,
     ):
         super().__init__()
@@ -82,8 +81,8 @@ class AgentOrchestrationEnv(gym.Env):
         self.max_slots = max_slots
         self.potential_shaping = potential_shaping
         self.layout = StructuredActionLayout.build(scenario)
-        self.planner = CapacityPlanner(scenario, llm_profile_backend)
-        self.simulator = Simulator(scenario, llm_profile_backend=llm_profile_backend)
+        self.planner = CapacityPlanner(scenario)
+        self.simulator = Simulator(scenario)
         self.simulator.set_arrival_trace(arrival_trace)
         self.physical_router = PhysicalRouter(scenario)
         self._seed = seed

@@ -7,7 +7,7 @@
 | 产物 | 主要数据依据 | 不用于推断的内容 |
 |---|---|---|
 | 请求到达 | 场景平均到达率与平稳泊松过程 | 工作流拓扑和 GPU 容量 |
-| LLM 请求特征 | JITServe Table 2 | 请求到达时刻和 GPU 容量 |
+| LLM 请求特征 | preconstructed_agent_workloads.yaml | Agent 调用图、概率组合及节点级输入输出 token 特征 |
 | 工作流 | TraceLab v2；BFCL V3/V4 | 生产请求到达强度 |
 | 无状态服务 profile | DeathStarBench 或本地低负载测量 | LLM 推理时延 |
 | 基础设施 | Alibaba GPU Trace v2026 | 请求 token 和 LLM 时延 |
@@ -17,7 +17,7 @@
 
 场景文件的 `ingress_rates` 记录应用在各接入节点的平均请求率，单位为 request/s。给定时隙长度和随机种子，仿真器按平稳泊松过程生成每时隙请求数；不同负载档位通过统一的 `arrival_scale` 调整全部平均到达率。运行清单记录随机种子、负载缩放系数和场景校验和。
 
-JITServe Table 2 的输入、输出 token 均值、标准差、P50 和 P95 记录在场景元数据中。场景生成器将五个长度锚点编译为应用模板，不再生成逐请求 token 记录。
+预构建负载文件的节点级输入、输出 token P50/P95 记录在应用配置中。场景生成器按五个分位档位编译应用模板，并将每个应用内的全部概率组合展开为 pattern flows，不生成逐请求 token 记录。
 
 ## LLM 性能 profile 格式
 

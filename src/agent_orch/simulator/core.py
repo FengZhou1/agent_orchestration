@@ -20,9 +20,9 @@ from agent_orch.workload import ArrivalTrace
 
 
 class Simulator:
-    def __init__(self, scenario: Scenario, llm_profile_backend: Any | None = None):
+    def __init__(self, scenario: Scenario):
         self.scenario = scenario
-        self.backend = AnalyticalBackend(scenario, llm_profile_backend)
+        self.backend = AnalyticalBackend(scenario)
         self.workflow = WorkflowEvaluator(scenario, self.backend)
         self.decoder = ActionDecoder(scenario)
         self.slot = 0

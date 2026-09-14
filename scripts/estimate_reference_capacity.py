@@ -5,7 +5,6 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 
-from agent_orch.backends import ProfileBackend
 from agent_orch.baselines import make_policy
 from agent_orch.capacity import estimate_reference_capacity
 from agent_orch.performance import AnalyticalBackend
@@ -16,14 +15,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--policy", default="greedy")
-    parser.add_argument("--profile")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--output", default="data/processed/reference_capacity.json")
     args = parser.parse_args()
 
     scenario = ScenarioLoader.load(args.scenario)
-    profile = ProfileBackend.from_csv(args.profile) if args.profile else None
-    backend = AnalyticalBackend(scenario, profile)
+    backend = AnalyticalBackend(scenario)
     policy = make_policy(args.policy, scenario, args.seed)
     deployment = policy.deployment()
     routing = policy.routing(deployment)
@@ -36,7 +33,6 @@ def main() -> int:
         **asdict(estimate),
         "scenario": str(Path(args.scenario).resolve()),
         "policy": args.policy,
-        "profile": str(Path(args.profile).resolve()) if args.profile else None,
         "seed": args.seed,
     }
     output.write_text(

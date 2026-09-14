@@ -21,7 +21,6 @@ from agent_orch.agents import (
     resolve_device,
     train_ppo,
 )
-from agent_orch.backends import ProfileBackend
 from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnlyEnv
 from agent_orch.metrics import summarize_slot_metrics
 from agent_orch.schema.loader import ScenarioLoader
@@ -151,7 +150,6 @@ def main() -> int:
     parser.add_argument("--rollout-steps", type=int, default=1024)
     parser.add_argument("--train-slots", type=int, default=600)
     parser.add_argument("--eval-slots", type=int, default=600)
-    parser.add_argument("--profile", help="LLMServingSim/vLLM performance table CSV")
     parser.add_argument("--arrival-scale", type=float, default=1.0)
     parser.add_argument(
         "--device",
@@ -191,7 +189,6 @@ def main() -> int:
     scenario_path = Path(args.scenario).resolve()
     scenario_hash = hashlib.sha256(scenario_path.read_bytes()).hexdigest()[:16]
     scenario = ScenarioLoader.load(scenario_path)
-    profile = ProfileBackend.from_csv(args.profile) if args.profile else None
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     resolved_device = resolve_device(args.device)
@@ -220,7 +217,6 @@ def main() -> int:
                 potential_shaping=potential_shaping,
                 seed=seed,
                 arrival_trace=train_trace,
-                llm_profile_backend=profile,
             )
             print(f"Starting training run {run_id}", flush=True)
             train_started = time.perf_counter()
@@ -283,7 +279,6 @@ def main() -> int:
                 potential_shaping=False,
                 seed=seed + 10_000,
                 arrival_trace=eval_trace,
-                llm_profile_backend=profile,
             )
             records, decision_times = _evaluate(
                 eval_env, policy, seed + 10_000, resolved_device
@@ -330,7 +325,6 @@ def main() -> int:
         "eval_slots": args.eval_slots,
         "arrival_process": "stationary_poisson_intensity",
         "arrival_scale": args.arrival_scale,
-        "profile": str(Path(args.profile).resolve()) if args.profile else None,
         "device": hardware,
         "status_interval_steps": args.status_interval_steps,
         "python": platform.python_version(),

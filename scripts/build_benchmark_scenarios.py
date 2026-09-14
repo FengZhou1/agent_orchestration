@@ -6,6 +6,7 @@ from datetime import date
 import hashlib
 import math
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -14,11 +15,30 @@ import yaml
 from agent_orch.schema.loader import ScenarioLoader
 
 
-MODEL_IDS = ("qwen2.5-7b", "qwen2.5-14b", "qwen2.5-32b")
+MODEL_IDS = ("qwen3-4b", "qwen3-8b", "qwen3-14b", "qwen3-32b")
+GIB = 1024 ** 3
 GPU_MEMORY_GB = {"A10": 24.0, "L20": 48.0, "H20": 96.0}
 GPU_COST_PER_HOUR = {"A10": 1.0, "L20": 2.0, "H20": 4.0}
-GPU_EFFECTIVE_FLOPS = {"A10": 60e12, "L20": 90e12, "H20": 120e12}
-GPU_BANDWIDTH = {"A10": 600e9, "L20": 864e9, "H20": 3500e9}
+# The analytical model uses the non-sparse BF16 peak rates as its hardware
+# layer.  Hence eta_cmp = eta_bw = 1; no fitted value is embedded in a
+# scenario file.  Any calibrated equivalent rates belong to validation only.
+GPU_PEAK_FLOPS = {"A10": 125e12, "L20": 119.5e12, "H20": 148e12}
+GPU_BANDWIDTH = {"A10": 600e9, "L20": 864e9, "H20": 4000e9}
+
+PRECONSTRUCTED_FAMILY_KEYS = {
+    "interactive_retrieval": "interactive_rag",
+    "transactional_tool": "transactional_tool",
+    "deep_research": "deep_research",
+    "coding_agent": "coding_agent",
+}
+PRECONSTRUCTED_WORKLOADS_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "preconstructed_agent_workloads.yaml"
+)
+PRECONSTRUCTED_WORKLOADS = yaml.safe_load(
+    PRECONSTRUCTED_WORKLOADS_PATH.read_text(encoding="utf-8")
+)["applications"]
+PRECONSTRUCTED_QUANTILES = (0.50, 0.65, 0.80, 0.90, 0.95)
+
 
 SOURCE_CATALOG = {
     "arrivals": {
@@ -27,9 +47,9 @@ SOURCE_CATALOG = {
         "role": "parameterized application request rates and load sweeps",
     },
     "tokens": {
-        "name": "JITServe Table 2",
-        "url": "https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf",
-        "role": "application-conditioned input and output token statistics",
+        "name": "preconstructed agent workload catalog",
+        "url": "data/preconstructed_agent_workloads.yaml",
+        "role": "application-conditioned workflow and LLM token characteristics",
     },
     "workflows": {
         "name": "TraceLab v2 and BFCL V3/V4",
@@ -54,37 +74,7 @@ SOURCE_CATALOG = {
 }
 
 
-# JITServe Table 2 reports request-level input and output token statistics for
-# chatbot and deep-research workloads under single and compound execution.
-# Each row is mapped to the closest application family in the benchmark.
-JITSERVE_WORKLOADS: dict[str, dict[str, Any]] = {
-    "interactive_retrieval": {
-        "workload": "Chatbot",
-        "request_type": "Single",
-        "input": {"mean": 93, "std": 244, "p50": 27, "p95": 391},
-        "output": {"mean": 318, "std": 313, "p50": 225, "p95": 1024},
-    },
-    "transactional_tool": {
-        "workload": "Deep Research",
-        "request_type": "Single",
-        "input": {"mean": 1911, "std": 2781, "p50": 403, "p95": 7573},
-        "output": {"mean": 534, "std": 644, "p50": 410, "p95": 1544},
-    },
-    "deep_research": {
-        "workload": "Deep Research",
-        "request_type": "Compound",
-        "input": {"mean": 12223, "std": 8407, "p50": 10807, "p95": 29282},
-        "output": {"mean": 3541, "std": 2370, "p50": 3148, "p95": 7525},
-    },
-    "coding_agent": {
-        "workload": "Chatbot",
-        "request_type": "Compound",
-        "input": {"mean": 1300, "std": 912, "p50": 1097, "p95": 2767},
-        "output": {"mean": 4458, "std": 1176, "p50": 4417, "p95": 6452},
-    },
-}
-
-JITSERVE_LENGTH_CLASSES = ("short", "short", "medium", "medium", "long")
+PRECONSTRUCTED_LENGTH_CLASSES = ("short", "short", "medium", "medium", "long")
 
 
 TOPOLOGIES: dict[str, dict[str, Any]] = {
@@ -153,22 +143,22 @@ TOPOLOGIES: dict[str, dict[str, Any]] = {
 
 
 SERVICE_PROFILE = {
-    "web_search": (2, 2.0, 4.0, 1.5, 0.005, 0.080),
-    "information_retrieval": (2, 4.0, 6.0, 1.1, 0.020, 0.500),
-    "code_execution": (4, 8.0, 2.0, 2.0, 0.050, 0.200),
-    "file_processing": (2, 4.0, 5.0, 1.2, 0.500, 0.400),
-    "result_verification": (1, 2.0, 8.0, 0.8, 0.020, 0.020),
-    "external_api": (1, 1.0, 3.0, 2.5, 0.010, 0.100),
-    "knowledge_graph": (2, 4.0, 4.0, 1.4, 0.030, 0.650),
-    "data_transform": (2, 3.0, 5.0, 1.3, 0.200, 0.150),
+    "web_search": (2, 2.0, 4.0, 0.005, 0.080),
+    "information_retrieval": (2, 4.0, 6.0, 0.020, 0.500),
+    "code_execution": (4, 8.0, 2.0, 0.050, 0.200),
+    "file_processing": (2, 4.0, 5.0, 0.500, 0.400),
+    "result_verification": (1, 2.0, 8.0, 0.020, 0.020),
+    "external_api": (1, 1.0, 3.0, 0.010, 0.100),
+    "knowledge_graph": (2, 4.0, 4.0, 0.030, 0.650),
+    "data_transform": (2, 3.0, 5.0, 0.200, 0.150),
 }
 
 
 FAMILY_QUALITY = {
-    "interactive_retrieval": (0.72, 0.81, 0.89),
-    "transactional_tool": (0.68, 0.80, 0.91),
-    "deep_research": (0.62, 0.77, 0.91),
-    "coding_agent": (0.55, 0.70, 0.86),
+    "interactive_retrieval": (0.64, 0.72, 0.81, 0.89),
+    "transactional_tool": (0.58, 0.68, 0.80, 0.91),
+    "deep_research": (0.48, 0.62, 0.77, 0.91),
+    "coding_agent": (0.40, 0.55, 0.70, 0.86),
 }
 
 
@@ -189,11 +179,13 @@ def _link_capacity(distance_km: float) -> float:
 
 
 def _gpu_assignment(count: int) -> list[tuple[str, int]]:
-    # NVIDIA-only proportions normalized from the Alibaba GPU v2026 fleet mix.
+    # Interleave accelerator classes across the topology.  One 12-node cycle
+    # contains four A10, five dual-L20, and three H20 servers, so the main
+    # scenario is not dominated by the 4B-only A10 configuration.
     pattern = (
-        ("H20", 1), ("L20", 2), ("A10", 1), ("H20", 1),
-        ("L20", 2), ("H20", 1), ("A10", 1), ("H20", 1),
-        ("L20", 2), ("H20", 1), ("L20", 2), ("A10", 1),
+        ("L20", 2), ("A10", 1), ("H20", 1), ("L20", 2),
+        ("A10", 1), ("L20", 2), ("H20", 1), ("A10", 1),
+        ("L20", 2), ("H20", 1), ("A10", 1), ("L20", 2),
     )
     return [pattern[index % len(pattern)] for index in range(count)]
 
@@ -201,19 +193,24 @@ def _gpu_assignment(count: int) -> list[tuple[str, int]]:
 def _models() -> list[dict[str, Any]]:
     return [
         {
-            "id": "qwen2.5-7b", "parameter_count": 7.61e9, "layers": 28,
-            "hidden_size": 3584, "weight_bytes": 2 * 7.61e9,
-            "kv_bytes_per_token": 114688.0,
+            "id": "qwen3-4b", "parameter_count": 4.0e9, "layers": 36,
+            "hidden_size": 2560, "weight_bytes": 2 * 4.0e9,
+            "kv_bytes_per_token": 147456.0,
         },
         {
-            "id": "qwen2.5-14b", "parameter_count": 14.7e9, "layers": 48,
-            "hidden_size": 5120, "weight_bytes": 2 * 14.7e9,
-            "kv_bytes_per_token": 393216.0,
+            "id": "qwen3-8b", "parameter_count": 8.2e9, "layers": 36,
+            "hidden_size": 4096, "weight_bytes": 2 * 8.2e9,
+            "kv_bytes_per_token": 147456.0,
         },
         {
-            "id": "qwen2.5-32b", "parameter_count": 32.5e9, "layers": 64,
-            "hidden_size": 5120, "weight_bytes": 2 * 32.5e9,
-            "kv_bytes_per_token": 524288.0,
+            "id": "qwen3-14b", "parameter_count": 14.8e9, "layers": 40,
+            "hidden_size": 5120, "weight_bytes": 2 * 14.8e9,
+            "kv_bytes_per_token": 163840.0,
+        },
+        {
+            "id": "qwen3-32b", "parameter_count": 32.8e9, "layers": 64,
+            "hidden_size": 5120, "weight_bytes": 2 * 32.8e9,
+            "kv_bytes_per_token": 262144.0,
         },
     ]
 
@@ -223,11 +220,11 @@ def _config(
 ) -> dict[str, Any]:
     model_id = model["id"]
     suffix = f"{gpu_count}x{gpu_type.lower()}" if gpu_count > 1 else gpu_type.lower()
-    weight_gb_per_gpu = model["weight_bytes"] / gpu_count / 1e9
-    reserved = math.ceil(weight_gb_per_gpu + 4.0)
+    weight_gib_per_gpu = model["weight_bytes"] / gpu_count / GIB
+    reserved = math.ceil(weight_gib_per_gpu + 4.0)
     available_bytes = max(
-        1e9,
-        (GPU_MEMORY_GB[gpu_type] * 0.9 - weight_gb_per_gpu - 2.0) * 1e9,
+        GIB,
+        (GPU_MEMORY_GB[gpu_type] * 0.9 - weight_gib_per_gpu - 2.0) * GIB,
     )
     kv_capacity = math.floor(available_bytes * gpu_count / model["kv_bytes_per_token"])
     hourly_cost = gpu_count * GPU_COST_PER_HOUR[gpu_type]
@@ -238,9 +235,8 @@ def _config(
         "gpu_count": gpu_count,
         "gpu_share": 1.0,
         "reserved_memory_gb_per_gpu": float(reserved),
-        "effective_flops": GPU_EFFECTIVE_FLOPS[gpu_type] * gpu_count,
+        "effective_flops": GPU_PEAK_FLOPS[gpu_type] * gpu_count,
         "effective_bandwidth_bytes_s": GPU_BANDWIDTH[gpu_type] * gpu_count,
-        "effective_concurrency": 16 if model_id == "qwen2.5-32b" else 24,
         "kv_token_capacity": float(kv_capacity),
         "running_cost_per_slot": hourly_cost / 3600.0,
         "load_cost": hourly_cost / 60.0,
@@ -257,13 +253,14 @@ def _config(
 def _llm_configs(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_id = {model["id"]: model for model in models}
     return [
-        _config(by_id["qwen2.5-7b"], "A10"),
-        _config(by_id["qwen2.5-7b"], "L20"),
-        _config(by_id["qwen2.5-7b"], "H20"),
-        _config(by_id["qwen2.5-14b"], "L20"),
-        _config(by_id["qwen2.5-14b"], "H20"),
-        _config(by_id["qwen2.5-32b"], "H20"),
-        _config(by_id["qwen2.5-32b"], "L20", gpu_count=2),
+        _config(by_id["qwen3-4b"], "A10"),
+        _config(by_id["qwen3-4b"], "L20"),
+        _config(by_id["qwen3-8b"], "L20"),
+        _config(by_id["qwen3-8b"], "H20"),
+        _config(by_id["qwen3-14b"], "L20"),
+        _config(by_id["qwen3-14b"], "H20"),
+        _config(by_id["qwen3-32b"], "H20"),
+        _config(by_id["qwen3-32b"], "L20", gpu_count=2),
     ]
 
 
@@ -281,89 +278,111 @@ def _node(node_id: str, kind: str, prompt: float = 0, output: float = 0, tool: s
     return item
 
 
-def _workflow(family: str, scale: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    if family == "interactive_retrieval":
-        nodes = [
-            _node("plan", "llm", 256 * scale, 24 * scale),
-            _node("search", "tool", tool="web_search"),
-            _node("retrieve", "tool", tool="information_retrieval"),
-            _node("final", "llm", 640 * scale, 72 * scale),
+def _tool_type(node_id: str) -> str:
+    """Map workload-specific service names to reusable stateless services."""
+    if node_id in {"hybrid_search", "search_a", "search_b", "targeted_search_a", "targeted_search_b"}:
+        return "web_search"
+    if node_id in {"dense_retrieval", "db_single", "db_chain", "read_repository", "symbol_search", "read_test_logs"}:
+        return "information_retrieval"
+    if node_id in {"api_single", "api_chain"}:
+        return "external_api"
+    if node_id in {"verification", "compensation"}:
+        return "result_verification"
+    if node_id in {"edit_first", "edit_retry"}:
+        return "file_processing"
+    if node_id in {"test_first", "test_retry"}:
+        return "code_execution"
+    if node_id.startswith("search"):
+        return "web_search"
+    if node_id.startswith("db"):
+        return "information_retrieval"
+    if node_id.startswith("api"):
+        return "external_api"
+    if node_id.startswith("test"):
+        return "code_execution"
+    return "information_retrieval"
+
+
+def _quantile_value(statistics: dict[str, float], quantile: float) -> int:
+    p50 = max(float(statistics["p50"]), 1.0)
+    p95 = max(float(statistics["p95"]), p50)
+    sigma = math.log(p95 / p50) / NormalDist().inv_cdf(0.95)
+    return max(1, round(math.exp(math.log(p50) + sigma * NormalDist().inv_cdf(quantile))))
+
+
+def _choice_pattern(option: dict[str, Any]) -> list[list[str]]:
+    if "chains" in option:
+        return [list(chain) for chain in option["chains"]]
+    branches = [list(branch) for branch in option.get("parallel_branches", [])]
+    join_chain = list(option.get("join_chain", []))
+    return [branch + join_chain for branch in branches]
+
+
+def _append_pattern(prefixes: list[list[str]], suffixes: list[list[str]]) -> list[list[str]]:
+    return [prefix + suffix for prefix in prefixes for suffix in suffixes]
+
+
+def _preconstructed_workflow(
+    workload: dict[str, Any], family: str, template_index: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    quantile = PRECONSTRUCTED_QUANTILES[template_index % len(PRECONSTRUCTED_QUANTILES)]
+    nodes: list[dict[str, Any]] = []
+    for node_id, raw_node in workload["nodes"].items():
+        if raw_node["type"] == "llm":
+            nodes.append(
+                _node(
+                    node_id,
+                    "llm",
+                    _quantile_value(raw_node["input_tokens"], quantile),
+                    _quantile_value(raw_node["output_tokens"], quantile),
+                )
+            )
+        else:
+            nodes.append(_node(node_id, "tool", tool=_tool_type(node_id)))
+
+    choice_nodes = workload.get("choices", [])
+    root = choice_nodes[0]["llm_node"] if choice_nodes else next(
+        node["id"] for node in nodes if node["type"] == "llm"
+    )
+    prefixes = [[root]]
+    mandatory_parallel = workload.get("mandatory_parallel", [])
+    if mandatory_parallel:
+        parallel = mandatory_parallel[0]
+        prefixes = [
+            [parallel["llm_node"]] + list(branch) + [parallel["join_node"]]
+            for branch in parallel["branches"]
         ]
-        flows = [
-            {"id": "search", "probability": 0.70, "final_node": "final", "chains": [["plan", "search", "final"]]},
-            {"id": "search-retrieve", "probability": 0.30, "final_node": "final", "chains": [["plan", "search", "retrieve", "final"]]},
-        ]
-        slo = {"type": "lat", "ttft_s": 2.0, "tbt_s": 0.15}
-    elif family == "transactional_tool":
-        nodes = [
-            _node("plan", "llm", 384 * scale, 32 * scale, deadline=3.0),
-            _node("api", "tool", tool="external_api"),
-            _node("verify", "tool", tool="result_verification"),
-            _node("file", "tool", tool="file_processing"),
-            _node("final", "llm", 768 * scale, 64 * scale),
-        ]
-        flows = [
-            {"id": "direct", "probability": 0.55, "final_node": "final", "chains": [["plan", "api", "final"]]},
-            {"id": "verified", "probability": 0.45, "final_node": "final", "chains": [["plan", "api", "file", "verify", "final"]]},
-        ]
-        slo = {"type": "ddl", "deadline_s": 8.0}
-    elif family == "deep_research":
-        nodes = [
-            _node("plan", "llm", 768 * scale, 64 * scale, deadline=5.0),
-            _node("search", "tool", tool="web_search"),
-            _node("analyze_web", "llm", 1536 * scale, 128 * scale, deadline=12.0),
-            _node("retrieve", "tool", tool="information_retrieval"),
-            _node("analyze_docs", "llm", 2048 * scale, 160 * scale, deadline=15.0),
-            _node("api", "tool", tool="external_api"),
-            _node("file", "tool", tool="file_processing"),
-            _node("verify", "tool", tool="result_verification"),
-            _node("final", "llm", 3072 * scale, 256 * scale),
-        ]
-        flows = [
+    if workload.get("mandatory_chain"):
+        chain = list(workload["mandatory_chain"])
+        prefixes = [prefix + (chain[1:] if prefix[-1] == chain[0] else chain) for prefix in prefixes]
+
+    patterns: list[tuple[float, list[list[str]], tuple[int, ...]]] = [
+        (1.0, prefixes, tuple())
+    ]
+    for choice in choice_nodes:
+        expanded: list[tuple[float, list[list[str]], tuple[int, ...]]] = []
+        for probability, current, selected in patterns:
+            for option_index, option in enumerate(choice["options"]):
+                expanded.append(
+                    (
+                        probability * float(option["probability"]),
+                        _append_pattern(current, _choice_pattern(option)),
+                        selected + (option_index,),
+                    )
+                )
+        patterns = expanded
+
+    flows = []
+    for flow_index, (probability, chains, selected) in enumerate(patterns, start=1):
+        flows.append(
             {
-                "id": "parallel-core", "probability": 0.65, "final_node": "final",
-                "chains": [
-                    ["plan", "search", "analyze_web", "verify", "final"],
-                    ["plan", "retrieve", "analyze_docs", "final"],
-                ],
-            },
-            {
-                "id": "parallel-expanded", "probability": 0.35, "final_node": "final",
-                "chains": [
-                    ["plan", "search", "analyze_web", "api", "verify", "final"],
-                    ["plan", "retrieve", "analyze_docs", "file", "verify", "final"],
-                ],
-            },
-        ]
-        slo = {"type": "cmp", "ttft_s": 4.0, "tbt_s": 0.20, "deadline_s": 25.0}
-    else:
-        nodes = [
-            _node("plan", "llm", 1024 * scale, 96 * scale, deadline=6.0),
-            _node("read", "tool", tool="file_processing"),
-            _node("design", "llm", 2048 * scale, 160 * scale, deadline=14.0),
-            _node("edit", "tool", tool="file_processing"),
-            _node("implement", "llm", 4096 * scale, 256 * scale, deadline=24.0),
-            _node("unit", "tool", tool="code_execution"),
-            _node("integration", "tool", tool="code_execution"),
-            _node("inspect", "llm", 3072 * scale, 160 * scale, deadline=32.0),
-            _node("verify", "tool", tool="result_verification"),
-            _node("final", "llm", 2048 * scale, 192 * scale),
-        ]
-        flows = [
-            {
-                "id": "serial-test", "probability": 0.60, "final_node": "final",
-                "chains": [["plan", "read", "design", "edit", "implement", "unit", "inspect", "verify", "final"]],
-            },
-            {
-                "id": "parallel-test", "probability": 0.40, "final_node": "final",
-                "chains": [
-                    ["plan", "read", "design", "edit", "implement", "unit", "inspect", "verify", "final"],
-                    ["plan", "read", "design", "edit", "implement", "integration", "inspect", "verify", "final"],
-                ],
-            },
-        ]
-        slo = {"type": "cmp", "ttft_s": 5.0, "tbt_s": 0.25, "deadline_s": 40.0}
-    return nodes, flows, slo
+                "id": f"{family}-flow-{flow_index:02d}",
+                "probability": probability,
+                "final_node": chains[0][-1],
+                "chains": chains,
+            }
+        )
+    return nodes, flows, dict(workload.get("slo", {}))
 
 
 def _communication(
@@ -392,71 +411,16 @@ def _communication(
     return result
 
 
-def _jitserve_anchor(statistics: dict[str, int], template_index: int) -> int:
-    """Return five ordered token anchors from the reported P50, mean, and P95."""
-    p50 = float(statistics["p50"])
-    average = float(statistics["mean"])
-    p95 = float(statistics["p95"])
-    anchors = (
-        p50,
-        math.sqrt(p50 * average),
-        average,
-        math.sqrt(average * p95),
-        p95,
-    )
-    return max(1, round(anchors[template_index % len(anchors)]))
-
-
-def _apply_jitserve_tokens(
-    nodes: list[dict[str, Any]],
-    flows: list[dict[str, Any]],
-    target_input: int,
-    target_output: int,
-) -> None:
-    """Scale LLM-node token demands to a request-level JITServe anchor."""
-    visit_probability = {
-        node["id"]: sum(
-            float(flow["probability"])
-            for flow in flows
-            if node["id"] in {item for chain in flow["chains"] for item in chain}
-        )
-        for node in nodes
-        if node["type"] == "llm"
-    }
-    input_total = sum(
-        visit_probability[node["id"]] * float(node["prompt_tokens"][MODEL_IDS[0]])
-        for node in nodes
-        if node["type"] == "llm"
-    )
-    output_total = sum(
-        visit_probability[node["id"]] * float(node["output_tokens"][MODEL_IDS[0]])
-        for node in nodes
-        if node["type"] == "llm"
-    )
-    input_scale = target_input / input_total
-    output_scale = target_output / output_total
-    for node in nodes:
-        if node["type"] != "llm":
-            continue
-        prompt = max(1, round(float(node["prompt_tokens"][MODEL_IDS[0]]) * input_scale))
-        output = max(1, round(float(node["output_tokens"][MODEL_IDS[0]]) * output_scale))
-        node["prompt_tokens"] = {model: prompt for model in MODEL_IDS}
-        node["output_tokens"] = {model: output for model in MODEL_IDS}
-
-
 def _application(
     family: str,
     template_index: int,
     ingress: str,
     rate: float,
     service_parameters: dict[str, dict[str, float]],
+    workload: dict[str, Any],
     extended_services: bool = False,
 ) -> dict[str, Any]:
-    workload = JITSERVE_WORKLOADS[family]
-    target_input = _jitserve_anchor(workload["input"], template_index)
-    target_output = _jitserve_anchor(workload["output"], template_index)
-    nodes, flows, slo = _workflow(family, 1.0)
-    _apply_jitserve_tokens(nodes, flows, target_input, target_output)
+    nodes, flows, slo = _preconstructed_workflow(workload, family, template_index)
     if extended_services:
         for node in nodes:
             if template_index % 4 == 2 and node.get("tool") == "external_api":
@@ -464,17 +428,24 @@ def _application(
             if template_index % 4 == 3 and node.get("tool") == "information_retrieval":
                 node["tool"] = "knowledge_graph"
     llm_nodes = [node for node in nodes if node["type"] == "llm"]
-    final_id = flows[0]["final_node"]
-    final = next(node for node in llm_nodes if node["id"] == final_id)
-    first = llm_nodes[0]
+    first = next(node for node in nodes if node["type"] == "llm")
+    final_output = {
+        model: sum(
+            float(flow["probability"])
+            * next(node for node in llm_nodes if node["id"] == flow["final_node"])["output_tokens"][model]
+            for flow in flows
+        )
+        for model in MODEL_IDS
+    }
+    slo = slo or {"type": "cmp", "deadline_s": 40.0}
     quality = dict(zip(MODEL_IDS, FAMILY_QUALITY[family]))
     app_id = f"{family}-t{template_index + 1:02d}"
     return {
         "id": app_id,
         "family": family,
         "template_id": f"{family}:{template_index + 1}",
-        "length_class": JITSERVE_LENGTH_CLASSES[
-            template_index % len(JITSERVE_LENGTH_CLASSES)
+        "length_class": PRECONSTRUCTED_LENGTH_CLASSES[
+            template_index % len(PRECONSTRUCTED_LENGTH_CLASSES)
         ],
         "ingress_rates": {ingress: rate},
         "slo": slo,
@@ -484,7 +455,7 @@ def _application(
             for model in MODEL_IDS
         },
         "exit_data_mb": {
-            model: round(4.0 * final["output_tokens"][model] / 1e6, 6)
+            model: round(4.0 * final_output[model] / 1e6, 6)
             for model in MODEL_IDS
         },
         "edge_data_mb": _communication(nodes, flows, service_parameters),
@@ -499,17 +470,16 @@ def _service_parameters(profile: pd.DataFrame | None) -> dict[str, dict[str, flo
             "cores": float(cores),
             "memory_gb": float(memory),
             "stable_rate_rps": float(rate_per_core * cores),
-            "service_scv": float(scv),
             "request_mb": float(request_mb),
             "response_mb": float(response_mb),
         }
-        for service, (cores, memory, rate_per_core, scv, request_mb, response_mb)
+        for service, (cores, memory, rate_per_core, request_mb, response_mb)
         in SERVICE_PROFILE.items()
     }
     if profile is None:
         return parameters
     required = {
-        "service", "vcpu", "stable_rate_rps", "service_scv",
+        "service", "vcpu", "stable_rate_rps",
         "request_mb", "response_mb",
     }
     missing = required - set(profile.columns)
@@ -522,12 +492,35 @@ def _service_parameters(profile: pd.DataFrame | None) -> dict[str, dict[str, flo
         distance = (subset["vcpu"].astype(float) - values["cores"]).abs()
         subset = subset[distance == distance.min()]
         for column in (
-            "stable_rate_rps", "service_scv", "request_mb", "response_mb"
+            "stable_rate_rps", "request_mb", "response_mb"
         ):
             measured = subset[column].dropna().astype(float)
             if not measured.empty:
                 values[column] = float(measured.median())
     return parameters
+
+
+def _apply_preconstructed_service_times(
+    parameters: dict[str, dict[str, float]],
+    workloads: dict[str, dict[str, Any]],
+) -> None:
+    """Use the preconstructed service timings while retaining shared service pools."""
+    observations: dict[str, list[float]] = {}
+    returns: dict[str, list[float]] = {}
+    for workload in workloads.values():
+        for node_id, node in workload["nodes"].items():
+            if node["type"] != "stateless_service":
+                continue
+            service = _tool_type(node_id)
+            observations.setdefault(service, []).append(float(node["mean_service_seconds"]))
+            returns.setdefault(service, []).append(float(node["return_tokens"]["p50"]))
+    for service, values in observations.items():
+        if service not in parameters or not values:
+            continue
+        parameters[service]["stable_rate_rps"] = 1.0 / max(sum(values) / len(values), 1.0e-6)
+        parameters[service]["response_mb"] = (
+            4.0 * sum(returns[service]) / max(len(returns[service]), 1) / 1.0e6
+        )
 
 
 def build_scenario(
@@ -536,6 +529,7 @@ def build_scenario(
     seed: int = 2026,
     infrastructure_servers: list[dict[str, Any]] | None = None,
     service_profile: pd.DataFrame | None = None,
+    workloads: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     topology = TOPOLOGIES[topology_name]
     node_ids = list(topology["nodes"])
@@ -601,7 +595,10 @@ def build_scenario(
                     "server": server["id"],
                 }
             )
+    workload_catalog = workloads or PRECONSTRUCTED_WORKLOADS
     service_parameters = _service_parameters(service_profile)
+    if service_profile is None:
+        _apply_preconstructed_service_times(service_parameters, workload_catalog)
     tools = []
     median_cpu = float(pd.Series([server["cpu_cores"] for server in servers]).median())
     for service_id, parameters in service_parameters.items():
@@ -622,7 +619,6 @@ def build_scenario(
                 "memory_gb": memory,
                 "service_rate": rates,
                 "arrival_scv": 1.0,
-                "service_scv": float(parameters["service_scv"]),
                 "running_cost_per_slot": hourly_cost / 3600.0,
                 "start_cost": hourly_cost / 60.0,
             }
@@ -638,7 +634,7 @@ def build_scenario(
     }
     # The checked-in rates provide a stable reference point for stationary
     # Poisson experiments. Load sweeps multiply these rates uniformly.
-    total_family_rate = 0.01125
+    total_family_rate = 0.001
     cursor = 0
     for family in families:
         count = family_counts[family]
@@ -650,6 +646,7 @@ def build_scenario(
                     node_ids[cursor % len(node_ids)],
                     total_family_rate / count,
                     service_parameters,
+                    workload_catalog[PRECONSTRUCTED_FAMILY_KEYS[family]],
                     extended_services=application_count > 20,
                 )
             )
@@ -673,11 +670,14 @@ def build_scenario(
             "seed": seed,
             "source_catalog_sha256": source_digest,
             "data_sources": SOURCE_CATALOG,
-            "jitserve_workload_profiles": JITSERVE_WORKLOADS,
+            "preconstructed_workload_source": str(PRECONSTRUCTED_WORKLOADS_PATH),
+            "preconstructed_workload_families": list(PRECONSTRUCTED_FAMILY_KEYS.values()),
+            "preconstructed_quantiles": list(PRECONSTRUCTED_QUANTILES),
             "arrival_process": {
-                "distribution": "stationary Poisson",
+                "distribution": "stationary intensity (mean-field steady state)",
                 "base_total_rate_rps": 4.0 * total_family_rate,
-                "load_scales": [0.5, 1.0, 2.0, 3.0],
+                "load_levels": [0.40, 0.65, 0.85, 1.05],
+                "load_basis": "reference stable capacity from calibrate_load_levels.py",
             },
             "units": {
                 "arrival_rate": "request/s",
@@ -690,7 +690,7 @@ def build_scenario(
             "slo_status": "reference thresholds; replace with low-load P95 calibration",
             "cost_normalization": "A10-hour=1, L20-hour=2, H20-hour=4",
             "default_workload": (
-                "JITServe Table 2 token characteristics with stationary Poisson arrivals"
+                "preconstructed agent workflow characteristics with a stationary arrival intensity"
             ),
             "infrastructure_status": (
                 "processed Alibaba GPU catalog" if infrastructure_servers
@@ -766,8 +766,14 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--infrastructure-catalog")
     parser.add_argument("--service-profile")
+    parser.add_argument(
+        "--preconstructed-workloads",
+        default=str(PRECONSTRUCTED_WORKLOADS_PATH),
+    )
     args = parser.parse_args()
     output = Path(args.output).resolve()
+    workload_path = Path(args.preconstructed_workloads).resolve()
+    workloads = yaml.safe_load(workload_path.read_text(encoding="utf-8"))["applications"]
     infrastructure = None
     if args.infrastructure_catalog:
         infrastructure = yaml.safe_load(
@@ -777,10 +783,10 @@ def main() -> int:
         pd.read_csv(args.service_profile) if args.service_profile else None
     )
     main_scenario = build_scenario(
-        "abilene", 20, args.seed, infrastructure, service_profile
+        "abilene", 20, args.seed, infrastructure, service_profile, workloads
     )
     scale_scenario = build_scenario(
-        "geant", 50, args.seed, infrastructure, service_profile
+        "geant", 50, args.seed, infrastructure, service_profile, workloads
     )
     calibration_inputs = {}
     for label, raw_path in (
@@ -795,6 +801,10 @@ def main() -> int:
             }
     for scenario in (main_scenario, scale_scenario):
         scenario["metadata"]["calibration_inputs"] = calibration_inputs
+        scenario["metadata"]["preconstructed_workload_path"] = str(workload_path)
+        scenario["metadata"]["preconstructed_workload_sha256"] = hashlib.sha256(
+            workload_path.read_bytes()
+        ).hexdigest()
     write_scenario(main_scenario, output / "main_abilene.yaml")
     write_scenario(scale_scenario, output / "scale_geant.yaml")
     for filename, scenario in stress_variants(main_scenario).items():

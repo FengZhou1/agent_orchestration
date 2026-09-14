@@ -1,6 +1,6 @@
 {
   "artifact_type": "reference-catalog-bundle",
-  "generated_at_utc": "2026-09-01T10:59:53.844666+00:00",
+  "generated_at_utc": "2026-09-11T05:25:46.647127+00:00",
   "license": "See each source entry in scenario metadata",
   "parameters": {
     "data_sources": {
@@ -25,9 +25,9 @@
         "url": "https://github.com/alibaba/clusterdata/tree/master/cluster-trace-microservices-v2021"
       },
       "tokens": {
-        "name": "JITServe Table 2",
-        "role": "application-conditioned input and output token statistics",
-        "url": "https://www.usenix.org/system/files/nsdi26-zhang-wei.pdf"
+        "name": "preconstructed agent workload catalog",
+        "role": "application-conditioned workflow and LLM token characteristics",
+        "url": "data/preconstructed_agent_workloads.yaml"
       },
       "workflows": {
         "name": "TraceLab v2 and BFCL V3/V4",
@@ -35,7 +35,6 @@
         "url": "https://gorilla.cs.berkeley.edu/leaderboard"
       }
     },
-    "profile_compositions": "balanced plus four 60/20/10/10 family skews",
     "profile_load_fractions": [
       0.2,
       0.4,
@@ -44,13 +43,14 @@
       0.95,
       1.05
     ],
-    "scenario_id": "agent-abilene-20"
+    "scenario_id": "agent-abilene-20",
+    "workload_catalog": "preconstructed application patterns and quantile templates"
   },
   "preprocessing_command": "python scripts/export_reference_catalogs.py --scenario C:\\Users\\01\\Desktop\\agent\\experiments\\agent_orchestration\\configs\\benchmarks\\main_abilene.yaml",
   "random_seed": 2026,
-  "source_checksum_sha256": "825f2f7f79d13eb329f1debb9fb2e650b6dce357562168251cb17ba94e2b7d53",
+  "source_checksum_sha256": "71ff54dc78d55c26035fa0a09f6b0a5733b16e82f05df55c4403305b99c569d2",
   "source_name": "compiled benchmark scenario",
   "source_url": "https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2026",
-  "source_version": "6d9488f927fffede8cb2f5b2906782d04e0349b9c48ac9d797152e051325a547",
+  "source_version": "647e3da5d6de2dc5e47f8b47fcf09797753b9d5dd8d7853e9bfc44ed3d748814",
   "split_boundaries": {}
 }

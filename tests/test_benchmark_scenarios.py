@@ -45,35 +45,49 @@ def test_main_scenario_has_balanced_families_and_length_classes():
         )
         for family in family_counts
     }
-    assert all(rate == pytest.approx(0.01125) for rate in family_rates.values())
+    assert all(rate == pytest.approx(0.001) for rate in family_rates.values())
 
 
-def test_jitserve_table2_token_anchors_are_applied_to_each_family():
+def test_preconstructed_workload_quantiles_are_applied_to_each_family():
     scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
-    expected = {
-        "interactive_retrieval": (93, 318),
-        "transactional_tool": (1911, 534),
-        "deep_research": (12223, 3541),
-        "coding_agent": (1300, 4458),
+    source_keys = {
+        "interactive_retrieval": "interactive_rag",
+        "transactional_tool": "transactional_tool",
+        "deep_research": "deep_research",
+        "coding_agent": "coding_agent",
     }
-    for family, (target_input, target_output) in expected.items():
+    source = BUILDER["PRECONSTRUCTED_WORKLOADS"]
+    for family, source_key in source_keys.items():
         application = next(
             app
             for app in scenario.applications.values()
             if app.family == family and app.template_id.endswith(":3")
         )
-        prompt = sum(
-            application.visit_probability(node.id) * node.prompt_tokens["qwen2.5-14b"]
-            for node in application.nodes.values()
-            if node.type.value == "llm"
+        workload = source[source_key]
+        for node_id, node in workload["nodes"].items():
+            if node["type"] != "llm":
+                continue
+            actual = application.nodes[node_id]
+            assert node["input_tokens"]["p50"] <= actual.prompt_tokens["qwen3-14b"] <= node["input_tokens"]["p95"]
+            assert node["output_tokens"]["p50"] <= actual.output_tokens["qwen3-14b"] <= node["output_tokens"]["p95"]
+
+
+def test_preconstructed_choices_are_fully_expanded():
+    scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
+    expected_flow_counts = {
+        "interactive_retrieval": 3,
+        "transactional_tool": 6,
+        "deep_research": 2,
+        "coding_agent": 2,
+    }
+    for family, expected_count in expected_flow_counts.items():
+        applications = [app for app in scenario.applications.values() if app.family == family]
+        assert applications
+        assert {len(app.pattern_flows) for app in applications} == {expected_count}
+        assert all(
+            sum(flow.probability for flow in app.pattern_flows) == pytest.approx(1.0)
+            for app in applications
         )
-        output = sum(
-            application.visit_probability(node.id) * node.output_tokens["qwen2.5-14b"]
-            for node in application.nodes.values()
-            if node.type.value == "llm"
-        )
-        assert prompt == pytest.approx(target_input, abs=3.0)
-        assert output == pytest.approx(target_output, abs=3.0)
 
 
 def test_main_default_workload_is_stable_for_reference_deployment():
@@ -89,17 +103,21 @@ def test_main_default_workload_is_stable_for_reference_deployment():
     assert not any("overload" in violation for violation in result.violations)
 
     stressed_rates = {
-        (app.id, ingress): 3.0 * rate
+        (app.id, ingress): 4.0 * rate
         for app in scenario.applications.values()
         for ingress, rate in app.ingress_rates.items()
     }
     stressed = AnalyticalBackend(scenario).evaluate(
         deployment, policy.routing(deployment), stressed_rates
     )
-    assert any("overload" in violation for violation in stressed.violations)
+    # KV enters as a utilization rather than a hard constraint, so the load
+    # response is a monotone rise in bottleneck pressure and latency.
+    peak = max(result.llm_utilization.values())
+    stressed_peak = max(stressed.llm_utilization.values())
+    assert stressed_peak > peak
     shared = set(result.llm_performance) & set(stressed.llm_performance)
-    assert max(stressed.llm_performance[key].response_s for key in shared) > (
-        max(result.llm_performance[key].response_s for key in shared) + 50.0
+    assert max(stressed.llm_performance[key].response_s for key in shared) > max(
+        result.llm_performance[key].response_s for key in shared
     )
 
 
@@ -117,6 +135,38 @@ def test_vllm_configuration_is_fixed_and_gpu_compatible():
         assert config.max_num_seqs == 128
         assert config.chunked_prefill
         assert not config.prefix_cache
+        assert config.kv_token_capacity >= config.max_model_len
+
+
+def test_main_gpu_mix_and_model_deployment_coverage():
+    scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
+    gpu_counts = {gpu_type: 0 for gpu_type in ("A10", "L20", "H20")}
+    for server in scenario.servers.values():
+        gpu_counts[server.gpu_type] += 1
+    assert gpu_counts == {"A10": 4, "L20": 5, "H20": 3}
+    assert set(scenario.models) == {
+        "qwen3-4b", "qwen3-8b", "qwen3-14b", "qwen3-32b"
+    }
+    deployed_models = {candidate.model for candidate in scenario.candidates.values()}
+    assert deployed_models == set(scenario.models)
+
+
+def test_candidate_configs_use_intended_gpu_model_pairs():
+    scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
+    pairs = {
+        (config.model, config.gpu_type, config.gpu_count)
+        for config in scenario.llm_configs.values()
+    }
+    assert pairs == {
+        ("qwen3-4b", "A10", 1),
+        ("qwen3-4b", "L20", 1),
+        ("qwen3-8b", "L20", 1),
+        ("qwen3-8b", "H20", 1),
+        ("qwen3-14b", "L20", 1),
+        ("qwen3-14b", "H20", 1),
+        ("qwen3-32b", "H20", 1),
+        ("qwen3-32b", "L20", 2),
+    }
 
 
 def test_builder_is_deterministic():

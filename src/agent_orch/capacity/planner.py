@@ -3,14 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING, Mapping
+from typing import Mapping
 
 from agent_orch.performance.llm import service_demand
 from agent_orch.performance.queueing import tool_response_time
 from agent_orch.schema.models import DeploymentDecision, NodeType, Scenario
-
-if TYPE_CHECKING:
-    from agent_orch.backends import ProfileBackend
 
 
 @dataclass(frozen=True)
@@ -39,11 +36,9 @@ class CapacityPlanner:
     def __init__(
         self,
         scenario: Scenario,
-        profile_backend: "ProfileBackend | None" = None,
         config: CapacityPlanningConfig = CapacityPlanningConfig(),
     ):
         self.scenario = scenario
-        self.profile_backend = profile_backend
         self.config = config
 
     def plan(
@@ -367,7 +362,6 @@ class CapacityPlanner:
             service_rate,
             replicas,
             tool.arrival_scv,
-            tool.service_scv,
             self.scenario.simulation.overload_delay_s,
         )
         delay_reference = max(1.0 / service_rate, 1.0e-12)
@@ -399,18 +393,7 @@ class CapacityPlanner:
             prompt, output, long_fraction, composition = self._model_workload(
                 candidate.model, arrival_rates, model_share
             )
-            if self.profile_backend is not None:
-                estimate = self.profile_backend.estimate(
-                    candidate.model,
-                    candidate.config,
-                    prompt,
-                    output,
-                    model_arrival[candidate.model],
-                    long_fraction,
-                    composition,
-                )
-                capacities[candidate_id] = estimate.stable_capacity_rps
-                continue
+
             config = self.scenario.llm_configs[candidate.config]
             demand = service_demand(
                 self.scenario.models[candidate.model],
@@ -419,7 +402,7 @@ class CapacityPlanner:
                 output,
                 self.scenario.simulation.prefill_chunk_tokens,
             )
-            capacities[candidate_id] = config.effective_concurrency / max(
+            capacities[candidate_id] = config.max_num_seqs / max(
                 demand.service_s, 1.0e-12
             )
         return capacities

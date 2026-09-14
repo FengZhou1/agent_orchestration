@@ -39,7 +39,6 @@ def tool_response_time(
     service_rate: float,
     replicas: int,
     arrival_scv: float,
-    service_scv: float,
     overload_delay: float,
 ) -> tuple[float, float, float, bool]:
     if arrival_rate <= 0.0:
@@ -52,6 +51,6 @@ def tool_response_time(
     if utilization >= 1.0:
         return overload_delay, processing, utilization, True
     wait_probability = erlang_c(replicas, utilization)
-    wait = (arrival_scv + service_scv) / 2.0
+    wait = (arrival_scv + 1.0) / 2.0
     wait *= wait_probability / (replicas * service_rate - arrival_rate)
     return max(0.0, wait), processing, utilization, False

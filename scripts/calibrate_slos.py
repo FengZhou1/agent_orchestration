@@ -7,8 +7,9 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from agent_orch.backends import ProfileBackend
 from agent_orch.baselines import make_policy
+from agent_orch.capacity import estimate_reference_capacity
+from agent_orch.performance import AnalyticalBackend
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
 from agent_orch.workload import ArrivalTrace
@@ -29,13 +30,12 @@ def weighted_quantile(values: list[float], weights: list[float], quantile: float
 
 def collect_reference_metrics(
     scenario,
-    profile: ProfileBackend | None,
     trace: ArrivalTrace,
     slots: int,
     policy_name: str,
     seed: int,
 ) -> dict[str, list[dict[str, float]]]:
-    simulator = Simulator(scenario, llm_profile_backend=profile)
+    simulator = Simulator(scenario)
     simulator.set_arrival_trace(trace)
     simulator.reset(seed)
     policy = make_policy(policy_name, scenario, seed)
@@ -98,10 +98,14 @@ def calibrated_slos(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
-    parser.add_argument("--profile")
-    parser.add_argument("--arrival-scale", type=float, default=0.5)
-    parser.add_argument("--slots", type=int, default=3600)
     parser.add_argument("--policy", default="greedy")
+    parser.add_argument(
+        "--low-load-fraction",
+        type=float,
+        default=0.20,
+        help="Fraction of the reference stable capacity used for calibration",
+    )
+    parser.add_argument("--slots", type=int, default=3600)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--ttft-multiplier", type=float, default=1.5)
     parser.add_argument("--tbt-multiplier", type=float, default=1.25)
@@ -112,24 +116,28 @@ def main() -> int:
     scenario_path = Path(args.scenario).resolve()
     raw = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
     scenario = ScenarioLoader.load(scenario_path)
-    profile = ProfileBackend.from_csv(args.profile) if args.profile else None
+    backend = AnalyticalBackend(scenario)
+    policy = make_policy(args.policy, scenario, args.seed)
+    deployment = policy.deployment()
+    routing = policy.routing(deployment)
+    reference = estimate_reference_capacity(scenario, deployment, routing, backend)
+    low_load_scale = reference.arrival_scale * args.low_load_fraction
+
     trace = ArrivalTrace.stationary_poisson_intensity(
-        scenario, args.slots, rate_scale=args.arrival_scale
+        scenario, args.slots, rate_scale=low_load_scale
     )
     records = collect_reference_metrics(
-        scenario, profile, trace, args.slots, args.policy, args.seed
+        scenario, trace, args.slots, args.policy, args.seed
     )
     slos, stages = calibrated_slos(
-        records, args.ttft_multiplier, args.tbt_multiplier,
-        args.deadline_multiplier,
+        records, args.ttft_multiplier, args.tbt_multiplier, args.deadline_multiplier
     )
     for app in raw["applications"]:
         values = slos[app["id"]]
         kind = app["slo"]["type"]
         if kind == "lat":
             app["slo"] = {
-                "type": kind, "ttft_s": values["ttft_s"],
-                "tbt_s": values["tbt_s"],
+                "type": kind, "ttft_s": values["ttft_s"], "tbt_s": values["tbt_s"],
             }
         elif kind == "ddl":
             app["slo"] = {"type": kind, "deadline_s": values["deadline_s"]}
@@ -143,15 +151,16 @@ def main() -> int:
         "policy": args.policy,
         "slots": args.slots,
         "seed": args.seed,
+        "low_load_fraction": args.low_load_fraction,
+        "low_load_rate_scale": low_load_scale,
+        "reference_capacity_rps": reference.stable_capacity_rps,
+        "reference_arrival_scale": reference.arrival_scale,
+        "limiting_resource": reference.limiting_resource,
         "ttft_multiplier": args.ttft_multiplier,
         "tbt_multiplier": args.tbt_multiplier,
         "deadline_multiplier": args.deadline_multiplier,
-        "arrival_process": "stationary_poisson_intensity",
-        "arrival_scale": args.arrival_scale,
-        "profile_sha256": (
-            hashlib.sha256(Path(args.profile).read_bytes()).hexdigest()
-            if args.profile else None
-        ),
+        "arrival_process": "stationary_intensity",
+        "scenario_sha256": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
     }
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

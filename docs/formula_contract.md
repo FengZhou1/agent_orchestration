@@ -36,3 +36,6 @@
 - 队列不稳定时使用配置中的有限过载时延，并设置约束违例标志；
 - 只有一个可选项的路由组采用确定性选择，不计入 RL 策略的对数概率；
 - 分析后端不得返回 NaN 或无穷值。
+- `W_l^LLM` is computed by `AnalyticalBackend._llm_performance` using `erlang_c`; the old fixed `effective_concurrency` is not used by the analytical LLM model.
+- `bar K_l^act`, `C_l^run`, and `delta_l^KV` are computed before the steady-state concurrency fixed point.
+- `bar B_l` solves `bar B_l = sum(lambda_{a,i,l} D_{a,i,l}^{svc}(max(1,bar B_l)))` without clipping to the legacy concurrency field.

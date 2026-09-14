@@ -16,11 +16,24 @@ def test_offered_load_is_mbps_and_independent_of_slot_duration():
     assert one_second.utilization(load_one)["a->b"] == pytest.approx(0.16)
 
 
-def test_request_delay_uses_its_payload_not_whole_slot_traffic():
+def test_hop_delay_uses_aggregate_offered_volume_over_link_rate():
+    links = (LinkSpec("a", "b", capacity_mbps=100.0, propagation_ms=1.0),)
+    network = NetworkBackend(links, slot_seconds=1.0)
+    loads = {("a", "b"): 20.0}
+    # 1 ms propagation plus 20 Mbit / 100 Mbps = 0.2 s transmission time
+    assert network.path_delay("a", "b", loads) == pytest.approx(0.201)
+
+
+def test_local_transfer_has_zero_network_delay():
     links = (LinkSpec("a", "b", capacity_mbps=100.0, propagation_ms=1.0),)
     network = NetworkBackend(links)
-    loads = {("a", "b"): 20.0}
-    assert network.path_delay("a", "b", 1.0, loads) == pytest.approx(0.081)
+    assert network.path_delay("a", "a", {}) == 0.0
+
+
+def test_saturated_link_returns_overload_delay():
+    links = (LinkSpec("a", "b", capacity_mbps=100.0, propagation_ms=1.0),)
+    network = NetworkBackend(links, overload_delay_s=60.0)
+    assert network.path_delay("a", "b", {("a", "b"): 100.0}) == pytest.approx(60.0)
 
 
 def test_network_traffic_cost_converts_mbps_to_mb_per_slot():

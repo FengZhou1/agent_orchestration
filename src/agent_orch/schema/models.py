@@ -54,7 +54,6 @@ class LLMConfigSpec:
     reserved_memory_gb_per_gpu: float
     effective_flops: float
     effective_bandwidth_bytes_s: float
-    effective_concurrency: int
     kv_token_capacity: float
     running_cost_per_slot: float
     load_cost: float = 0.0
@@ -75,7 +74,6 @@ class ToolSpec:
     memory_gb: float
     service_rate: dict[str, float]
     arrival_scv: float = 1.0
-    service_scv: float = 1.0
     running_cost_per_slot: float = 0.0
     start_cost: float = 0.0
 

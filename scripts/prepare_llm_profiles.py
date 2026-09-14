@@ -8,7 +8,6 @@ import sys
 import numpy as np
 import pandas as pd
 
-from agent_orch.backends import ProfileBackend
 from agent_orch.data import DatasetManifest, file_sha256
 
 
@@ -16,8 +15,15 @@ BASE_COLUMNS = (
     "model", "config", "prompt_tokens", "output_tokens", "arrival_rate_rps",
     "long_request_fraction",
 )
-COMPOSITION_COLUMNS = ProfileBackend.COMPOSITION_COLUMNS
-OUTPUT_COLUMNS = ProfileBackend.OUTPUT_COLUMNS
+COMPOSITION_COLUMNS = (
+    "interactive_retrieval_fraction",
+    "transactional_tool_fraction",
+    "deep_research_fraction",
+    "coding_agent_fraction",
+)
+OUTPUT_COLUMNS = (
+    "ttft_s", "tbt_s", "response_s", "stable_capacity_rps", "kv_tokens",
+)
 
 
 def validate_profile(frame: pd.DataFrame) -> pd.DataFrame:
@@ -56,6 +62,11 @@ def interpolation_holdout(
     if not 0.0 < holdout_fraction < 1.0:
         raise ValueError("holdout_fraction must lie in (0, 1)")
     rng = np.random.default_rng(seed)
+    has_composition = set(COMPOSITION_COLUMNS) <= set(frame.columns)
+    input_columns = (
+        [*BASE_COLUMNS[2:], *COMPOSITION_COLUMNS] if has_composition
+        else list(BASE_COLUMNS[2:])
+    )
     train_parts, test_parts = [], []
     for _, group in frame.groupby(["model", "config"], sort=True):
         if len(group) < 5:
@@ -69,24 +80,21 @@ def interpolation_holdout(
         return {}
     train = pd.concat(train_parts, ignore_index=True)
     test = pd.concat(test_parts, ignore_index=True)
-    backend = ProfileBackend(train)
     errors = {column: [] for column in OUTPUT_COLUMNS}
-    has_composition = set(COMPOSITION_COLUMNS) <= set(frame.columns)
     for row in test.itertuples(index=False):
-        composition = None
-        if has_composition:
-            composition = {
-                column.removesuffix("_fraction"): float(getattr(row, column))
-                for column in COMPOSITION_COLUMNS
-            }
-        estimate = backend.estimate(
-            str(row.model), str(row.config), float(row.prompt_tokens),
-            float(row.output_tokens), float(row.arrival_rate_rps),
-            float(row.long_request_fraction), composition,
+        candidates = train[
+            (train["model"] == row.model) & (train["config"] == row.config)
+        ]
+        if candidates.empty:
+            continue
+        point = np.asarray(
+            [float(getattr(row, column)) for column in input_columns], dtype=float
         )
+        points = candidates[input_columns].to_numpy(dtype=float)
+        nearest = int(np.argmin(np.linalg.norm(points - point, axis=1)))
         for column in OUTPUT_COLUMNS:
             observed = float(getattr(row, column))
-            predicted = float(getattr(estimate, column))
+            predicted = float(candidates.iloc[nearest][column])
             errors[column].append(abs(predicted - observed) / max(abs(observed), 1e-9))
     return {
         column: {
@@ -96,7 +104,6 @@ def interpolation_holdout(
         }
         for column, values in errors.items()
     }
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()

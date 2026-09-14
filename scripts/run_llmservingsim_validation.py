@@ -291,50 +291,20 @@ def _run_one(
     local_log = output / "logs" / f"{run_id}.log"
     if local_csv.exists() and not force:
         return {"run_id": run_id, "status": "skipped", "elapsed_s": 0.0}
-    container_base = f"{container_repo}/outputs/queue_validation"
     remote_csv = f"{remote_repo}/outputs/queue_validation/runs/{run_id}.csv"
     container_csv = f"outputs/queue_validation/runs/{run_id}.csv"
     # LLMServingSim's router resolves datasets relative to its astra-sim
     # working directory by prepending "../". Pass a repository-relative path.
     container_workload = f"outputs/queue_validation/workloads/{spec['workload']}"
-    command = _remote_command(
-        host,
-        [
-            "docker",
-            "exec",
-            "-e",
-            f"PYTHONPATH={container_base}/instrument:{container_repo}",
-            "-w",
-            container_repo,
-            container,
-            "python",
-            "-m",
-            "serving",
-            "--cluster-config",
-            CLUSTER_CONFIG,
-            "--dtype",
-            "bfloat16",
-            "--block-size",
-            "16",
-            "--max-num-batched-tokens",
-            "2048",
-            "--max-num-seqs",
-            "128",
-            "--long-prefill-token-threshold",
-            "512",
-            "--enable-chunked-prefill",
-            "--no-enable-prefix-caching",
-            "--dataset",
-            container_workload,
-            "--num-reqs",
-            str(spec["num_requests"]),
-            "--output",
-            container_csv,
-            "--run-id",
-            f"qv-{run_id}",
-            "--log-level",
-            "WARNING",
-        ],
+    command = _simulator_command(
+        host=host,
+        container=container,
+        container_repo=container_repo,
+        container_workload=container_workload,
+        container_csv=container_csv,
+        num_requests=int(spec["num_requests"]),
+        run_id=f"qv-{run_id}",
+        instrument=True,
     )
     started = time.time()
     local_log.parent.mkdir(parents=True, exist_ok=True)
@@ -364,6 +334,128 @@ def _run_one(
     with _PRINT_LOCK:
         print(f"[{run_id}] completed in {elapsed:.1f}s", flush=True)
     return {"run_id": run_id, "status": "completed", "elapsed_s": elapsed}
+
+
+def _simulator_command(
+    host: str,
+    container: str,
+    container_repo: str,
+    container_workload: str,
+    container_csv: str,
+    num_requests: int,
+    run_id: str,
+    instrument: bool,
+) -> list[str]:
+    docker_args = ["docker", "exec"]
+    if instrument:
+        container_base = f"{container_repo}/outputs/queue_validation"
+        docker_args.extend(
+            ["-e", f"PYTHONPATH={container_base}/instrument:{container_repo}"]
+        )
+    docker_args.extend(
+        [
+            "-w",
+            container_repo,
+            container,
+            "python",
+            "-m",
+            "serving",
+            "--cluster-config",
+            CLUSTER_CONFIG,
+            "--dtype",
+            "bfloat16",
+            "--block-size",
+            "16",
+            "--max-num-batched-tokens",
+            "2048",
+            "--max-num-seqs",
+            "128",
+            "--long-prefill-token-threshold",
+            "512",
+            "--enable-chunked-prefill",
+            "--no-enable-prefix-caching",
+            "--dataset",
+            container_workload,
+            "--num-reqs",
+            str(num_requests),
+            "--output",
+            container_csv,
+            "--run-id",
+            run_id,
+            "--log-level",
+            "WARNING",
+        ]
+    )
+    return _remote_command(host, docker_args)
+
+
+def run_instrumentation_check(
+    output: Path,
+    host: str,
+    remote_repo: str,
+    container: str,
+    container_repo: str,
+) -> None:
+    """Verify that first-admission instrumentation changes metrics, not scheduling."""
+    _prepare_layout(output)
+    workload_name = "instrument-probe.jsonl"
+    generate_poisson_trace(
+        output / "workloads" / workload_name,
+        output / "manifests" / "instrument-probe.csv",
+        {"probe": WorkloadClass("probe", 2048, 128)},
+        {"probe": 1.0},
+        num_requests=1,
+        arrival_rate_rps=None,
+        seed=2026,
+        simultaneous=True,
+    )
+    _sync_inputs(output, host, remote_repo)
+    remote_runs = f"{remote_repo}/outputs/queue_validation/runs"
+    _run_checked(_remote_command(host, ["mkdir", "-p", remote_runs]))
+    local_paths: dict[str, Path] = {}
+    for label, instrument in (("raw", False), ("first_admission", True)):
+        filename = f"instrument-{label}.csv"
+        command = _simulator_command(
+            host=host,
+            container=container,
+            container_repo=container_repo,
+            container_workload=f"outputs/queue_validation/workloads/{workload_name}",
+            container_csv=f"outputs/queue_validation/runs/{filename}",
+            num_requests=1,
+            run_id=f"qv-instrument-{label}",
+            instrument=instrument,
+        )
+        _run_checked(command)
+        local_path = output / "instrument" / filename
+        _run_checked(["scp", "-q", f"{host}:{remote_runs}/{filename}", str(local_path)])
+        local_paths[label] = local_path
+
+    raw = pd.read_csv(local_paths["raw"])
+    patched = pd.read_csv(local_paths["first_admission"])
+    behavior_columns = (
+        "request id",
+        "arrival",
+        "end_time",
+        "latency",
+        "TTFT",
+        "TPOT",
+        "ITL",
+    )
+    unchanged = {
+        column: bool(raw[column].equals(patched[column])) for column in behavior_columns
+    }
+    result = {
+        "behavior_columns_unchanged": unchanged,
+        "scheduling_behavior_unchanged": bool(all(unchanged.values())),
+        "raw_queuing_delay_ns": float(raw.loc[0, "queuing_delay"]),
+        "first_admission_delay_ns": float(patched.loc[0, "queuing_delay"]),
+        "queue_metric_changed": bool(
+            raw.loc[0, "queuing_delay"] != patched.loc[0, "queuing_delay"]
+        ),
+    }
+    _write_json(output / "instrumentation_check.json", result)
+    if not result["scheduling_behavior_unchanged"]:
+        raise RuntimeError("queue instrumentation changed simulator scheduling behavior")
 
 
 def run_stage(
@@ -593,14 +685,23 @@ def _service_from_dict(value: dict[str, float]) -> ServiceMetrics:
     )
 
 
-def _oracle_concurrency(
+def _capacity_matched_concurrency(
     capacity_rps: float,
     composition: dict[str, float],
     services: dict[str, ServiceMetrics],
 ) -> int:
     weights = normalize_composition(composition)
     mean_service = sum(weights[key] * services[key].service_s for key in weights)
-    return min(128, max(1, round(capacity_rps * mean_service)))
+    candidates = range(1, 129)
+    return min(
+        candidates,
+        key=lambda concurrency: abs(concurrency / mean_service - capacity_rps),
+    )
+
+
+def _is_nondecreasing(values: Iterable[float]) -> bool:
+    sequence = list(values)
+    return all(left <= right for left, right in zip(sequence, sequence[1:]))
 
 
 def _trim(frame: pd.DataFrame) -> pd.DataFrame:
@@ -627,11 +728,22 @@ def analyze(output: Path) -> None:
         key: _service_from_dict(value) for key, value in calibration["empirical_services"].items()
     }
     records: list[dict[str, Any]] = []
+    integrity_records: list[dict[str, Any]] = []
     for spec in read_run_specs(output / "queue_runs.jsonl"):
         csv_path = output / "runs" / f"{spec['run_id']}.csv"
         if not csv_path.exists():
             continue
         simulator = read_simulator_output(csv_path)
+        metric_columns = ("waiting_s", "ttft_s", "tbt_s", "response_s", "end_s")
+        integrity_records.append(
+            {
+                "run_id": spec["run_id"],
+                "expected_requests": int(spec["num_requests"]),
+                "completed_requests": len(simulator),
+                "request_count_matches": len(simulator) == int(spec["num_requests"]),
+                "has_nan": bool(simulator[list(metric_columns)].isna().any().any()),
+            }
+        )
         manifest = pd.read_csv(output / "manifests" / str(spec["manifest"]))
         merged = simulator.merge(manifest, on="request_id", validate="one_to_one")
         sample = _trim(merged)
@@ -641,11 +753,11 @@ def analyze(output: Path) -> None:
         }
         empirical_services = {key: empirical[key] for key in composition}
         capacity = float(calibration["capacities_rps"][str(spec["composition_id"])])
-        oracle_b = _oracle_concurrency(capacity, composition, empirical_services)
+        matched_b = _capacity_matched_concurrency(capacity, composition, empirical_services)
         variants = {
             "Current": (current_services, fixed_b),
             "Empirical-Service": (empirical_services, fixed_b),
-            "Composition-Oracle": (empirical_services, oracle_b),
+            "Capacity-Matched": (empirical_services, matched_b),
         }
         observed = {
             "waiting_s": float(sample["waiting_s"].mean()),
@@ -678,6 +790,43 @@ def analyze(output: Path) -> None:
     if predictions.empty:
         raise RuntimeError("no completed queue runs were found")
     predictions.to_csv(output / "queue_predictions.csv", index=False)
+    integrity = pd.DataFrame.from_records(integrity_records)
+    integrity.to_csv(output / "run_integrity.csv", index=False)
+
+    capacity_rows: list[dict[str, Any]] = []
+    for composition_id, observed_capacity in calibration["capacities_rps"].items():
+        composition = calibration["realized_capacity_compositions"][composition_id]
+        weights = normalize_composition(composition)
+        current_services = {
+            key: roofline_service(JITSERVE_CLASSES[key], params, fixed_b) for key in weights
+        }
+        empirical_services = {key: empirical[key] for key in weights}
+        matched_b = _capacity_matched_concurrency(
+            float(observed_capacity), composition, empirical_services
+        )
+        for variant, services, concurrency in (
+            ("Current", current_services, fixed_b),
+            ("Empirical-Service", empirical_services, fixed_b),
+            ("Capacity-Matched", empirical_services, matched_b),
+        ):
+            mean_service = sum(
+                weights[key] * services[key].service_s for key in weights
+            )
+            predicted_capacity = concurrency / mean_service
+            capacity_rows.append(
+                {
+                    "composition_id": composition_id,
+                    "variant": variant,
+                    "effective_concurrency": concurrency,
+                    "observed_capacity_rps": float(observed_capacity),
+                    "predicted_capacity_rps": predicted_capacity,
+                    "relative_error_pct": 100.0
+                    * abs(predicted_capacity - float(observed_capacity))
+                    / float(observed_capacity),
+                }
+            )
+    capacity_predictions = pd.DataFrame.from_records(capacity_rows)
+    capacity_predictions.to_csv(output / "capacity_predictions.csv", index=False)
 
     metrics = ("waiting_s", "ttft_s", "tbt_s", "response_s")
     summary_rows: list[dict[str, Any]] = []
@@ -691,13 +840,23 @@ def analyze(output: Path) -> None:
             finite = np.isfinite(predicted)
             observed = observed[finite]
             predicted = predicted[finite]
+            response_scale = float(
+                group.loc[finite, "observed_response_s"].mean()
+            )
+            mae = float(np.mean(np.abs(predicted - observed)))
             summary_rows.append(
                 {
                     "variant": variant,
                     "region": region,
                     "metric": metric,
                     "n": len(observed),
-                    "mae": float(np.mean(np.abs(predicted - observed))),
+                    "total_runs": len(group),
+                    "finite_coverage_pct": 100.0 * len(observed) / len(group),
+                    "observed_mean_s": float(np.mean(observed)),
+                    "predicted_mean_s": float(np.mean(predicted)),
+                    "mae": mae,
+                    "mae_ms": 1000.0 * mae,
+                    "mae_over_response_pct": 100.0 * mae / max(response_scale, 1e-12),
                     "wape_pct": 100.0
                     * float(np.sum(np.abs(predicted - observed)) / max(np.sum(np.abs(observed)), 1e-12)),
                 }
@@ -723,8 +882,39 @@ def analyze(output: Path) -> None:
                 }
             )
     pd.DataFrame(aggregate_rows).to_csv(output / "observed_confidence_intervals.csv", index=False)
+    monotonicity_rows: list[dict[str, Any]] = []
+    current = predictions[predictions["variant"] == "Current"]
+    for composition_id, group in current.groupby("composition_id"):
+        for metric in ("waiting_s", "ttft_s", "response_s"):
+            for source in ("observed", "predicted"):
+                curve = (
+                    group.groupby("load_factor")[f"{source}_{metric}"]
+                    .mean()
+                    .sort_index()
+                )
+                values = curve.to_numpy(dtype=float)
+                finite = np.isfinite(values)
+                correlation = (
+                    float(pd.Series(curve.index.to_numpy()[finite]).corr(
+                        pd.Series(values[finite]), method="spearman"
+                    ))
+                    if finite.sum() >= 2
+                    else math.nan
+                )
+                monotonicity_rows.append(
+                    {
+                        "composition_id": composition_id,
+                        "metric": metric,
+                        "source": source,
+                        "nondecreasing": _is_nondecreasing(values),
+                        "spearman_rho": correlation,
+                    }
+                )
+    monotonicity = pd.DataFrame.from_records(monotonicity_rows)
+    monotonicity.to_csv(output / "monotonicity.csv", index=False)
     _plot_results(output, predictions)
-    _write_validity(output, summary)
+    _write_validity(output, summary, capacity_predictions, monotonicity, integrity)
+    _write_validation_report(output)
 
 
 def _plot_results(output: Path, predictions: pd.DataFrame) -> None:
@@ -758,7 +948,7 @@ def _plot_results(output: Path, predictions: pd.DataFrame) -> None:
         fig.savefig(output / "figures" / f"service_scatter.{suffix}", bbox_inches="tight")
     plt.close(fig)
 
-    colors = {"Current": "C0", "Empirical-Service": "C1", "Composition-Oracle": "C2"}
+    colors = {"Current": "C0", "Empirical-Service": "C1", "Capacity-Matched": "C2"}
     for metric, title in (
         ("waiting_s", "Mean queueing delay"),
         ("ttft_s", "Mean TTFT"),
@@ -784,18 +974,48 @@ def _plot_results(output: Path, predictions: pd.DataFrame) -> None:
             fig.savefig(output / "figures" / f"{metric}_curves.{suffix}", bbox_inches="tight")
         plt.close(fig)
 
-    capacity = pd.read_csv(output / "capacity_observations.csv")
-    fig, axis = plt.subplots(figsize=(4.3, 2.8))
-    axis.bar(capacity["composition_id"], capacity["saturated_capacity_rps"], color="C0")
-    axis.set_ylabel("Saturated throughput (request/s)")
+    capacity = pd.read_csv(output / "capacity_predictions.csv")
+    compositions = list(dict.fromkeys(capacity["composition_id"]))
+    positions = np.arange(len(compositions), dtype=float)
+    width = 0.2
+    observed = (
+        capacity[capacity["variant"] == "Current"]
+        .set_index("composition_id")
+        .loc[compositions, "observed_capacity_rps"]
+    )
+    fig, axis = plt.subplots(figsize=(5.2, 2.8))
+    axis.bar(positions - 1.5 * width, observed, width, label="LLMServingSim", color="k")
+    for offset, variant in enumerate(colors):
+        values = (
+            capacity[capacity["variant"] == variant]
+            .set_index("composition_id")
+            .loc[compositions, "predicted_capacity_rps"]
+        )
+        axis.bar(
+            positions + (offset - 0.5) * width,
+            values,
+            width,
+            label=variant,
+            color=colors[variant],
+        )
+    axis.set_xticks(positions, compositions)
+    axis.set_yscale("log")
+    axis.set_ylabel("Saturated throughput (request/s, log scale)")
     axis.set_xlabel("Workload composition")
+    axis.legend(fontsize=7, ncol=2)
     fig.tight_layout()
     for suffix in ("png", "pdf"):
         fig.savefig(output / "figures" / f"capacity_by_composition.{suffix}", bbox_inches="tight")
     plt.close(fig)
 
 
-def _write_validity(output: Path, summary: pd.DataFrame) -> None:
+def _write_validity(
+    output: Path,
+    summary: pd.DataFrame,
+    capacity: pd.DataFrame,
+    monotonicity: pd.DataFrame,
+    integrity: pd.DataFrame,
+) -> None:
     service = pd.read_csv(output / "service_predictions.csv")
     test = service[service["split"] == "test"]
     service_checks = {}
@@ -808,22 +1028,239 @@ def _write_validity(output: Path, summary: pd.DataFrame) -> None:
         }
     queue_checks = []
     for row in summary[summary["variant"] == "Current"].itertuples(index=False):
-        threshold = 15.0 if row.region == "rho_le_0p8" else 25.0
+        if row.metric == "waiting_s" and row.observed_mean_s < 0.05:
+            criterion = "mae_s"
+            value = float(row.mae)
+            threshold = 0.05
+        else:
+            criterion = "wape_pct"
+            value = float(row.wape_pct)
+            threshold = (
+                15.0
+                if row.metric != "waiting_s" or row.region == "rho_le_0p8"
+                else 25.0
+            )
         queue_checks.append(
             {
                 "region": row.region,
                 "metric": row.metric,
+                "criterion": criterion,
+                "value": value,
+                "threshold": threshold,
+                "observed_mean_s": float(row.observed_mean_s),
+                "mae_s": float(row.mae),
                 "wape_pct": float(row.wape_pct),
-                "threshold_pct": threshold,
-                "pass": bool(row.wape_pct <= threshold),
+                "finite_coverage_pct": float(row.finite_coverage_pct),
+                "pass": bool(value <= threshold and row.finite_coverage_pct == 100.0),
             }
         )
-    _write_json(output / "validity.json", {"service": service_checks, "queue": queue_checks})
+    capacity_checks = []
+    for row in capacity[capacity["variant"] == "Current"].itertuples(index=False):
+        capacity_checks.append(
+            {
+                "composition_id": row.composition_id,
+                "relative_error_pct": float(row.relative_error_pct),
+                "threshold_pct": 10.0,
+                "pass": bool(row.relative_error_pct <= 10.0),
+            }
+        )
+    trend_checks = []
+    for row in monotonicity[
+        (monotonicity["source"] == "predicted")
+        & monotonicity["metric"].isin(("waiting_s", "response_s"))
+    ].itertuples(index=False):
+        trend_checks.append(
+            {
+                "composition_id": row.composition_id,
+                "metric": row.metric,
+                "nondecreasing": bool(row.nondecreasing),
+                "pass": bool(row.nondecreasing),
+            }
+        )
+    integrity_check = {
+        "runs": len(integrity),
+        "all_request_counts_match": bool(integrity["request_count_matches"].all()),
+        "no_nan": bool(not integrity["has_nan"].any()),
+    }
+    instrumentation_path = output / "instrumentation_check.json"
+    instrumentation = (
+        json.loads(instrumentation_path.read_text(encoding="utf-8"))
+        if instrumentation_path.exists()
+        else {"status": "not_run"}
+    )
+    _write_json(
+        output / "validity.json",
+        {
+            "service": service_checks,
+            "capacity": capacity_checks,
+            "queue": queue_checks,
+            "monotonicity": trend_checks,
+            "integrity": integrity_check,
+            "instrumentation": instrumentation,
+        },
+    )
+
+
+def _write_validation_report(output: Path) -> None:
+    calibration = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
+    validity = json.loads((output / "validity.json").read_text(encoding="utf-8"))
+    service = pd.read_csv(output / "service_predictions.csv")
+    capacity = pd.read_csv(output / "capacity_predictions.csv")
+    summary = pd.read_csv(output / "queue_error_summary.csv")
+    predictions = pd.read_csv(output / "queue_predictions.csv")
+
+    test = service[service["split"] == "test"]
+    current = summary[summary["variant"] == "Current"]
+    observed = predictions[predictions["variant"] == "Current"]
+    observed_curves = (
+        observed.groupby(["composition_id", "load_factor"])[
+            ["observed_waiting_s", "observed_tbt_s", "observed_response_s"]
+        ]
+        .mean()
+        .reset_index()
+    )
+
+    lines = [
+        "# LLM 排队模型与 LLMServingSim 对比验证报告",
+        "",
+        "## 实验结论",
+        "",
+        "当前 Roofline–固定有效并发度–Allen–Cunneen 模型未达到预设精度，不能作为 continuous batching 下请求时延的定量模型。仿真结果表明，请求在中低负载下通常很快进入运行集合，负载升高主要延长运行阶段的 iteration 时长、TBT 和完整响应时延，而不是形成经典多服务台队列所描述的长准入等待。",
+        "",
+        "## 校准结果",
+        "",
+        f"- 有效计算速率：{calibration['analytical_parameters']['effective_flops'] / 1e12:.2f} TFLOP/s。",
+        f"- 有效显存带宽：{calibration['analytical_parameters']['effective_bandwidth_bytes_s'] / 1e12:.3f} TB/s。",
+        f"- 在 MIX 工作负载上校准得到的固定有效并发度：{calibration['effective_concurrency']}。",
+        "",
+        "留出工作负载的误差如下：",
+        "",
+        "| 指标 | Median APE | P95 APE |",
+        "|---|---:|---:|",
+    ]
+    for metric, label in (
+        ("prefill_s", "Prefill"),
+        ("decode_s", "Decode"),
+        ("service_s", "完整处理时延"),
+        ("tbt_s", "TBT"),
+    ):
+        ape = 100.0 * test[f"ape_{metric}"].to_numpy(dtype=float)
+        lines.append(
+            f"| {label} | {np.median(ape):.2f}% | {np.quantile(ape, 0.95):.2f}% |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "各工作负载组成的饱和吞吐及当前模型预测如下：",
+            "",
+            "| 组成 | LLMServingSim (req/s) | Current (req/s) | 相对误差 |",
+            "|---|---:|---:|---:|",
+        ]
+    )
+    for row in capacity[capacity["variant"] == "Current"].itertuples(index=False):
+        lines.append(
+            f"| {row.composition_id} | {row.observed_capacity_rps:.3f} | "
+            f"{row.predicted_capacity_rps:.3f} | {row.relative_error_pct:.2f}% |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "Current 模型在稳定负载区间的聚合误差如下。等待时延接近零时同时报告 MAE，避免 WAPE 被很小的分母放大。",
+            "",
+            "| 负载区间 | 指标 | MAE | WAPE | 有限预测覆盖率 |",
+            "|---|---|---:|---:|---:|",
+        ]
+    )
+    for row in current.itertuples(index=False):
+        lines.append(
+            f"| {row.region} | {row.metric} | {row.mae:.4f} s | "
+            f"{row.wape_pct:.2f}% | {row.finite_coverage_pct:.1f}% |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "误差来源诊断如下。Empirical-Service 仅替换为空载实测处理时延，Capacity-Matched 进一步按各组成的饱和吞吐匹配并发度。",
+            "",
+            "| 模型 | 负载区间 | 等待 MAE | TBT WAPE | 响应时延 WAPE |",
+            "|---|---|---:|---:|---:|",
+        ]
+    )
+    for (variant, region), group in summary.groupby(["variant", "region"]):
+        by_metric = group.set_index("metric")
+        lines.append(
+            f"| {variant} | {region} | {by_metric.loc['waiting_s', 'mae']:.4f} s | "
+            f"{by_metric.loc['tbt_s', 'wape_pct']:.2f}% | "
+            f"{by_metric.loc['response_s', 'wape_pct']:.2f}% |"
+        )
+    lines.extend(
+        [
+            "",
+            "空载服务时间替换后误差仍然存在，说明偏差不只来自 Roofline。按组成匹配饱和吞吐也未恢复高负载精度，表明单个固定并发度和状态无关服务时间不足以描述 continuous batching 的运行阶段。",
+        ]
+    )
+
+    lines.extend(
+        [
+            "",
+            "## 负载效应",
+            "",
+            "| 组成 | 负载范围 | 准入等待变化 | TBT 变化 | 完整响应时延变化 |",
+            "|---|---|---:|---:|---:|",
+        ]
+    )
+    for composition_id, group in observed_curves.groupby("composition_id"):
+        ordered = group.sort_values("load_factor")
+        first = ordered.iloc[0]
+        last = ordered.iloc[-1]
+        lines.append(
+            f"| {composition_id} | {first.load_factor:.2f}–{last.load_factor:.2f} | "
+            f"{first.observed_waiting_s:.4f}→{last.observed_waiting_s:.4f} s | "
+            f"{first.observed_tbt_s:.4f}→{last.observed_tbt_s:.4f} s | "
+            f"{first.observed_response_s:.3f}→{last.observed_response_s:.3f} s |"
+        )
+
+    all_integrity = validity["integrity"]
+    lines.extend(
+        [
+            "",
+            "## 有效性与实现检查",
+            "",
+            f"- 已完成 {all_integrity['runs']} 个排队实验；请求数全部匹配：{all_integrity['all_request_counts_match']}；无 NaN：{all_integrity['no_nan']}。",
+            "- 固定配置关闭 prefix caching，未启用 P/D 分离和多实例路由。",
+            "- 插桩只记录第一次准入等待；其对完成时间和 token 间隔的无扰动检查见 `instrumentation_check.json`。",
+            "",
+            "## 对论文模型的建议",
+            "",
+            "1. Roofline 公式保留为请求计算量与显存访问需求的结构分析，不再直接声称可准确给出 vLLM 请求时延。",
+            "2. LLM 响应性能采用提前建立的、配置相关的工作负载响应表；输入至少包含调用率、输入/输出长度类别及其组成，输出 TTFT、TBT、完整响应时延和稳定容量。",
+            "3. 准入等待只表示 token budget、KV cache 或最大运行序列数受限时进入 waiting queue 的时间；continuous batching 中运行集合内的负载相关减速计入处理阶段。",
+            "4. 若训练阶段需要低成本解析近似，应在经验验证通过的负载区间内拟合状态相关处理率或分段响应函数，最终评估继续采用 LLMServingSim 回放。",
+            "",
+            "该结论针对本实验的 Llama-3.1-8B、RTX4090、2048 token budget、512-token chunk、FCFS continuous batching 配置。其他模型、GPU 和 token budget 需要重新建立性能表。",
+            "",
+        ]
+    )
+    (output / "validation_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate the analytical LLM queue model with LLMServingSim")
-    parser.add_argument("command", choices=("prepare", "sanity", "run-calibration", "calibrate", "run-queue", "analyze", "all"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "prepare",
+            "sanity",
+            "instrument-check",
+            "run-calibration",
+            "calibrate",
+            "run-queue",
+            "analyze",
+            "all",
+        ),
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--remote-repo", default=DEFAULT_REMOTE_REPO)
@@ -842,6 +1279,14 @@ def main() -> int:
         collect_provenance(output, args.host, args.remote_repo, args.container, args.container_repo)
     if args.command in ("sanity", "all"):
         run_sanity(output, args.host, args.container, args.container_repo)
+    if args.command in ("instrument-check", "all"):
+        run_instrumentation_check(
+            output,
+            args.host,
+            args.remote_repo,
+            args.container,
+            args.container_repo,
+        )
     if args.command in ("run-calibration", "all"):
         run_stage(output, "calibration", args.host, args.remote_repo, args.container, args.container_repo, args.workers, args.force)
     if args.command in ("calibrate", "all"):

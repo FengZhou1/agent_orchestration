@@ -46,7 +46,7 @@ python scripts/build_benchmark_scenarios.py `
   --service-profile data/processed/stateless_service_profile.csv
 ```
 
-生成的场景固定了 Qwen2.5-7B/14B/32B 的 BF16 配置、vLLM 引擎参数、六类或八类无状态服务、SNDlib 网络拓扑、归一化 GPU 成本、参数量纲和数据来源。场景内预置的质量与 SLO 均标记为参考值；正式论文实验前，必须使用固定版本的评测结果和校准结果进行替换。
+生成的场景固定了 Qwen3-4B/8B/14B/32B 的 BF16 配置、vLLM 引擎参数、六类或八类无状态服务、SNDlib 网络拓扑、归一化 GPU 成本、参数量纲和数据来源。A10 运行 4B，L20 运行 4B/8B/14B 或双卡 32B，H20 运行 8B/14B/32B。场景内预置的质量与 SLO 均标记为参考值；正式论文实验前，必须使用固定版本的评测结果和校准结果进行替换。
 
 ## 运行 Toy 场景
 
@@ -124,51 +124,50 @@ python scripts/generate_composition_sweep.py `
   --family-sweep --output configs/generated/family_composition
 ```
 
-## JITServe 负载与泊松到达
+## 预构建 Agent 负载与泊松到达
 
-四类应用的输入和输出 token 特征取自 JITServe Table 2。交互式检索、事务型调用、深度研究和编码 Agent 分别对应 Chatbot-Single、Deep Research-Single、Deep Research-Compound 和 Chatbot-Compound。每类应用的五个模板依次采用 P50、P50 与均值的几何中点、均值、均值与 P95 的几何中点及 P95；请求级 token 总量按 pattern flow 的节点访问概率分配到各 LLM 节点。
+四类应用的调用图、概率选择、并行分支以及 LLM 节点输入输出 token 特征均由 `data/preconstructed_agent_workloads.yaml` 给出。每类应用按配置中的截断对数正态分布生成五个分位档位；每个档位都会将所有概率选择组合展开为 pattern flows，并保留其中的并行调用链。
 
-到达过程统一采用平稳泊松过程。分析型仿真直接将场景配置中的平均到达率作为排队模型的泊松强度，`--arrival-scale` 对全部强度作统一缩放，不将一秒内的离散请求计数反推为稳态到达率。Main 场景的基准总到达率为 0.045 request/s，负载实验采用 0.5、1、2 和 3 倍四档。先计算固定参考部署的稳定容量：
+到达过程统一采用平稳强度过程。分析型仿真直接把场景配置中的平均到达率作为排队模型的稳态强度，`--arrival-scale` 对全部强度作统一缩放，不将一秒内的离散请求计数反推为稳态到达率。Main 场景的基准总到达率为 0.004 request/s。实验先求固定参考部署的稳定容量，再按该容量的 0.40、0.65、0.85 和 1.05 倍四档设定负载：
 
 ```powershell
-python scripts/estimate_reference_capacity.py `
+python scripts/calibrate_load_levels.py `
   --scenario configs/benchmarks/main_abilene.yaml `
-  --profile data/processed/llm_profile.csv
+  --output data/processed/load_levels.json
 ```
 
-在测试集开放前，使用低负载验证窗口冻结默认 SLO：
+在测试集开放前，使用参考容量 20% 的低负载窗口冻结默认 SLO：
 
 ```powershell
 python scripts/calibrate_slos.py `
   --scenario configs/benchmarks/main_abilene.yaml `
-  --profile data/processed/llm_profile.csv `
-  --arrival-scale 0.5 `
-  --output configs/generated/main_abilene_slo.yaml
+  --low-load-fraction 0.20 `
+  --output configs/benchmarks/main_abilene_calibrated.yaml
 ```
 
-运行泊松到达下的基线矩阵：
+运行基线矩阵，`--load-levels` 会依次执行四档负载：
 
 ```powershell
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
-  --profile data/processed/llm_profile.csv `
-  --arrival-scale 1.0 `
+  --scenario configs/benchmarks/main_abilene_calibrated.yaml --slots 3600 `
+  --load-levels data/processed/load_levels.json `
   --seeds 0,1,2,3,4 `
-  --output results/baseline_main.parquet
+  --output results/baseline_levels
 ```
 
 仅绘制 baseline 结果：
 
 ```powershell
-python scripts/plot_results.py `
-  --baseline-summary results/baseline_main.summary.parquet `
-  --output results/figures_baseline `
-  --analysis-output results/analysis_baseline
+python scripts/plot_baseline_load_sweep.py `
+  --input results/baseline_levels `
+  --output results/figures_baseline_levels
 ```
 
-## 准备和验证 LLM 性能 profile
+绘图脚本必须在 `conda activate agent-orch` 之后运行。直接调用该环境的 `python.exe` 时，`Library\bin` 不在 `PATH` 上，matplotlib 的延迟加载原生库无法解析，`savefig` 会以 `Windows fatal exception: code 0xc06d007f` 崩溃；激活环境后同一脚本可正常输出 PDF 与 PNG。
 
-使用以下命令规范化 LLMServingSim 或 vLLM 输出，并在留出点上验证分析式 LLM 近似：
+## 准备和校验 LLM 性能数据
+
+分析式仿真不再读取离线 profile 表；以下命令仅把 LLMServingSim 或 vLLM 输出规范化，并生成留出点校验报告：
 
 ```powershell
 python scripts/prepare_llm_profiles.py `
@@ -186,7 +185,7 @@ python scripts/validate_llm_model.py `
 
 ## 输出与量纲
 
-实验结果以 JSON Lines、Parquet 和运行清单等形式写入 `results/`。所有时间均以秒为单位，到达率与处理率均以请求/秒为单位，单请求数据量以 MB 为单位，链路负载和链路容量以 Mbit/s 为单位，计算量以 FLOPs 为单位，显存访问量以字节为单位。控制时隙长度不改变 Mbps 负载和单请求序列化时延。
+实验结果以 JSON Lines、Parquet 和运行清单等形式写入 `results/`。所有时间均以秒为单位，到达率与处理率均以请求/秒为单位，单请求数据量以 MB 为单位，链路负载和链路容量以 Mbit/s 为单位，计算量以 FLOPs 为单位，显存访问量以字节为单位。控制时隙长度不改变 Mbps 负载；链路传输时延按一个时隙内的聚合数据量与链路速率之比计算。
 
 联合控制器在两个时间尺度上运行。每个部署周期开始时，Agent 感知混合容量规划器根据节点访问概率、到达率和候选实例能力，确定各无状态服务的副本需求及各模型的有效容量需求。带资源掩码的分类策略随后逐个选择副本服务器或 LLM 候选实例；这些顺序决策共同构成当期部署方案，不推进物理业务时隙。在后续物理时隙内，分组 Dirichlet 策略仅生成应用到模型的工作负载比例，LLM 实例分流和无状态服务路由依据预测服务与网络时延通过 Softmin 解析得到。
 

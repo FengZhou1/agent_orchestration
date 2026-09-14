@@ -33,8 +33,6 @@ def summarize_measurements(frame: pd.DataFrame) -> pd.DataFrame:
         low = group[group["arrival_rate_rps"] == low_rate]
         low_latency_s = low["latency_ms"].astype(float).to_numpy() / 1000.0
         low_mean = float(np.mean(low_latency_s))
-        low_variance = float(np.var(low_latency_s, ddof=1)) if len(low_latency_s) > 1 else 0.0
-        low_scv = low_variance / max(low_mean**2, 1e-12)
         low_p95_ms = float(np.quantile(low["latency_ms"].astype(float), 0.95))
         stable_rates = []
         for rate in rates:
@@ -60,7 +58,6 @@ def summarize_measurements(frame: pd.DataFrame) -> pd.DataFrame:
                 "vcpu": int(keys[2]),
                 "low_load_rate_rps": low_rate,
                 "mean_service_s": low_mean,
-                "service_scv": low_scv,
                 "low_load_p95_s": low_p95_ms / 1000.0,
                 "stable_rate_rps": max(stable_rates, default=0.0),
                 "request_mb": request_bytes / 1e6,
