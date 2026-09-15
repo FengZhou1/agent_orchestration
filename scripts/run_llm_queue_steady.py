@@ -10,6 +10,7 @@ measures throughput on the window [first arrival + S, last arrival].
 from __future__ import annotations
 
 import json
+import argparse
 import shutil
 import subprocess
 import sys
@@ -75,7 +76,20 @@ def fetch_runs(result: Path, jobs: list[dict]) -> None:
 
 
 def main() -> int:
-    result = ROOT / "results" / "llm_queue_steady"
+    global REMOTE_STAGE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--output", type=Path,
+        default=ROOT / "results" / "llm_queue_steady",
+        help="local result directory (default: results/llm_queue_steady)",
+    )
+    parser.add_argument(
+        "--remote-stage", default=REMOTE_STAGE,
+        help="remote outputs stage used for this run",
+    )
+    args = parser.parse_args()
+    REMOTE_STAGE = args.remote_stage
+    result = args.output
     result.mkdir(parents=True, exist_ok=True)
     calibration = pd.read_csv(ROOT / "results" / "llm_queue_trends" / "calibration.csv")
     naive = dict(zip(calibration.config_id, calibration.saturated_capacity_rps, strict=True))

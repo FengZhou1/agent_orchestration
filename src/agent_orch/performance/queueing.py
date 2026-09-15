@@ -16,24 +16,6 @@ def erlang_c(servers: int, utilization: float) -> float:
     return tail / (sum(terms) + tail)
 
 
-def llm_waiting_time(
-    arrival_rate: float,
-    mean_service: float,
-    second_moment: float,
-    effective_concurrency: int,
-    overload_delay: float,
-) -> tuple[float, float, bool]:
-    if arrival_rate <= 0.0 or mean_service <= 0.0:
-        return 0.0, 0.0, False
-    utilization = arrival_rate * mean_service / effective_concurrency
-    if utilization >= 1.0:
-        return overload_delay, utilization, True
-    variability_factor = second_moment / (2.0 * mean_service * mean_service)
-    denominator = effective_concurrency / mean_service - arrival_rate
-    wait = variability_factor * erlang_c(effective_concurrency, utilization) / denominator
-    return max(0.0, wait), utilization, False
-
-
 def tool_response_time(
     arrival_rate: float,
     service_rate: float,

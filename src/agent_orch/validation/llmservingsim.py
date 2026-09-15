@@ -111,7 +111,7 @@ def roofline_service(
             * (context + (new_tokens + 1.0) / 2.0)
         )
         memory = params.weight_bytes + nu * params.kv_bytes_per_token * (
-            new_tokens * (context + (new_tokens + 1.0) / 2.0) + new_tokens
+            context + new_tokens
         )
         prefill += _roofline_time(flops, memory, params)
 
@@ -356,6 +356,38 @@ def saturated_throughput(frame: pd.DataFrame) -> float:
     if elapsed <= 0.0 or completed <= 0:
         raise ValueError("invalid completion interval")
     return completed / elapsed
+
+
+def sustained_saturation_throughput(
+    frame: pd.DataFrame,
+    warmup_fraction: float = 0.2,
+    drain_fraction: float = 0.2,
+) -> dict[str, float]:
+    """Measure throughput in the interior of a long saturated run."""
+    if not 0.0 <= warmup_fraction < 0.5:
+        raise ValueError("warmup_fraction must be in [0, 0.5)")
+    if not 0.0 <= drain_fraction < 0.5:
+        raise ValueError("drain_fraction must be in [0, 0.5)")
+    ends = np.sort(frame["end_s"].to_numpy(dtype=float))
+    if len(ends) < 20:
+        raise ValueError("at least twenty completed requests are required")
+    lo = int(math.floor(warmup_fraction * len(ends)))
+    hi = int(math.ceil((1.0 - drain_fraction) * len(ends))) - 1
+    if hi <= lo:
+        raise ValueError("empty saturation observation window")
+    t1 = float(ends[lo])
+    t2 = float(ends[hi])
+    elapsed = t2 - t1
+    completed = hi - lo
+    if elapsed <= 0.0 or completed <= 0:
+        raise ValueError("invalid saturation observation window")
+    return {
+        "throughput_rps": completed / elapsed,
+        "window_start_s": t1,
+        "window_end_s": t2,
+        "window_seconds": elapsed,
+        "completed_in_window": float(completed),
+    }
 
 
 def concurrency_curve(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:

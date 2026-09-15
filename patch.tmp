@@ -1,0 +1,64 @@
+*** Begin Patch
+*** Update File: src/agent_orch/performance/llm.py
+@@
+ @dataclass(frozen=True)
+ class ServiceDemand:
+     prefill_s: float
+     decode_s: float
+     service_s: float
+     mean_iteration_s: float
+     kv_work_tokens: float
++    prefill_concurrency: float
++    decode_concurrency: float
+@@
+ def service_demand(
+     model: ModelSpec,
+     config: LLMConfigSpec,
+     prompt_tokens: float,
+     output_tokens: float,
+     chunk_tokens: int,
+-    concurrency: float | None = None,
++    concurrency: float | None = None,
++    prefill_concurrency: float = 1.0,
+ ) -> ServiceDemand:
++    """Processing demand of one class of LLM calls on one instance.
++
++    ``concurrency`` is the steady-state number of active decode sequences on
++    the target instance.  It scales the decode stage only, because every
++    resident sequence contributes one token per iteration.  A prefill chunk,
++    in contrast, is admitted and executed as one representative chunk, so its
++    cost is evaluated at the reference concurrency given by
++    ``prefill_concurrency``.
++    """
+     prompt = max(1, int(round(prompt_tokens)))
+     output = max(1, int(round(output_tokens)))
+     if concurrency is None:
+         concurrency = 1.0
+     concurrency = max(1.0, float(concurrency))
++    prefill_concurrency = max(1.0, float(prefill_concurrency))
+ 
+     prefill = 0.0
+     chunks = math.ceil(prompt / chunk_tokens)
+     for q in range(chunks):
+         context = q * chunk_tokens
+         new_tokens = min(chunk_tokens, prompt - context)
+-        flops, memory = prefill_work(model, new_tokens, context, concurrency)
++        flops, memory = prefill_work(model, new_tokens, context, prefill_concurrency)
+         prefill += roofline_time(flops, memory, config)
+@@
+     kv_work = (
+         (1.0 + prompt / chunk_tokens) * prompt / 2.0
+         + prompt * output
+         + (1.0 + output) * output / 2.0
+     )
+-    return ServiceDemand(prefill, decode, service, mean_iteration, kv_work)
++    return ServiceDemand(
++        prefill,
++        decode,
++        service,
++        mean_iteration,
++        kv_work,
++        prefill_concurrency,
++        concurrency,
++    )
+*** End Patch

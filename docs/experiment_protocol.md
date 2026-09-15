@@ -81,7 +81,8 @@ Main 场景包含 Web 检索、信息检索、代码执行、文件处理、结�
 - 工作流深度、无状态服务调用数、并行宽度和 pattern flow 频率与数据来源中的经验分布一致。
 - 无状态服务处理时间来自低负载内部计时，不得将包含排队和网络的生产端到端 RT 直接作为处理时间。
 - 在留出的 LLM profile 运行点上，中位绝对百分比误差不超过 10%，P95 误差不超过 20%。超过该误差范围的区域直接使用 profile 后端或 LLMServingSim 回放结果，不将其声明为分析预测。
-- 低负载下所有队列保持稳定；接近容量边界时，等待时延和 SLO 违约率应上升；链路、无状态服务和长请求组成压力应分别反映在相应利用率和时延指标中。
+- LLM 实例的稳态时延由服务曲线给出：TTFT 为常驻并发下的 prefill 处理时间，TBT 为 decode 处理时间除以输出 token 数减一，响应时间为两者之和；KV 与序列槽位只约束常驻上限，准入排队不进入稳态时延，越界记为过载约束代价。
+- 低负载下所有队列保持稳定；接近容量边界时，随并发增长的服务时延和 SLO 违约率应上升，LLM 调用率利用率趋于一；链路、无状态服务和长请求组成压力应分别反映在相应利用率和时延指标中。
 
 ## 可复现实验命令
 
@@ -98,17 +99,17 @@ python scripts/prepare_llm_profiles.py `
   --source-version <pinned-commit> `
   --output data/processed/llm_profile.csv
 python scripts/calibrate_load_levels.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
-  --output data/processed/load_levels.json
+  --scenario configs/benchmarks/main_abilene_revised.yaml `
+  --output data/processed/load_levels_revised.json
 python scripts/calibrate_slos.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
+  --scenario configs/benchmarks/main_abilene_revised.yaml `
   --low-load-fraction 0.20 `
-  --output configs/benchmarks/main_abilene_calibrated.yaml
+  --output configs/benchmarks/main_abilene_revised.yaml
 python scripts/generate_composition_sweep.py `
-  --scenario configs/benchmarks/main_abilene.yaml --family-sweep `
+  --scenario configs/benchmarks/main_abilene_revised.yaml --family-sweep `
   --output configs/generated/family_composition
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene_calibrated.yaml --slots 3600 `
-  --load-levels data/processed/load_levels.json --seeds 0,1,2,3,4 `
-  --output results/baseline_levels
+  --scenario configs/benchmarks/main_abilene_revised.yaml --slots 3600 `
+  --load-levels data/processed/load_levels_revised.json --seeds 0,1,2,3,4 `
+  --output results/baseline_revised
 ```

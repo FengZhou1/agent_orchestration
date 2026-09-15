@@ -120,7 +120,7 @@ python scripts/generate_composition_sweep.py `
 
 ```powershell
 python scripts/generate_composition_sweep.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
+  --scenario configs/benchmarks/main_abilene_revised.yaml `
   --family-sweep --output configs/generated/family_composition
 ```
 
@@ -132,25 +132,25 @@ python scripts/generate_composition_sweep.py `
 
 ```powershell
 python scripts/calibrate_load_levels.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
-  --output data/processed/load_levels.json
+  --scenario configs/benchmarks/main_abilene_revised.yaml `
+  --output data/processed/load_levels_revised.json
 ```
 
 在测试集开放前，使用参考容量 20% 的低负载窗口冻结默认 SLO：
 
 ```powershell
 python scripts/calibrate_slos.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
+  --scenario configs/benchmarks/main_abilene_revised.yaml `
   --low-load-fraction 0.20 `
-  --output configs/benchmarks/main_abilene_calibrated.yaml
+  --output configs/benchmarks/main_abilene_revised.yaml
 ```
 
 运行基线矩阵，`--load-levels` 会依次执行四档负载：
 
 ```powershell
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene_calibrated.yaml --slots 3600 `
-  --load-levels data/processed/load_levels.json `
+  --scenario configs/benchmarks/main_abilene_revised.yaml --slots 3600 `
+  --load-levels data/processed/load_levels_revised.json `
   --seeds 0,1,2,3,4 `
   --output results/baseline_levels
 ```
@@ -175,7 +175,7 @@ python scripts/prepare_llm_profiles.py `
   --source-version <pinned-commit> `
   --output data/processed/llm_profile.csv
 python scripts/validate_llm_model.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
+  --scenario configs/benchmarks/main_abilene_revised.yaml `
   --profile data/processed/llm_profile.csv
 ```
 

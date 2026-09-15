@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,7 @@ from agent_orch.validation.llmservingsim import (  # noqa: E402
     generate_poisson_trace,
     read_simulator_output,
     roofline_service,
-    saturated_throughput,
+    sustained_saturation_throughput,
 )
 
 REMOTE = "zf@192.168.234.128"
@@ -39,6 +40,12 @@ REMOTE_REPO = "/home/zf/桌面/LLMServingSim"
 REMOTE_STAGE = "outputs/llm_queue_trends"
 CONTAINER = "servingsim_docker"
 CONTAINER_REPO = "/app/LLMServingSim"
+
+# Keep the historical validation default reproducible, while allowing a new
+# validation batch to use exactly the token budget of the formal benchmark.
+SIM_MAX_NUM_BATCHED_TOKENS = int(
+    os.environ.get("LLM_SIM_MAX_NUM_BATCHED_TOKENS", "2048")
+)
 
 CLASSES: dict[str, WorkloadClass] = {
     "short": WorkloadClass("short", 128, 64),
@@ -79,11 +86,12 @@ CONFIGS: list[dict[str, Any]] = [
     {"id": "qwen3-32b-h20", "model": "Qwen3-32B", "gpu": "H20", "tp": 1, "role": "main"},
 ]
 
-TEST_LOAD_FACTORS = (0.40, 0.70, 0.85, 0.95)
+TEST_LOAD_FACTORS = (0.20, 0.40, 0.60, 0.80, 0.90, 0.95, 1.00, 1.05)
 COMPOSITION_LOAD_FACTOR = 0.70
 CALIBRATION_REQUESTS = 4
-SATURATION_REQUESTS = 24
-TEST_REQUESTS = 24
+SATURATION_REQUESTS = 1024
+TEST_REQUESTS = 512
+REMOTE_PARALLELISM = int(os.environ.get("LLM_SIM_REMOTE_PARALLELISM", "2"))
 SEED_CAL = 20260911
 SEED_TEST = 20260912
 
@@ -128,7 +136,7 @@ def cluster_config(config: dict[str, Any]) -> dict[str, Any]:
                 "num_npus": config["tp"],
                 "tp_size": config["tp"],
                 "pd_type": None,
-                "max_num_batched_tokens": 2048,
+                "max_num_batched_tokens": SIM_MAX_NUM_BATCHED_TOKENS,
                 "max_num_seqs": 128,
                 "long_prefill_token_threshold": 512,
                 "enable_chunked_prefill": True,
@@ -161,7 +169,7 @@ def write_jobs(staging: Path, jobs: list[dict[str, Any]]) -> None:
             int(item["seed"]),
             simultaneous=bool(item.get("simultaneous", False)),
         )
-        commands.append(
+        command = (
             f"docker exec -w {CONTAINER_REPO} {CONTAINER} python -m serving "
             f"--cluster-config {REMOTE_STAGE}/configs/{item['job_id']}.json "
             f"--dtype bfloat16 --block-size 16 "
@@ -171,12 +179,15 @@ def write_jobs(staging: Path, jobs: list[dict[str, Any]]) -> None:
             f"--run-id {item['job_id']} --log-level WARNING --no-enable-prefix-caching "
             f"> {REMOTE_STAGE}/logs/{item['job_id']}.log 2>&1"
         )
+        commands.append(
+            f"if [ -s {REMOTE_STAGE}/runs/{item['job_id']}.csv ]; then exit 0; fi; {command}"
+        )
     (staging / "jobs.txt").write_text("\n".join(commands) + "\n", encoding="utf-8", newline="\n")
     (staging / "run_jobs.sh").write_text(
         "#!/bin/bash\nset -u\n"
         f"cd '{REMOTE_REPO}'\n"
         f"mkdir -p {REMOTE_STAGE}/runs {REMOTE_STAGE}/logs\n"
-        f"cat {REMOTE_STAGE}/jobs.txt | xargs -P 4 -I CMD bash -lc 'CMD'\n",
+        f"cat {REMOTE_STAGE}/jobs.txt | xargs -P {REMOTE_PARALLELISM} -I CMD bash -lc 'CMD'\n",
         encoding="utf-8", newline="\n",
     )
 
@@ -185,7 +196,7 @@ def stage_and_run(staging: Path, label: str) -> None:
     run_checked(["ssh", REMOTE, "mkdir", "-p", f"{REMOTE_REPO}/outputs"])
     # Copy the staging directory itself under the remote outputs directory.
     run_checked(["scp", "-q", "-r", str(staging), f"{REMOTE}:{REMOTE_REPO}/outputs/"])
-    print(f"[{label}] running 4-way parallel remote jobs", flush=True)
+    print(f"[{label}] running {REMOTE_PARALLELISM}-way parallel remote jobs", flush=True)
     run_checked(["ssh", REMOTE, "bash", f"{REMOTE_REPO}/{REMOTE_STAGE}/run_jobs.sh"], timeout=7200)
     print(f"[{label}] remote jobs finished", flush=True)
 
@@ -248,6 +259,7 @@ def calibrate(iso_jobs: list[dict[str, Any]], sat_jobs: list[dict[str, Any]], ou
             error = abs(predicted - observed_service) / max(observed_service, 1e-12)
             if error < best_error:
                 best_nu, best_error, best_pred = nu, error, predicted
+        sat_window = sustained_saturation_throughput(sat_sim)
         rows.append({
             "config_id": cfg["id"],
             "model": cfg["model"],
@@ -259,7 +271,9 @@ def calibrate(iso_jobs: list[dict[str, Any]], sat_jobs: list[dict[str, Any]], ou
             "effective_concurrency": best_nu,
             "observed_saturated_service_s": observed_service,
             "predicted_saturated_service_s": best_pred,
-            "saturated_capacity_rps": saturated_throughput(sat_sim),
+            "saturated_capacity_rps": sat_window["throughput_rps"],
+            "saturation_window_s": sat_window["window_seconds"],
+            "saturation_completed": sat_window["completed_in_window"],
         })
     frame = pd.DataFrame(rows)
     frame.to_csv(output / "calibration.csv", index=False)
@@ -323,6 +337,20 @@ def summarize_tests(jobs: list[dict[str, Any]], calibration: pd.DataFrame, outpu
         weights = {name: float((manifest["class_id"] == name).mean()) for name in CLASSES}
         services = {name: roofline_service(CLASSES[name], params[cfg["id"]], concurrency=concurrency[cfg["id"]]) for name in weights}
         prediction = allen_cunneen_prediction(float(item["arrival_rate_rps"]), weights, services, concurrency[cfg["id"]])
+        arrival = sim["arrival_ns"].to_numpy(dtype=float) / 1.0e9
+        end = sim["end_s"].to_numpy(dtype=float)
+        arrival_start = float(np.quantile(arrival, 0.2))
+        arrival_stop = float(np.quantile(arrival, 0.8))
+        observation_seconds = max(arrival_stop - arrival_start, 1.0e-9)
+        observed_input_rate = float(((arrival >= arrival_start) & (arrival <= arrival_stop)).sum()) / observation_seconds
+        observed_output_rate = float(((end >= arrival_start) & (end <= arrival_stop)).sum()) / observation_seconds
+        backlog_start = int((arrival <= arrival_start).sum() - (end <= arrival_start).sum())
+        backlog_stop = int((arrival <= arrival_stop).sum() - (end <= arrival_stop).sum())
+        backlog_growth = backlog_stop - backlog_start
+        observed_stable = bool(
+            observed_output_rate >= 0.95 * max(observed_input_rate, 1.0e-12)
+            and backlog_growth <= max(2, int(math.ceil(0.05 * len(sim))))
+        )
         rows.append({
             "job_id": item["job_id"],
             "config_id": cfg["id"],
@@ -343,6 +371,11 @@ def summarize_tests(jobs: list[dict[str, Any]], calibration: pd.DataFrame, outpu
             "predicted_response_s": float(prediction.response_s),
             "predicted_utilization": float(prediction.utilization),
             "predicted_overloaded": bool(prediction.overloaded),
+            "observed_input_rate_rps": observed_input_rate,
+            "observed_output_rate_rps": observed_output_rate,
+            "observed_output_input_ratio": observed_output_rate / max(observed_input_rate, 1.0e-12),
+            "observed_backlog_growth": backlog_growth,
+            "observed_stable": observed_stable,
             "n_requests": int(len(sample)),
         })
     frame = pd.DataFrame(rows)
@@ -501,11 +534,14 @@ def write_report(predictions: pd.DataFrame, calibration: pd.DataFrame, metrics: 
 
 
 def main() -> None:
+    global REMOTE_STAGE
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=ROOT / "results" / "llm_queue_trends")
+    parser.add_argument("--remote-stage", default=REMOTE_STAGE)
     parser.add_argument("--skip-run", action="store_true")
     parser.add_argument("--skip-calibration-run", action="store_true")
     args = parser.parse_args()
+    REMOTE_STAGE = args.remote_stage
     output = args.output
     staging_root = output / "staging"
     if staging_root.exists():
@@ -545,6 +581,15 @@ def main() -> None:
         fetch_results(output)
 
     predictions = summarize_tests(jobs, calibration, output)
+    stability = predictions[
+        predictions["composition"] == "mixed"
+    ][[
+        "job_id", "config_id", "load_factor", "arrival_rate_rps",
+        "observed_input_rate_rps", "observed_output_rate_rps",
+        "observed_output_input_ratio", "observed_backlog_growth",
+        "observed_stable",
+    ]].copy()
+    stability.to_csv(output / "poisson_stability.csv", index=False)
     metrics = trend_metrics(predictions, output)
     plot_results(predictions, calibration, output)
     write_report(predictions, calibration, metrics, output)

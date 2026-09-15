@@ -25,8 +25,13 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from agent_orch.performance.llm import service_demand  # noqa: E402
-from agent_orch.performance.queueing import erlang_c  # noqa: E402
+from agent_orch.performance.analytical import evaluate_llm_instance  # noqa: E402
+from agent_orch.performance.llm import (  # noqa: E402
+    mean_decode_context,
+    residency_capacity,
+    service_curve,
+    throughput_capacity,
+)
 from agent_orch.schema.loader import ScenarioLoader  # noqa: E402
 from agent_orch.schema.models import NodeType  # noqa: E402
 from agent_orch.validation.llmservingsim import (  # noqa: E402
@@ -148,103 +153,81 @@ def model_id_for(config_id: str) -> str:
     return "qwen3-32b" if "32b" in config_id else "qwen3-14b" if "14b" in config_id else "qwen3-8b" if "8b" in config_id else "qwen3-4b"
 
 
-def analytical_capacity(scenario, config_id: str, workloads: dict[str, WorkloadClass], composition: dict[str, float]) -> float:
+def _instance_inputs(scenario, config_id: str, workloads, composition):
     config = scenario.llm_configs[config_id]
     model = scenario.models[config.model]
-    weights = {key: value / sum(composition.values()) for key, value in composition.items() if value > 0}
+    weights = {
+        key: value / sum(composition.values())
+        for key, value in composition.items()
+        if value > 0
+    }
     classes = [workloads[key] for key in weights]
-
-    def stats(rate: float) -> tuple[float, bool]:
-        rates = {w.id: rate * weights[w.id] for w in classes}
-        h = {w.id: math.ceil(w.prompt_tokens / CHUNK) + max(0, w.output_tokens - 1) for w in classes}
-        g = {w.id: (1 + w.prompt_tokens / CHUNK) * w.prompt_tokens / 2 + w.prompt_tokens * w.output_tokens + (1 + w.output_tokens) * w.output_tokens / 2 for w in classes}
-        active_kv = sum(rates[w.id] * g[w.id] for w in classes) / max(sum(rates[w.id] * h[w.id] for w in classes), 1e-12)
-        delta = max((w.prompt_tokens + w.output_tokens) / config.kv_token_capacity for w in classes)
-        capacity = min(MAX_SEQS, int(((1 - delta) * config.kv_token_capacity) / max(active_kv, 1e-12)))
-        if capacity < 1 or delta >= 1:
-            return math.inf, False
-
-        def mean_service(batch: float) -> float:
-            return sum(
-                weights[w.id] * service_demand(model, config, w.prompt_tokens, w.output_tokens, CHUNK, max(1.0, batch)).service_s
-                for w in classes
-            )
-
-        batch = 0.0
-        for _ in range(500):
-            target = rate * mean_service(batch)
-            if abs(target - batch) <= 1e-6 * max(1.0, target):
-                batch = target
-                break
-            batch = target
-            if batch >= capacity:
-                return rate, False
-        return rate, batch < capacity
-
-    low, high = 0.0, 1.0
-    while stats(high)[1] and high < 1e4:
-        high *= 2
-    for _ in range(50):
-        mid = (low + high) / 2
-        if stats(mid)[1]:
-            low = mid
-        else:
-            high = mid
-    return max(low, 1e-6)
+    call_classes = [(w.prompt_tokens, w.output_tokens) for w in classes]
+    class_weights = [weights[w.id] for w in classes]
+    return config, model, call_classes, class_weights
 
 
-def analytical_metrics(scenario, config_id: str, workloads: dict[str, WorkloadClass], composition: dict[str, float], rate: float) -> dict[str, float | bool]:
-    config = scenario.llm_configs[config_id]
-    model = scenario.models[config.model]
-    weights = {key: value / sum(composition.values()) for key, value in composition.items() if value > 0}
-    classes = [workloads[key] for key in weights]
-    h = {w.id: math.ceil(w.prompt_tokens / CHUNK) + max(0, w.output_tokens - 1) for w in classes}
-    g = {w.id: (1 + w.prompt_tokens / CHUNK) * w.prompt_tokens / 2 + w.prompt_tokens * w.output_tokens + (1 + w.output_tokens) * w.output_tokens / 2 for w in classes}
-    active_kv = sum(weights[w.id] * g[w.id] for w in classes) / max(sum(weights[w.id] * h[w.id] for w in classes), 1e-12)
-    delta = max((w.prompt_tokens + w.output_tokens) / config.kv_token_capacity for w in classes)
-    capacity = min(MAX_SEQS, int(((1 - delta) * config.kv_token_capacity) / max(active_kv, 1e-12)))
-
-    def demands(batch: float):
-        return {
-            w.id: service_demand(model, config, w.prompt_tokens, w.output_tokens, CHUNK, max(1.0, batch))
-            for w in classes
-        }
-
-    batch = 0.0
-    residual = math.inf
-    for _ in range(500):
-        current = demands(batch)
-        target = rate * sum(weights[w.id] * current[w.id].service_s for w in classes)
-        residual = abs(target - batch)
-        if residual <= 1e-6 * max(1.0, target):
-            batch = target
-            break
-        batch = target
-        if batch >= capacity:
-            break
-    current = demands(batch)
-    mean = sum(weights[w.id] * current[w.id].service_s for w in classes)
-    second = sum(weights[w.id] * current[w.id].service_s**2 for w in classes)
-    stable = capacity >= 1 and delta < 1 and residual <= 1e-6 * max(1.0, batch) and batch < capacity
-    utilization = batch / capacity if capacity > 0 else math.inf
-    if stable:
-        waiting = (second / (2 * mean * mean)) * erlang_c(capacity, utilization) / max(capacity / mean - rate, 1e-12)
-    else:
-        waiting = scenario.simulation.overload_delay_s
-    prefill = sum(weights[w.id] * current[w.id].prefill_s for w in classes)
-    tbt = sum(weights[w.id] * current[w.id].decode_s / max(1, w.output_tokens - 1) for w in classes)
+def _instance_metrics(
+    scenario, config_id: str, workloads, composition, rate: float
+) -> dict[str, float | bool]:
+    config, model, call_classes, class_weights = _instance_inputs(
+        scenario, config_id, workloads, composition
+    )
+    instance, per_class = evaluate_llm_instance(
+        model, config, call_classes, class_weights, rate, CHUNK
+    )
+    total = sum(class_weights)
     return {
-        "predicted_active_concurrency": batch,
-        "predicted_resident_capacity": capacity,
-        "predicted_utilization": utilization,
-        "predicted_wait_s": waiting,
-        "predicted_ttft_s": waiting + prefill,
-        "predicted_tbt_s": tbt,
-        "predicted_response_s": waiting + mean,
-        "predicted_service_s": mean,
-        "predicted_stable": stable,
+        "predicted_active_concurrency": instance.active_concurrency,
+        "predicted_resident_capacity": float(instance.resident_capacity),
+        "predicted_utilization": instance.utilization,
+        "predicted_capacity_rps": instance.throughput_capacity_rps,
+        "predicted_wait_s": 0.0,
+        "predicted_ttft_s": sum(
+            w * p.ttft_s for w, p in zip(class_weights, per_class)
+        )
+        / total,
+        "predicted_tbt_s": sum(
+            w * p.tbt_s for w, p in zip(class_weights, per_class)
+        )
+        / total,
+        "predicted_response_s": sum(
+            w * p.response_s for w, p in zip(class_weights, per_class)
+        )
+        / total,
+        "predicted_service_s": sum(
+            w * p.service_s for w, p in zip(class_weights, per_class)
+        )
+        / total,
+        "predicted_stable": instance.stable,
     }
 
+
+def analytical_capacity(scenario, config_id: str, workloads, composition) -> float:
+    """Largest call rate the instance sustains below its residency limit."""
+    config, model, call_classes, class_weights = _instance_inputs(
+        scenario, config_id, workloads, composition
+    )
+    residency = residency_capacity(
+        call_classes,
+        class_weights,
+        config.kv_token_capacity,
+        config.max_num_seqs,
+        CHUNK,
+    )
+    peer_context = mean_decode_context(call_classes, class_weights)
+    curves = [
+        service_curve(
+            model, config, prompt, output, CHUNK, peer_decode_context=peer_context
+        )
+        for prompt, output in call_classes
+    ]
+    capacity, _ = throughput_capacity(curves, class_weights, residency.capacity)
+    return max(capacity, 1.0e-6)
+
+
+def analytical_metrics(scenario, config_id: str, workloads, composition, rate: float):
+    return _instance_metrics(scenario, config_id, workloads, composition, rate)
 
 def write_jobs(staging: Path, jobs: list[dict[str, Any]], scenario, workers: int = 4) -> None:
     for name in ("configs", "workloads", "manifests", "runs", "logs", "instrument"):
@@ -406,7 +389,7 @@ def analyze(output: Path, summary: pd.DataFrame) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", type=Path, default=ROOT / "configs/benchmarks/main_abilene_calibrated.yaml")
+    parser.add_argument("--scenario", type=Path, default=ROOT / "configs/benchmarks/main_abilene_revised.yaml")
     parser.add_argument("--output", type=Path, default=ROOT / "results/llm_steady_state_validation_v3")
     parser.add_argument("--configs", default=",".join(DEFAULT_CONFIGS))
     parser.add_argument("--compositions", default=",".join(DEFAULT_COMPOSITIONS))

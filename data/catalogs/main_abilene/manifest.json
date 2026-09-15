@@ -46,7 +46,7 @@
     "scenario_id": "agent-abilene-20",
     "workload_catalog": "preconstructed application patterns and quantile templates"
   },
-  "preprocessing_command": "python scripts/export_reference_catalogs.py --scenario C:\\Users\\01\\Desktop\\agent\\experiments\\agent_orchestration\\configs\\benchmarks\\main_abilene.yaml",
+  "preprocessing_command": "python scripts/export_reference_catalogs.py --scenario C:\\Users\\01\\Desktop\\agent\\experiments\\agent_orchestration\\configs\\benchmarks\\main_abilene_revised.yaml",
   "random_seed": 2026,
   "source_checksum_sha256": "71ff54dc78d55c26035fa0a09f6b0a5733b16e82f05df55c4403305b99c569d2",
   "source_name": "compiled benchmark scenario",

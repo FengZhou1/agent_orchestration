@@ -7,8 +7,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from agent_orch.performance.llm import service_demand
-from agent_orch.performance.queueing import llm_waiting_time
+from agent_orch.performance.llm import (
+    mean_decode_context,
+    residency_capacity,
+    service_curve,
+    steady_active_concurrency,
+    throughput_capacity,
+)
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.schema.models import Scenario
 
@@ -32,26 +37,36 @@ def predict_profile_rows(frame: pd.DataFrame, scenario: Scenario) -> pd.DataFram
     for row in frame.itertuples(index=False):
         model = scenario.models[row.model]
         config = scenario.llm_configs[row.config]
-        demand = service_demand(
+        chunk_tokens = scenario.simulation.prefill_chunk_tokens
+        classes = [(row.prompt_tokens, row.output_tokens)]
+        residency = residency_capacity(
+            classes, [1.0], config.kv_token_capacity, config.max_num_seqs, chunk_tokens
+        )
+        curve = service_curve(
             model,
             config,
             row.prompt_tokens,
             row.output_tokens,
-            scenario.simulation.prefill_chunk_tokens,
+            chunk_tokens,
+            peer_decode_context=mean_decode_context(classes, [1.0]),
         )
-        wait, utilization, overloaded = llm_waiting_time(
-            row.arrival_rate_rps,
-            demand.service_s,
-            demand.service_s**2,
-            config.max_num_seqs,
-            scenario.simulation.overload_delay_s,
+        capacity, _ = throughput_capacity([curve], [1.0], residency.capacity)
+        utilization = (
+            row.arrival_rate_rps / capacity if capacity > 0.0 else float("inf")
         )
+        overloaded = utilization >= 1.0
+        batch, _, _ = steady_active_concurrency(
+            [curve], [1.0], row.arrival_rate_rps, residency.capacity
+        )
+        concurrency = max(1.0, batch)
         output_tokens = max(1, round(row.output_tokens))
         predicted = {
-            "ttft_s": wait + demand.prefill_s,
-            "tbt_s": demand.decode_s / (output_tokens - 1) if output_tokens > 1 else 0.0,
-            "response_s": wait + demand.service_s,
-            "stable_capacity_rps": config.max_num_seqs / demand.service_s,
+            "ttft_s": curve.prefill_at(concurrency),
+            "tbt_s": curve.decode_at(concurrency) / (output_tokens - 1)
+            if output_tokens > 1
+            else 0.0,
+            "response_s": curve.service_at(concurrency),
+            "stable_capacity_rps": capacity,
         }
         record = row._asdict()
         record["predicted_utilization"] = utilization

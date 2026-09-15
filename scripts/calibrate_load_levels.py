@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--policy", default="greedy")
     parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--output", default="data/processed/load_levels.json")
+    parser.add_argument("--output", default="data/processed/load_levels_revised.json")
     args = parser.parse_args()
 
     scenario_path = Path(args.scenario).resolve()

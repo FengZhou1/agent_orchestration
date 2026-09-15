@@ -9,8 +9,10 @@
 | `varphi_agil` | `RoutingDecision.llm_share` | 模型 `m` 的所有实例分配比例之和等于 `x_agm` |
 | `p_aij^{u,v}` | `RoutingDecision.tool_route` | 在已部署的目标无状态服务副本之间满足单纯形约束 |
 | `lambda_{a,i,l}` | `AnalyticalBackend.llm_arrivals` | 请求/秒 |
-| LLM Roofline 计算负载 | `performance.llm.service_demand` | FLOPs、字节、秒 |
-| `W_l^LLM` | `performance.queueing.llm_waiting_time` | 秒；过载时使用有限的预设时延 |
+| LLM Roofline 计算负载 | `performance.llm.prefill_work` / `decode_work` | FLOPs、字节、秒 |
+| `mu_l^ana`、`rho_l^LLM` | `performance.llm.throughput_capacity` | 调用/秒；`mu = max_nu nu / mean_service(nu)`，利用率为 `Lambda / mu` |
+| `bar B_l` | `performance.llm.steady_active_concurrency` | 请求；Little 定律的最小不动点 |
+| `D_l^pre`、`D_l^dec` | `performance.llm.ServiceCurve.prefill_at` / `decode_at` | 秒；prefill 按单个代表性 chunk 与运行集合共同占用一次 iteration |
 | `Lambda_{h,n}` | `AnalyticalBackend.tool_arrivals` | 请求/秒；实际执行的每个并行节点均计入一次 |
 | GI/M/c 无状态服务时延 | `performance.queueing.tool_response_time` | 秒 |
 | `D_e^con` 或链路负载 | `NetworkBackend.add_traffic` | Mbps；不受控制时隙长度影响 |
@@ -33,9 +35,11 @@
 
 - 零流量且未部署的对象产生零负载和零时延；
 - 正流量无法映射至可行实例时记为服务失败；
-- 队列不稳定时使用配置中的有限过载时延，并设置约束违例标志；
+- 实例不稳定时记录 `llm_queue_overload` / `llm_kv_overload` 约束违例，不再引入过载下的等待时延；
 - 只有一个可选项的路由组采用确定性选择，不计入 RL 策略的对数概率；
 - 分析后端不得返回 NaN 或无穷值。
-- `W_l^LLM` is computed by `AnalyticalBackend._llm_performance` using `erlang_c`; the old fixed `effective_concurrency` is not used by the analytical LLM model.
-- `bar K_l^act`, `C_l^run`, and `delta_l^KV` are computed before the steady-state concurrency fixed point.
-- `bar B_l` solves `bar B_l = sum(lambda_{a,i,l} D_{a,i,l}^{svc}(max(1,bar B_l)))` without clipping to the legacy concurrency field.
+- `AnalyticalBackend._llm_performance` delegates each instance to `AnalyticalBackend.evaluate_llm_instance`; steady state carries no LLM admission-wait term.
+- `bar K_l^act`, `C_l^run`, and `delta_l^KV` are computed before the steady-state concurrency fixed point; `C_l^run` is a KV/sequence residency limit, never a server count.
+- `bar B_l` solves `bar B_l = sum(lambda_{a,i,l} D_{a,i,l}^{svc}(max(1,bar B_l)))` without clipping to the residency limit; crossing the limit is reported as overload.
+- TTFT is the prefill part of the curve at `max(1,bar B_l)`, TBT is the decode part divided by `O-1`, and the response time is their sum.
+- `service_demand` and `ServiceCurve` are two views of one model; a unit test asserts they agree to machine precision.
