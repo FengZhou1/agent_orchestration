@@ -26,6 +26,8 @@ class TrainingProgressReporter:
         device: str,
         status_interval_steps: int = 32,
         show_progress: bool = True,
+        initial_update: int = 0,
+        append_history: bool = False,
         status_filename: str = "training_status.json",
         history_filename: str = "training_history.jsonl",
     ) -> None:
@@ -41,12 +43,14 @@ class TrainingProgressReporter:
         self.device = device
         self.status_interval_steps = max(1, status_interval_steps)
         self.show_progress = show_progress
+        self.initial_update = min(max(0, initial_update), updates)
+        self.append_history = append_history
         self.status_path = self.output_dir / status_filename
         self.history_path = self.output_dir / history_filename
 
         self._started = 0.0
-        self._completed_units = 0
-        self._update = 0
+        self._completed_units = self.initial_update * self.units_per_update
+        self._update = self.initial_update
         self._rollout_step = 0
         self._optimizer_step = 0
         self._optimizer_total_current = self.optimizer_steps
@@ -59,7 +63,7 @@ class TrainingProgressReporter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._started = time.perf_counter()
         self._history_handle = self.history_path.open(
-            "w", encoding="utf-8", buffering=1
+            "a" if self.append_history else "w", encoding="utf-8", buffering=1
         )
         self._bar = tqdm(
             total=self.total_units,
@@ -67,6 +71,7 @@ class TrainingProgressReporter:
             unit="step",
             dynamic_ncols=True,
             disable=not self.show_progress,
+            initial=self._completed_units,
         )
         self._write_status("running")
         return self

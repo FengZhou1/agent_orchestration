@@ -105,6 +105,45 @@ def test_ppo_reports_rollout_optimization_and_update_progress(scenario):
     assert len(updates) == 1
 
 
+def test_ppo_resumes_from_update_checkpoint(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=2, seed=23)
+    config = PPOConfig(update_epochs=1, minibatch_size=32, hidden_size=32)
+    checkpoint = {}
+
+    class Interrupted(RuntimeError):
+        pass
+
+    def stop_after_first_update(state):
+        checkpoint.update(state)
+        raise Interrupted
+
+    with pytest.raises(Interrupted):
+        train_ppo(
+            env,
+            updates=2,
+            rollout_steps=32,
+            seed=23,
+            config=config,
+            on_checkpoint=stop_after_first_update,
+        )
+    assert checkpoint["next_update"] == 1
+    assert len(checkpoint["history"]) == 1
+
+    resumed_env = AgentOrchestrationEnv(scenario, max_slots=2, seed=23)
+    saved = []
+    _, history = train_ppo(
+        resumed_env,
+        updates=2,
+        rollout_steps=32,
+        seed=23,
+        config=config,
+        resume_state=checkpoint,
+        on_checkpoint=saved.append,
+    )
+    assert len(history) == 2
+    assert saved[-1]["next_update"] == 2
+
+
 def test_ppo_icm_smoke_update(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=10)
     config = PPOConfig(

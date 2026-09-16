@@ -80,10 +80,11 @@ python scripts/run_rl_matrix.py `
   --scenario configs/toy.yaml `
   --updates 100 `
   --rollout-steps 1024 `
-  --device auto
+  --device auto `
+  --resume
 ```
 
-训练时，终端进度条分别显示轨迹收集和 PPO 优化阶段。每个运行目录中的 `training_status.json` 持续覆盖当前进度、耗时和预计剩余时间，`training_history.jsonl` 在每次 PPO update 后立即追加训练指标；训练完成后仍会生成完整的 `training_history.json`。使用 `--no-progress` 可关闭终端进度条而保留在线文件。需要完整消融时，显式传入 `--seeds 0,1,2,3,4 --modes joint,deploy,route --variants auto`；Potential Shaping 与 ICM 可通过 `--modes joint --variants potential,icm` 运行。
+训练时，终端进度条分别显示矩阵、轨迹收集、PPO 优化和评估阶段。每个运行目录中的 `training_status.json` 持续覆盖当前进度、耗时和预计剩余时间，`training_history.jsonl` 在每次 PPO update 后立即追加训练指标，`checkpoint.pt` 保存 update 级恢复状态；矩阵根目录中的 `matrix_status.json` 和 `rl_experiment.log` 记录整体进度。`--resume` 从最近完成的 PPO update 继续并跳过已完成的种子—算法组合。使用 `--no-progress` 可关闭终端进度条而保留状态与日志文件。需要完整消融时，显式传入 `--seeds 0,1,2,3,4 --modes joint,deploy,route --variants auto`；Potential Shaping 与 ICM 可通过 `--modes joint --variants potential,icm` 运行。
 
 根据多随机种子汇总结果生成可复现的置信区间和配对显著性检验：
 
@@ -152,11 +153,14 @@ python scripts/calibrate_load_levels.py `
 
 ```powershell
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
+  --scenario configs/benchmarks/main_abilene.yaml --slots 600 `
   --load-levels data/processed/load_levels.json `
   --seeds 0,1,2,3,4 `
+  --resume `
   --output results/baseline_levels
 ```
+
+Baseline 按负载档位、随机种子和策略保存独立运行文件；`baseline_status.json` 给出总体进度和预计剩余时间，`baseline_experiment.log` 记录各组合的开始、完成与异常。中断后使用相同命令和 `--resume` 即可跳过已经完成的组合。
 
 仅绘制 baseline 结果：
 

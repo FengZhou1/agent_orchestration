@@ -20,6 +20,7 @@ PhaseCallback = Callable[[int, str], None]
 RolloutProgressCallback = Callable[[int, int], None]
 OptimizationProgressCallback = Callable[[int, int, int], None]
 UpdateCallback = Callable[[dict[str, float]], None]
+CheckpointCallback = Callable[[dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,8 @@ def train_ppo(
     on_rollout_step: RolloutProgressCallback | None = None,
     on_optimization_step: OptimizationProgressCallback | None = None,
     on_update: UpdateCallback | None = None,
+    resume_state: dict[str, Any] | None = None,
+    on_checkpoint: CheckpointCallback | None = None,
 ) -> tuple[StructuredActorCritic, list[dict[str, float]]]:
     device = resolve_device(device)
     _validate_constraint_config(config)
@@ -210,13 +213,56 @@ def train_ppo(
     )
     icm_optimizer = torch.optim.Adam(icm.parameters(), lr=config.learning_rate) if icm is not None else None
     rnd_moments = PhaseRunningMoments(2)
-    observation, _ = env.reset(seed=seed)
     history: list[dict[str, float]] = []
     lagrange_multipliers = np.asarray(config.initial_lagrange_multipliers, dtype=np.float64)
     constraint_limits = np.asarray(config.constraint_limits, dtype=np.float64)
     episode_counter = 0
+    start_update = 0
 
-    for update in range(updates):
+    if resume_state is not None:
+        policy.load_state_dict(resume_state["policy_state_dict"])
+        optimizer.load_state_dict(resume_state["optimizer_state_dict"])
+        if rnd is not None and resume_state.get("rnd_state_dict") is not None:
+            rnd.load_state_dict(resume_state["rnd_state_dict"])
+            assert rnd_optimizer is not None
+            rnd_optimizer.load_state_dict(resume_state["rnd_optimizer_state_dict"])
+        if icm is not None and resume_state.get("icm_state_dict") is not None:
+            icm.load_state_dict(resume_state["icm_state_dict"])
+            assert icm_optimizer is not None
+            icm_optimizer.load_state_dict(resume_state["icm_optimizer_state_dict"])
+        moments = resume_state.get("rnd_moments")
+        if moments is not None:
+            rnd_moments.count = np.asarray(moments["count"], dtype=np.float64)
+            rnd_moments.mean = np.asarray(moments["mean"], dtype=np.float64)
+            rnd_moments.m2 = np.asarray(moments["m2"], dtype=np.float64)
+        history = [dict(record) for record in resume_state.get("history", [])]
+        lagrange_multipliers = np.asarray(
+            resume_state.get("lagrange_multipliers", lagrange_multipliers),
+            dtype=np.float64,
+        )
+        episode_counter = int(resume_state.get("episode_counter", 0))
+        start_update = int(resume_state.get("next_update", 0))
+        if start_update < 0 or start_update > updates:
+            raise ValueError("The PPO checkpoint has an invalid next_update value")
+
+    observation, _ = env.reset(seed=seed + episode_counter)
+    if resume_state is not None:
+        if "python_random_state" in resume_state:
+            random.setstate(resume_state["python_random_state"])
+        if "numpy_random_state" in resume_state:
+            np.random.set_state(resume_state["numpy_random_state"])
+        if "torch_random_state" in resume_state:
+            torch.set_rng_state(resume_state["torch_random_state"].cpu())
+        if (
+            str(device).startswith("cuda")
+            and torch.cuda.is_available()
+            and resume_state.get("cuda_random_state") is not None
+        ):
+            torch.cuda.set_rng_state_all(
+                [state.cpu() for state in resume_state["cuda_random_state"]]
+            )
+
+    for update in range(start_update, updates):
         if on_phase is not None:
             on_phase(update, "collecting")
         records: list[dict[str, Any]] = []
@@ -421,6 +467,38 @@ def train_ppo(
         if on_update is not None:
             on_update(record)
         lagrange_multipliers = next_lagrange
+        if on_checkpoint is not None:
+            on_checkpoint(
+                {
+                    "next_update": update + 1,
+                    "policy_state_dict": policy.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "rnd_state_dict": rnd.state_dict() if rnd is not None else None,
+                    "rnd_optimizer_state_dict": (
+                        rnd_optimizer.state_dict() if rnd_optimizer is not None else None
+                    ),
+                    "icm_state_dict": icm.state_dict() if icm is not None else None,
+                    "icm_optimizer_state_dict": (
+                        icm_optimizer.state_dict() if icm_optimizer is not None else None
+                    ),
+                    "rnd_moments": {
+                        "count": rnd_moments.count.copy(),
+                        "mean": rnd_moments.mean.copy(),
+                        "m2": rnd_moments.m2.copy(),
+                    },
+                    "lagrange_multipliers": lagrange_multipliers.copy(),
+                    "episode_counter": episode_counter,
+                    "history": list(history),
+                    "python_random_state": random.getstate(),
+                    "numpy_random_state": np.random.get_state(),
+                    "torch_random_state": torch.get_rng_state(),
+                    "cuda_random_state": (
+                        torch.cuda.get_rng_state_all()
+                        if str(device).startswith("cuda") and torch.cuda.is_available()
+                        else None
+                    ),
+                }
+            )
     return policy, history
 
 

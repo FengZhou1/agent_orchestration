@@ -118,7 +118,10 @@ python scripts/generate_composition_sweep.py `
   --scenario configs/benchmarks/main_abilene.yaml --family-sweep `
   --output configs/generated/family_composition
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
+  --scenario configs/benchmarks/main_abilene.yaml --slots 600 `
   --load-levels data/processed/load_levels.json --seeds 0,1,2,3,4 `
+  --resume `
   --output results/baseline_revised
 ```
+
+长时间实验均采用增量落盘。Baseline 在每个负载档位—随机种子—策略组合结束后保存独立结果；PPO 在每个 update 后保存策略、优化器、探索模块、拉格朗日乘子和随机状态。使用同一输出目录并传入 `--resume` 时，程序从最近的完整单元继续运行。状态文件与追加日志用于监测进度和定位异常。

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 from pathlib import Path
 import platform
 from statistics import mean
@@ -12,6 +14,7 @@ import time
 import numpy as np
 import pandas as pd
 import torch
+from tqdm.auto import tqdm
 
 from agent_orch.agents import (
     PPOConfig,
@@ -38,6 +41,44 @@ DEFAULT_MODES = "joint"
 DEFAULT_VARIANTS = "rnd"
 
 
+def _atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.stem + ".tmp.parquet")
+    frame.to_parquet(temporary, index=False)
+    temporary.replace(path)
+
+
+def _atomic_torch(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.stem + ".tmp.pt")
+    torch.save(payload, temporary)
+    temporary.replace(path)
+
+
+def _logger(path: Path) -> logging.Logger:
+    logger = logging.getLogger(f"rl:{path.resolve()}")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    return logger
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _arrival_trace(scenario, slots: int, rate_scale: float):
     return ArrivalTrace.stationary_poisson_intensity(
         scenario, slots, rate_scale=rate_scale
@@ -53,6 +94,7 @@ def _evaluate(
     policy: StructuredActorCritic,
     seed: int,
     device: str = "cpu",
+    on_step=None,
 ) -> tuple[list[dict], list[float]]:
     observation, _ = env.reset(seed=seed)
     records: list[dict] = []
@@ -67,6 +109,8 @@ def _evaluate(
         if "metrics" in info:
             records.append(asdict(info["metrics"]))
         records.extend(asdict(metrics) for metrics in info.get("interval_metrics", []))
+        if on_step is not None:
+            on_step(len(records))
     return records, decision_times
 
 
@@ -167,6 +211,11 @@ def main() -> int:
         action="store_true",
         help="disable the terminal progress bar; live files are still written",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume PPO updates from checkpoints and skip completed runs",
+    )
     parser.add_argument("--output", default="results/rl_matrix")
     args = parser.parse_args()
 
@@ -191,22 +240,121 @@ def main() -> int:
     scenario = ScenarioLoader.load(scenario_path)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    logger = _logger(output / "rl_experiment.log")
     resolved_device = resolve_device(args.device)
     hardware = device_metadata(args.device, resolved_device)
+    combinations = _combinations(modes, variants)
+    seeds = [int(value) for value in _parse_csv(args.seeds)]
     print(
         f"RL plan: seeds={_parse_csv(args.seeds)}, "
-        f"combinations={_combinations(modes, variants)}, device={resolved_device}",
+        f"combinations={combinations}, device={resolved_device}",
         flush=True,
+    )
+    logger.info(
+        "RL plan seeds=%s combinations=%s device=%s", seeds, combinations, resolved_device
     )
     slot_records: list[dict] = []
     run_summaries: list[dict] = []
+    total_runs = len(seeds) * len(combinations)
+    completed_runs = 0
+    matrix_started = time.perf_counter()
+    status_path = output / "matrix_status.json"
+    matrix_bar = tqdm(
+        total=total_runs,
+        desc="RL matrix",
+        unit="run",
+        dynamic_ncols=True,
+        disable=args.no_progress,
+    )
 
-    for seed in (int(value) for value in _parse_csv(args.seeds)):
-        for mode, variant in _combinations(modes, variants):
+    manifest = {
+        "scenario": str(scenario_path),
+        "scenario_hash": scenario_hash,
+        "seeds": seeds,
+        "modes": modes,
+        "variants": variants,
+        "combinations": combinations,
+        "updates": args.updates,
+        "rollout_steps": args.rollout_steps,
+        "train_slots": args.train_slots,
+        "eval_slots": args.eval_slots,
+        "arrival_process": "stationary_poisson_intensity",
+        "arrival_scale": args.arrival_scale,
+        "device": hardware,
+        "status_interval_steps": args.status_interval_steps,
+        "resume_enabled": args.resume,
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "torch": torch.__version__,
+    }
+    _atomic_json(output / "manifest.json", manifest)
+
+    def write_matrix_status(
+        status: str, current: str | None = None, error: str | None = None
+    ) -> None:
+        elapsed = time.perf_counter() - matrix_started
+        rate = completed_runs / elapsed if elapsed > 0.0 else 0.0
+        payload = {
+            "status": status,
+            "current_run": current,
+            "completed_runs": completed_runs,
+            "total_runs": total_runs,
+            "progress_percent": 100.0 * completed_runs / max(total_runs, 1),
+            "elapsed_time_s": elapsed,
+            "eta_seconds": (total_runs - completed_runs) / rate if rate > 0 else None,
+            "updated_at_utc": _timestamp(),
+        }
+        if error is not None:
+            payload["error"] = error
+        _atomic_json(status_path, payload)
+
+    def write_aggregates() -> None:
+        if slot_records:
+            _atomic_parquet(pd.DataFrame(slot_records), output / "slot_metrics.parquet")
+        if run_summaries:
+            _atomic_parquet(pd.DataFrame(run_summaries), output / "run_summary.parquet")
+
+    write_matrix_status("running")
+    try:
+        for seed, mode, variant in (
+            (seed, mode, variant)
+            for seed in seeds
+            for mode, variant in combinations
+        ):
             config, potential_shaping = _variant_config(variant)
             run_id = f"{scenario.id}-{mode}-{variant}-s{seed}-{scenario_hash}"
             run_dir = output / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
+            run_spec = {
+                "scenario_hash": scenario_hash,
+                "seed": seed,
+                "mode": mode,
+                "variant": variant,
+                "updates": args.updates,
+                "rollout_steps": args.rollout_steps,
+                "train_slots": args.train_slots,
+                "eval_slots": args.eval_slots,
+                "arrival_scale": args.arrival_scale,
+            }
+            complete_path = run_dir / "run_complete.json"
+            run_slots_path = run_dir / "evaluation_slots.parquet"
+            run_summary_path = run_dir / "run_summary.parquet"
+            if args.resume and complete_path.exists():
+                completed = json.loads(complete_path.read_text(encoding="utf-8"))
+                if completed.get("run_spec") != run_spec:
+                    raise ValueError(
+                        f"Completed run {run_id} does not match the requested configuration"
+                    )
+                if not run_slots_path.exists() or not run_summary_path.exists():
+                    raise ValueError(f"Completed run {run_id} lacks incremental artifacts")
+                slot_records.extend(pd.read_parquet(run_slots_path).to_dict("records"))
+                run_summaries.extend(pd.read_parquet(run_summary_path).to_dict("records"))
+                completed_runs += 1
+                matrix_bar.update(1)
+                logger.info("resumed completed run %s", run_id)
+                write_aggregates()
+                write_matrix_status("running", run_id)
+                continue
             env_class = ENVIRONMENTS[mode]
             train_trace = _arrival_trace(
                 scenario, args.train_slots, args.arrival_scale
@@ -219,7 +367,37 @@ def main() -> int:
                 arrival_trace=train_trace,
             )
             print(f"Starting training run {run_id}", flush=True)
+            logger.info("starting training run %s", run_id)
+            checkpoint_path = run_dir / "checkpoint.pt"
+            resume_state = None
+            previous_train_wall_time_s = 0.0
+            if args.resume and checkpoint_path.exists():
+                checkpoint = torch.load(
+                    checkpoint_path, map_location=resolved_device, weights_only=False
+                )
+                if checkpoint.get("run_spec") != run_spec:
+                    raise ValueError(
+                        f"Checkpoint for {run_id} does not match the requested configuration"
+                    )
+                resume_state = checkpoint["training_state"]
+                previous_train_wall_time_s = float(
+                    checkpoint.get("train_wall_time_s", 0.0)
+                )
+                logger.info(
+                    "resuming %s from PPO update %s",
+                    run_id,
+                    resume_state.get("next_update", 0),
+                )
             train_started = time.perf_counter()
+            initial_update = int(resume_state.get("next_update", 0)) if resume_state else 0
+            history_stream = run_dir / "training_history.jsonl"
+            if resume_state is not None and history_stream.exists():
+                lines = history_stream.read_text(encoding="utf-8").splitlines()
+                history_stream.write_text(
+                    "\n".join(lines[:initial_update])
+                    + ("\n" if initial_update else ""),
+                    encoding="utf-8",
+                )
             reporter = TrainingProgressReporter(
                 run_id=run_id,
                 output_dir=run_dir,
@@ -230,7 +408,25 @@ def main() -> int:
                 device=resolved_device,
                 status_interval_steps=args.status_interval_steps,
                 show_progress=not args.no_progress,
+                initial_update=initial_update,
+                append_history=bool(resume_state),
             )
+
+            def save_checkpoint(training_state: dict) -> None:
+                _atomic_torch(
+                    checkpoint_path,
+                    {
+                        "run_spec": run_spec,
+                        "training_state": training_state,
+                        "train_wall_time_s": (
+                            previous_train_wall_time_s
+                            + time.perf_counter()
+                            - train_started
+                        ),
+                        "updated_at_utc": _timestamp(),
+                    },
+                )
+
             with reporter:
                 policy, history = train_ppo(
                     train_env,
@@ -243,8 +439,12 @@ def main() -> int:
                     on_rollout_step=reporter.on_rollout_step,
                     on_optimization_step=reporter.on_optimization_step,
                     on_update=reporter.on_update,
+                    resume_state=resume_state,
+                    on_checkpoint=save_checkpoint,
                 )
-            train_wall_time_s = time.perf_counter() - train_started
+            train_wall_time_s = (
+                previous_train_wall_time_s + time.perf_counter() - train_started
+            )
             torch.save(
                 {
                     "policy_state_dict": {
@@ -280,22 +480,37 @@ def main() -> int:
                 seed=seed + 10_000,
                 arrival_trace=eval_trace,
             )
-            records, decision_times = _evaluate(
-                eval_env, policy, seed + 10_000, resolved_device
+            eval_bar = tqdm(
+                total=args.eval_slots,
+                desc=f"{run_id} | evaluating",
+                unit="slot",
+                dynamic_ncols=True,
+                disable=args.no_progress,
             )
-            for record in records:
-                slot_records.append(
-                    {
-                        "run_id": run_id,
-                        "scenario": scenario.id,
-                        "mode": mode,
-                        "variant": variant,
-                        "seed": seed,
-                        **record,
-                    }
-                )
-            run_summaries.append(
+            evaluated_slots = 0
+
+            def on_eval_step(value: int) -> None:
+                nonlocal evaluated_slots
+                target = min(value, args.eval_slots)
+                eval_bar.update(max(0, target - evaluated_slots))
+                evaluated_slots = target
+
+            records, decision_times = _evaluate(
+                eval_env, policy, seed + 10_000, resolved_device, on_eval_step
+            )
+            eval_bar.close()
+            decorated_records = [
                 {
+                    "run_id": run_id,
+                    "scenario": scenario.id,
+                    "mode": mode,
+                    "variant": variant,
+                    "seed": seed,
+                    **record,
+                }
+                for record in records
+            ]
+            run_summary = {
                     "scenario": scenario.id,
                     "mode": mode,
                     "variant": variant,
@@ -307,33 +522,28 @@ def main() -> int:
                         train_wall_time_s,
                         decision_times,
                     ),
-                }
+            }
+            _atomic_parquet(pd.DataFrame(decorated_records), run_slots_path)
+            _atomic_parquet(pd.DataFrame([run_summary]), run_summary_path)
+            _atomic_json(
+                complete_path,
+                {"run_spec": run_spec, "completed_at_utc": _timestamp()},
             )
-
-    pd.DataFrame(slot_records).to_parquet(output / "slot_metrics.parquet", index=False)
-    pd.DataFrame(run_summaries).to_parquet(output / "run_summary.parquet", index=False)
-    manifest = {
-        "scenario": str(scenario_path),
-        "scenario_hash": scenario_hash,
-        "seeds": [int(value) for value in _parse_csv(args.seeds)],
-        "modes": modes,
-        "variants": variants,
-        "combinations": _combinations(modes, variants),
-        "updates": args.updates,
-        "rollout_steps": args.rollout_steps,
-        "train_slots": args.train_slots,
-        "eval_slots": args.eval_slots,
-        "arrival_process": "stationary_poisson_intensity",
-        "arrival_scale": args.arrival_scale,
-        "device": hardware,
-        "status_interval_steps": args.status_interval_steps,
-        "python": platform.python_version(),
-        "numpy": np.__version__,
-        "torch": torch.__version__,
-    }
-    (output / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
-    )
+            slot_records.extend(decorated_records)
+            run_summaries.append(run_summary)
+            completed_runs += 1
+            matrix_bar.update(1)
+            write_aggregates()
+            write_matrix_status("running", run_id)
+            logger.info("completed run %s", run_id)
+        write_matrix_status("completed")
+        logger.info("completed RL matrix in %.3fs", time.perf_counter() - matrix_started)
+    except BaseException as exc:
+        logger.exception("RL matrix failed")
+        write_matrix_status("failed", error=repr(exc))
+        raise
+    finally:
+        matrix_bar.close()
     print(output)
     return 0
 
