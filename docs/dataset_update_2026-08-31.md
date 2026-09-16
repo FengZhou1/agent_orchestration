@@ -26,7 +26,7 @@ Mooncake 仅用于前缀缓存扩展实验。当前主实验不显式优化缓�
 
 ## 已实现的参数与文件
 
-- `configs/benchmarks/main_abilene_revised.yaml`：12 个物理节点、20 个应用模板和 6 类无状态服务；
+- `configs/benchmarks/main_abilene.yaml`：12 个物理节点、20 个应用模板和 6 类无状态服务；
 - `configs/benchmarks/scale_geant.yaml`：22 个物理节点、50 个应用模板和 8 类无状态服务；
 - `configs/benchmarks/stress_*.yaml`：链路容量减半、服务能力减半和 GPU 不可用等压力场景；
 - `data/catalogs/main_abilene/`：基础设施、工作流、无状态服务及 LLM profile 请求网格；

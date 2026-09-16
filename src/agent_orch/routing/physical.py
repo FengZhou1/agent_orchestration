@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 from typing import Mapping
 
-from agent_orch.performance.llm import service_demand
+from agent_orch.performance.analytical import evaluate_llm_instance
 from agent_orch.performance.network import NetworkBackend
 from agent_orch.performance.queueing import tool_response_time
 from agent_orch.schema.models import (
@@ -43,6 +43,7 @@ class PhysicalRouter:
         deployment: DeploymentDecision,
         model_share: Mapping[tuple[str, str, str], float],
         previous_metrics: SlotMetrics | None = None,
+        arrival_rates: Mapping[tuple[str, str], float] | None = None,
     ) -> RoutingDecision:
         llm_share: dict[tuple[str, str, str, str], float] = {}
         service_route: dict[tuple[str, str, str, str, str], float] = {}
@@ -60,6 +61,8 @@ class PhysicalRouter:
                             node,
                             model,
                             previous_metrics,
+                            model_share,
+                            arrival_rates,
                         )
                         self._validate_distribution(
                             conditional,
@@ -108,6 +111,8 @@ class PhysicalRouter:
         node: WorkflowNode,
         model: str,
         previous_metrics: SlotMetrics | None,
+        model_share: Mapping[tuple[str, str, str], float],
+        arrival_rates: Mapping[tuple[str, str], float] | None,
     ) -> dict[str, float]:
         costs: dict[str, float] = {}
         for candidate_id, candidate in self.scenario.candidates.items():
@@ -117,21 +122,39 @@ class PhysicalRouter:
             ):
                 continue
             config = self.scenario.llm_configs[candidate.config]
-            demand = service_demand(
+            instance, _ = evaluate_llm_instance(
                 self.scenario.models[model],
                 config,
-                node.prompt_tokens[model],
-                node.output_tokens[model],
+                [(node.prompt_tokens[model], node.output_tokens[model])],
+                [1.0],
+                0.0,
                 self.scenario.simulation.prefill_chunk_tokens,
+                composition_mode="macro",
             )
             utilization = (
                 previous_metrics.llm_utilization.get(candidate_id, 0.0)
                 if previous_metrics is not None
                 else 0.0
             )
-            if utilization >= 1.0:
+            active_model_candidates = [
+                candidate_key
+                for candidate_key, active in deployment.llm_active.items()
+                if active and self.scenario.candidates[candidate_key].model == model
+            ]
+            projected_rate = self._projected_llm_arrival_rate(
+                app,
+                ingress,
+                node,
+                model,
+                candidate_id,
+                active_model_candidates,
+                model_share,
+                arrival_rates,
+            )
+            projected_utilization = utilization + projected_rate * instance.mean_service_s
+            if projected_utilization >= 1.0:
                 continue
-            residual = self._residual_capacity(utilization)
+            residual = self._residual_capacity(projected_utilization)
             network_delay = self._llm_predecessor_network_delay(
                 deployment,
                 app,
@@ -143,8 +166,41 @@ class PhysicalRouter:
             )
             if network_delay is None:
                 continue
-            costs[candidate_id] = network_delay + demand.service_s / residual
+            costs[candidate_id] = network_delay + instance.mean_service_s / residual
         return _softmin(costs, self.config.llm_inverse_temperature)
+
+    def _projected_llm_arrival_rate(
+        self,
+        app: ApplicationSpec,
+        ingress: str,
+        node: WorkflowNode,
+        model: str,
+        candidate_id: str,
+        active_candidates: list[str],
+        model_share: Mapping[tuple[str, str, str], float],
+        arrival_rates: Mapping[tuple[str, str], float] | None,
+    ) -> float:
+        """Estimate the candidate's next-period LLM load before routing.
+
+        Model composition is selected before physical instance routing.  The
+        equal split among active replicas is the neutral prior used by the
+        router; the previous-period utilization remains an additive state
+        term in the candidate score.
+        """
+        if candidate_id not in active_candidates:
+            return 0.0
+        total_candidates = max(1, len(active_candidates))
+        ingress_rate = (
+            float(arrival_rates.get((app.id, ingress), app.ingress_rates.get(ingress, 0.0)))
+            if arrival_rates is not None
+            else float(app.ingress_rates.get(ingress, 0.0))
+        )
+        visit_probability = app.visit_probability(node.id)
+        model_fraction = max(
+            0.0,
+            float(model_share.get((app.id, ingress, model), 0.0)),
+        )
+        return ingress_rate * visit_probability * model_fraction / total_candidates
 
     def _service_conditional_probabilities(
         self,

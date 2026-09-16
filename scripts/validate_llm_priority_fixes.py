@@ -130,6 +130,7 @@ def analytical_prediction(
     composition: dict[str, float],
     arrival_rate_rps: float,
     rates: dict[str, float] | None = None,
+    composition_mode: str = "arrival",
 ) -> dict[str, float]:
     config = scenario.llm_configs[config_id]
     if rates is not None:
@@ -144,7 +145,13 @@ def analytical_prediction(
     weights = [float(composition[key]) for key in keys]
     total = sum(weights)
     instance, per_class = evaluate_llm_instance(
-        model, config, classes, weights, arrival_rate_rps, CHUNK
+        model,
+        config,
+        classes,
+        weights,
+        arrival_rate_rps,
+        CHUNK,
+        composition_mode=composition_mode,
     )
     return {
         "predicted_prefill_s": sum(w * p.ttft_s for w, p in zip(weights, per_class)) / total,
@@ -873,7 +880,7 @@ def main() -> int:
     parser.add_argument(
         "--scenario",
         type=Path,
-        default=ROOT / "configs/benchmarks/main_abilene_revised.yaml",
+        default=ROOT / "configs/benchmarks/main_abilene.yaml",
     )
     parser.add_argument("--steady-dir", type=Path, default=ROOT / "results/llm_queue_steady/runs")
     parser.add_argument("--trend-dir", type=Path, default=ROOT / "results/llm_queue_trends/runs")

@@ -220,6 +220,35 @@ def mean_decode_context(
     )
 
 
+def resident_decode_context(
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    curves: list[ServiceCurve],
+    decode_concurrency: float,
+) -> float:
+    """Context length of the active decode population.
+
+    An arrival-rate weighted mean describes an arriving request, whereas the
+    decode batch is sampled from requests that are currently resident.  The
+    latter population is length-biased by its decode residence time.  The
+    service curves provide that residence time without introducing request-
+    level state into the steady-state model.
+    """
+    residence = np.asarray(
+        [max(curve.decode_at(decode_concurrency), 0.0) for curve in curves],
+        dtype=float,
+    )
+    weighted = np.asarray(weights, dtype=float) * residence
+    contexts = np.asarray(
+        [prompt + (max(1.0, output) - 1.0) / 2.0 for prompt, output in classes],
+        dtype=float,
+    )
+    total = float(weighted.sum())
+    if total <= 1.0e-12:
+        return mean_decode_context(classes, weights)
+    return float(np.dot(weighted, contexts) / total)
+
+
 def service_curve(
     model: ModelSpec,
     config: LLMConfigSpec,

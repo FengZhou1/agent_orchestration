@@ -19,13 +19,22 @@ LOAD_LEVELS = (
     ("overload", 1.05),
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _portable_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--policy", default="greedy")
     parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--output", default="data/processed/load_levels_revised.json")
+    parser.add_argument("--output", default="data/processed/load_levels.json")
     args = parser.parse_args()
 
     scenario_path = Path(args.scenario).resolve()
@@ -46,7 +55,7 @@ def main() -> int:
         for name, target in LOAD_LEVELS
     ]
     payload = {
-        "scenario": str(scenario_path),
+        "scenario": _portable_path(scenario_path),
         "scenario_hash": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
         "policy": args.policy,
         "seed": args.seed,

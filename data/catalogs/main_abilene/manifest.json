@@ -1,6 +1,6 @@
 {
   "artifact_type": "reference-catalog-bundle",
-  "generated_at_utc": "2026-09-11T05:25:46.647127+00:00",
+  "generated_at_utc": "2026-09-16T15:27:20.931771+00:00",
   "license": "See each source entry in scenario metadata",
   "parameters": {
     "data_sources": {
@@ -46,9 +46,9 @@
     "scenario_id": "agent-abilene-20",
     "workload_catalog": "preconstructed application patterns and quantile templates"
   },
-  "preprocessing_command": "python scripts/export_reference_catalogs.py --scenario C:\\Users\\01\\Desktop\\agent\\experiments\\agent_orchestration\\configs\\benchmarks\\main_abilene_revised.yaml",
+  "preprocessing_command": "python scripts/export_reference_catalogs.py --scenario C:\\Users\\01\\Desktop\\agent\\experiments\\agent_orchestration\\configs\\benchmarks\\main_abilene.yaml",
   "random_seed": 2026,
-  "source_checksum_sha256": "71ff54dc78d55c26035fa0a09f6b0a5733b16e82f05df55c4403305b99c569d2",
+  "source_checksum_sha256": "e0c7124706ebe2614bf67418158b4af4798d4cd2bad621572aceba02d1bb0056",
   "source_name": "compiled benchmark scenario",
   "source_url": "https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2026",
   "source_version": "647e3da5d6de2dc5e47f8b47fcf09797753b9d5dd8d7853e9bfc44ed3d748814",

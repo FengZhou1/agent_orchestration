@@ -14,7 +14,7 @@ simulation:
   slot_seconds: 1.0
   prefill_chunk_tokens: 512
   overload_delay_s: 60.0
-  deployment_period_slots: 10
+  orchestration_period_s: 10.0
   max_tool_replicas_per_server: 4
 
 reward:

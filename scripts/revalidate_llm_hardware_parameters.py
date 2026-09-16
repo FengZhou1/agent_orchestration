@@ -383,7 +383,7 @@ def trend_consistency(predictions: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", type=Path, default=ROOT / "configs/benchmarks/main_abilene_revised.yaml")
+    parser.add_argument("--scenario", type=Path, default=ROOT / "configs/benchmarks/main_abilene.yaml")
     parser.add_argument("--observations", type=Path, default=ROOT / "results/llm_steady_state_validation_final/observations.csv")
     parser.add_argument("--output", type=Path, default=ROOT / "results/llm_steady_state_parameter_revalidation")
     args = parser.parse_args()

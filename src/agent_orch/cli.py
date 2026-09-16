@@ -42,11 +42,16 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--scenario", required=True)
     train.add_argument("--updates", type=int, default=10)
     train.add_argument("--rollout-steps", type=int, default=256)
-    train.add_argument("--max-slots", type=int, default=600)
-    train.add_argument("--seed", type=int, default=7)
-    train.add_argument("--potential-shaping", action="store_true")
     train.add_argument(
-        "--exploration", choices=["rnd", "none", "icm"], default="rnd"
+        "--periods", "--max-slots", dest="periods", type=int, default=600,
+        help="number of macro orchestration periods"
+    )
+    train.add_argument("--seed", type=int, default=7)
+    train.add_argument("--potential-shaping", dest="potential_shaping", action="store_true")
+    train.add_argument("--no-potential-shaping", dest="potential_shaping", action="store_false")
+    train.set_defaults(potential_shaping=True)
+    train.add_argument(
+        "--exploration", choices=["rnd", "none"], default="rnd"
     )
     train.add_argument("--unconstrained", action="store_true")
     train.add_argument("--mode", choices=["joint", "deploy", "route"], default="joint")
@@ -128,14 +133,10 @@ def main() -> int:
     if args.command == "run":
         return _run(args)
     if args.command == "train":
-        if args.potential_shaping and args.exploration != "none":
-            raise ValueError(
-                "Potential shaping is a standalone comparison; use --exploration none"
-            )
         scenario = ScenarioLoader.load(args.scenario)
         arrival_trace = _load_arrivals(
             scenario,
-            args.max_slots,
+            args.periods,
             args.arrival_scale,
         )
         env_class = {
@@ -145,7 +146,7 @@ def main() -> int:
         }[args.mode]
         env = env_class(
             scenario,
-            max_slots=args.max_slots,
+            max_slots=args.periods,
             potential_shaping=args.potential_shaping,
             seed=args.seed,
             arrival_trace=arrival_trace,
@@ -157,7 +158,7 @@ def main() -> int:
         output = Path(args.output).resolve()
         output.mkdir(parents=True, exist_ok=True)
         base = "unconstrained" if args.unconstrained else "constrained"
-        suffix = f"{base}-potential" if args.potential_shaping else f"{base}-{args.exploration}"
+        suffix = f"{base}-shaped-{args.exploration}" if args.potential_shaping else f"{base}-{args.exploration}"
         run_id = f"ppo-{scenario.id}-{args.mode}-{suffix}-s{args.seed}"
         resolved_device = resolve_device(args.device)
         hardware = device_metadata(args.device, resolved_device)

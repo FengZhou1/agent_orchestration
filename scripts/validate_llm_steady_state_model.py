@@ -389,7 +389,7 @@ def analyze(output: Path, summary: pd.DataFrame) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", type=Path, default=ROOT / "configs/benchmarks/main_abilene_revised.yaml")
+    parser.add_argument("--scenario", type=Path, default=ROOT / "configs/benchmarks/main_abilene.yaml")
     parser.add_argument("--output", type=Path, default=ROOT / "results/llm_steady_state_validation_v3")
     parser.add_argument("--configs", default=",".join(DEFAULT_CONFIGS))
     parser.add_argument("--compositions", default=",".join(DEFAULT_COMPOSITIONS))

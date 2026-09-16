@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 from pathlib import Path
 
@@ -13,6 +14,16 @@ from agent_orch.performance import AnalyticalBackend
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
 from agent_orch.workload import ArrivalTrace
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _portable_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path.resolve())
 
 
 def weighted_quantile(values: list[float], weights: list[float], quantile: float) -> float:
@@ -106,11 +117,23 @@ def main() -> int:
         help="Fraction of the reference stable capacity used for calibration",
     )
     parser.add_argument("--slots", type=int, default=3600)
+    parser.add_argument(
+        "--calibration-samples",
+        type=int,
+        default=16,
+        help="Number of steady-state analytical samples used for class quantiles",
+    )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--ttft-multiplier", type=float, default=1.5)
     parser.add_argument("--tbt-multiplier", type=float, default=1.25)
     parser.add_argument("--deadline-multiplier", type=float, default=1.5)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--propagate-to",
+        nargs="*",
+        default=(),
+        help="Scenarios that reuse the frozen SLOs of the calibrated source scenario",
+    )
     args = parser.parse_args()
 
     scenario_path = Path(args.scenario).resolve()
@@ -126,8 +149,14 @@ def main() -> int:
     trace = ArrivalTrace.stationary_poisson_intensity(
         scenario, args.slots, rate_scale=low_load_scale
     )
+    if args.calibration_samples <= 0:
+        raise ValueError("calibration-samples must be positive")
     records = collect_reference_metrics(
-        scenario, trace, args.slots, args.policy, args.seed
+        scenario,
+        trace,
+        min(args.slots, args.calibration_samples),
+        args.policy,
+        args.seed,
     )
     slos, stages = calibrated_slos(
         records, args.ttft_multiplier, args.tbt_multiplier, args.deadline_multiplier
@@ -146,10 +175,13 @@ def main() -> int:
             for node in app["nodes"]:
                 if node["id"] in stages[app["id"]]:
                     node["stage_deadline_s"] = stages[app["id"]][node["id"]]
-    raw.setdefault("metadata", {})["slo_status"] = "frozen low-load P95 calibration"
+    raw.setdefault("metadata", {})["slo_status"] = (
+        "frozen flow-weighted low-load P95 calibration"
+    )
     raw["metadata"]["slo_calibration"] = {
         "policy": args.policy,
-        "slots": args.slots,
+        "evaluation_periods": args.slots,
+        "calibration_samples": min(args.slots, args.calibration_samples),
         "seed": args.seed,
         "low_load_fraction": args.low_load_fraction,
         "low_load_rate_scale": low_load_scale,
@@ -160,7 +192,7 @@ def main() -> int:
         "tbt_multiplier": args.tbt_multiplier,
         "deadline_multiplier": args.deadline_multiplier,
         "arrival_process": "stationary_intensity",
-        "scenario_sha256": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
+        "source_scenario_sha256": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
     }
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +200,35 @@ def main() -> int:
         yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
     ScenarioLoader.load(output)
+    frozen_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+    frozen_apps = {application["id"]: application for application in raw["applications"]}
+    for target_name in args.propagate_to:
+        target = Path(target_name).resolve()
+        target_raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+        for application in target_raw["applications"]:
+            source = frozen_apps.get(application["id"])
+            if source is None:
+                raise ValueError(
+                    f"Cannot propagate SLOs: {application['id']} is absent from {output}"
+                )
+            application["slo"] = deepcopy(source["slo"])
+            source_nodes = {node["id"]: node for node in source["nodes"]}
+            for node in application["nodes"]:
+                source_node = source_nodes[node["id"]]
+                if "stage_deadline_s" in source_node:
+                    node["stage_deadline_s"] = source_node["stage_deadline_s"]
+                else:
+                    node.pop("stage_deadline_s", None)
+        metadata = target_raw.setdefault("metadata", {})
+        metadata["slo_status"] = "frozen SLOs inherited from the main reference scenario"
+        metadata["slo_calibration"] = deepcopy(raw["metadata"]["slo_calibration"])
+        metadata["slo_calibration"]["frozen_slo_source"] = _portable_path(output)
+        metadata["slo_calibration"]["frozen_slo_source_sha256"] = frozen_hash
+        target.write_text(
+            yaml.safe_dump(target_raw, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+        ScenarioLoader.load(target)
     print(output)
     return 0
 

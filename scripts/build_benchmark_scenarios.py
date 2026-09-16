@@ -17,6 +17,10 @@ from agent_orch.schema.loader import ScenarioLoader
 
 MODEL_IDS = ("qwen3-4b", "qwen3-8b", "qwen3-14b", "qwen3-32b")
 GIB = 1024 ** 3
+REPO_ROOT = Path(__file__).resolve().parents[1]
+# Keep a serving-template margin below the 32,768-token engine limit while
+# retaining the long-context workload class.
+WORKLOAD_TOKEN_BUDGET = 32_000
 GPU_MEMORY_GB = {"A10": 24.0, "L20": 48.0, "H20": 96.0}
 GPU_COST_PER_HOUR = {"A10": 1.0, "L20": 2.0, "H20": 4.0}
 # The analytical model uses the non-sparse BF16 peak rates as its hardware
@@ -32,7 +36,7 @@ PRECONSTRUCTED_FAMILY_KEYS = {
     "coding_agent": "coding_agent",
 }
 PRECONSTRUCTED_WORKLOADS_PATH = (
-    Path(__file__).resolve().parents[1] / "data" / "preconstructed_agent_workloads.yaml"
+    REPO_ROOT / "data" / "preconstructed_agent_workloads.yaml"
 )
 PRECONSTRUCTED_WORKLOADS = yaml.safe_load(
     PRECONSTRUCTED_WORKLOADS_PATH.read_text(encoding="utf-8")
@@ -75,6 +79,14 @@ SOURCE_CATALOG = {
 
 
 PRECONSTRUCTED_LENGTH_CLASSES = ("short", "short", "medium", "medium", "long")
+
+
+def _portable_path(path: str | Path) -> str:
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 TOPOLOGIES: dict[str, dict[str, Any]] = {
@@ -329,12 +341,20 @@ def _preconstructed_workflow(
     nodes: list[dict[str, Any]] = []
     for node_id, raw_node in workload["nodes"].items():
         if raw_node["type"] == "llm":
+            output_tokens = min(
+                _quantile_value(raw_node["output_tokens"], quantile),
+                WORKLOAD_TOKEN_BUDGET - 1,
+            )
+            prompt_tokens = min(
+                _quantile_value(raw_node["input_tokens"], quantile),
+                WORKLOAD_TOKEN_BUDGET - output_tokens,
+            )
             nodes.append(
                 _node(
                     node_id,
                     "llm",
-                    _quantile_value(raw_node["input_tokens"], quantile),
-                    _quantile_value(raw_node["output_tokens"], quantile),
+                    prompt_tokens,
+                    output_tokens,
                 )
             )
         else:
@@ -670,9 +690,16 @@ def build_scenario(
             "seed": seed,
             "source_catalog_sha256": source_digest,
             "data_sources": SOURCE_CATALOG,
-            "preconstructed_workload_source": str(PRECONSTRUCTED_WORKLOADS_PATH),
             "preconstructed_workload_families": list(PRECONSTRUCTED_FAMILY_KEYS.values()),
             "preconstructed_quantiles": list(PRECONSTRUCTED_QUANTILES),
+            "workload_class_count": len(applications),
+            "pattern_flow_count": sum(
+                len(application["pattern_flows"]) for application in applications
+            ),
+            "pattern_flow_expansion": (
+                "all probabilistic choices enumerated; parallel chains retained within each flow"
+            ),
+            "request_token_budget": WORKLOAD_TOKEN_BUDGET,
             "arrival_process": {
                 "distribution": "stationary intensity (mean-field steady state)",
                 "base_total_rate_rps": 4.0 * total_family_rate,
@@ -704,8 +731,8 @@ def build_scenario(
         "simulation": {
             "slot_seconds": 1.0,
             "prefill_chunk_tokens": 512,
-            "overload_delay_s": 60.0,
-            "deployment_period_slots": 60,
+            "overload_delay_s": 600.0,
+            "orchestration_period_s": 60.0,
             "max_tool_replicas_per_server": 4,
         },
         "reward": {
@@ -796,12 +823,12 @@ def main() -> int:
         if raw_path:
             path = Path(raw_path).resolve()
             calibration_inputs[label] = {
-                "path": str(path),
+                "path": _portable_path(path),
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
     for scenario in (main_scenario, scale_scenario):
         scenario["metadata"]["calibration_inputs"] = calibration_inputs
-        scenario["metadata"]["preconstructed_workload_path"] = str(workload_path)
+        scenario["metadata"]["preconstructed_workload_path"] = _portable_path(workload_path)
         scenario["metadata"]["preconstructed_workload_sha256"] = hashlib.sha256(
             workload_path.read_bytes()
         ).hexdigest()

@@ -156,7 +156,7 @@ class SimulationSpec:
     slot_seconds: float = 1.0
     prefill_chunk_tokens: int = 512
     overload_delay_s: float = 60.0
-    deployment_period_slots: int = 60
+    orchestration_period_s: float = 60.0
     max_tool_replicas_per_server: int = 4
 
 

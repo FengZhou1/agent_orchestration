@@ -122,11 +122,11 @@ def _combinations(modes: list[str], variants: list[str]) -> list[tuple[str, str]
 
 def _variant_config(variant: str) -> tuple[PPOConfig, bool]:
     if variant == "rnd":
-        return PPOConfig(constrained=True, exploration_mode="rnd"), False
+        return PPOConfig(constrained=True, exploration_mode="rnd"), True
     if variant == "no-rnd":
-        return PPOConfig(constrained=True, exploration_mode="none"), False
+        return PPOConfig(constrained=True, exploration_mode="none"), True
     if variant == "unconstrained-rnd":
-        return PPOConfig(constrained=False, exploration_mode="rnd"), False
+        return PPOConfig(constrained=False, exploration_mode="rnd"), True
     if variant == "icm":
         return PPOConfig(constrained=True, exploration_mode="icm"), False
     if variant == "potential":

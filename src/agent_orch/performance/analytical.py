@@ -4,6 +4,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 import math
 
+import numpy as np
+
 from agent_orch.schema.models import (
     DeploymentDecision,
     LLMClassPerformance,
@@ -18,9 +20,17 @@ from .llm import (
     mean_decode_context,
     mean_service_time,
     residency_capacity,
+    resident_decode_context,
     service_curve,
     steady_active_concurrency,
     throughput_capacity,
+)
+from .llm_queueing import (
+    IterationCalibration,
+    TwoModeCalibration,
+    two_mode_capacity,
+    two_mode_first_admission_wait,
+    two_mode_operating_point,
 )
 from .network import Edge, NetworkBackend
 from .queueing import tool_response_time
@@ -59,6 +69,415 @@ class LLMInstancePerformance:
     fixed_point_residual: float
 
 
+def _build_llm_curves(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    chunk_tokens: int,
+    peer_context: float,
+) -> list:
+    """Build class curves for one common active decode context."""
+    return [
+        service_curve(
+            model,
+            config,
+            prompt,
+            output,
+            chunk_tokens,
+            peer_decode_context=peer_context,
+        )
+        for prompt, output in classes
+    ]
+
+
+def _resident_operating_point(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    arrival_rate_rps: float,
+    chunk_tokens: int,
+    resident_limit: int,
+) -> tuple[float, list, bool, float]:
+    """Solve the low-dimensional active-set composition fixed point.
+
+    The old approximation represented one batch with an arrival-rate weighted
+    context.  The resident version updates that context using the residence
+    time of each class, while retaining a single steady-state concurrency.
+    Thus it captures prefill-heavy/decode-heavy composition without adding
+    request-level scheduler state.
+    """
+    peer_context = mean_decode_context(classes, weights)
+    batch = 0.0
+    residual = math.inf
+    converged = False
+    for _ in range(100):
+        curves = _build_llm_curves(
+            model, config, classes, chunk_tokens, peer_context
+        )
+        next_batch = arrival_rate_rps * mean_service_time(
+            curves, weights, max(1.0, batch)
+        )
+        next_context = resident_decode_context(
+            classes, weights, curves, max(1.0, next_batch)
+        )
+        updated_context = 0.5 * peer_context + 0.5 * next_context
+        residual = max(
+            abs(next_batch - batch),
+            abs(updated_context - peer_context),
+        )
+        batch = next_batch
+        peer_context = updated_context
+        if residual <= 1.0e-7 * max(1.0, batch, peer_context):
+            converged = True
+            break
+        if batch > max(1, resident_limit) * 2.0:
+            break
+
+    curves = _build_llm_curves(model, config, classes, chunk_tokens, peer_context)
+    return batch, curves, converged, residual
+
+
+def _resident_throughput_capacity(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    chunk_tokens: int,
+    resident_limit: int,
+) -> tuple[float, float]:
+    """Maximize throughput while recomputing the active composition at each
+    candidate concurrency.
+
+    This is a one-dimensional steady-state search, not a request-level
+    simulation or a fitted workload table.
+    """
+    if resident_limit < 1:
+        return 0.0, 0.0
+    best_rate = 0.0
+    best_concurrency = 1.0
+    initial_context = mean_decode_context(classes, weights)
+    for nu in range(1, resident_limit + 1):
+        peer_context = initial_context
+        for _ in range(100):
+            curves = _build_llm_curves(
+                model, config, classes, chunk_tokens, peer_context
+            )
+            next_context = resident_decode_context(
+                classes, weights, curves, float(nu)
+            )
+            updated = 0.5 * peer_context + 0.5 * next_context
+            if abs(updated - peer_context) <= 1.0e-7 * max(1.0, updated):
+                peer_context = updated
+                break
+            peer_context = updated
+        curves = _build_llm_curves(model, config, classes, chunk_tokens, peer_context)
+        mean_time = mean_service_time(curves, weights, float(nu))
+        if mean_time > 0.0 and nu / mean_time > best_rate:
+            best_rate = nu / mean_time
+            best_concurrency = float(nu)
+    return best_rate, best_concurrency
+
+
+def _resident_curves_at_concurrency(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    chunk_tokens: int,
+    decode_concurrency: float,
+) -> tuple[list, float]:
+    """Return curves and the self-consistent active decode context."""
+    peer_context = mean_decode_context(classes, weights)
+    for _ in range(100):
+        curves = _build_llm_curves(
+            model, config, classes, chunk_tokens, peer_context
+        )
+        next_context = resident_decode_context(
+            classes, weights, curves, max(1.0, decode_concurrency)
+        )
+        updated = 0.5 * peer_context + 0.5 * next_context
+        if abs(updated - peer_context) <= 1.0e-7 * max(1.0, updated):
+            peer_context = updated
+            break
+        peer_context = updated
+    return (
+        _build_llm_curves(model, config, classes, chunk_tokens, peer_context),
+        peer_context,
+    )
+
+
+def _occupancy_ps_operating_point(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    arrival_rate_rps: float,
+    chunk_tokens: int,
+    resident_limit: int,
+) -> tuple[float, list, bool, float, float]:
+    """Solve a macro steady-state operating point for continuous batching.
+
+    ``batch`` is the mean resident decode population rather than an
+    independent service position count.  The Roofline curve supplies the
+    composition-dependent work at that resident population, while the
+    occupancy factor models the additional residence caused by sharing the
+    finite running set.  This keeps the model at one scalar fixed point and
+    avoids treating an LLM instance as a pool of independent servers.
+    """
+    if resident_limit < 1 or sum(weights) <= 0.0:
+        return float(resident_limit + 1), [], False, math.inf, math.inf
+    # Solve F(nu)=0 by bracketing the first stable root.  A damped fixed-point
+    # iteration is not reliable close to C_run because the derivative of the
+    # occupancy factor becomes large.  The first sign change is the low-
+    # occupancy stable branch; if it does not exist, the offered load is
+    # outside the finite steady-state region.
+    upper = max(1.0, float(resident_limit) * (1.0 - 1.0e-6))
+
+    def residual_at(nu: float) -> float:
+        resident_nu = min(max(0.0, float(nu)), upper)
+        eval_nu = min(max(1.0, resident_nu), upper)
+        curves_at, _ = _resident_curves_at_concurrency(
+            model, config, classes, weights, chunk_tokens, eval_nu
+        )
+        base_service = mean_service_time(curves_at, weights, eval_nu)
+        occupancy = resident_nu / max(float(resident_limit), 1.0)
+        return resident_nu - arrival_rate_rps * base_service / max(
+            1.0 - occupancy, 1.0e-9
+        )
+
+    # A coarse grid is sufficient for this macro model.  The service curve is
+    # already piecewise smooth, and using a small fixed grid avoids turning a
+    # one-dimensional steady-state calculation into a costly inner solver.
+    grid = np.linspace(0.0, upper, max(20, min(32, resident_limit // 4 + 8)))
+    values = np.asarray([residual_at(value) for value in grid], dtype=float)
+    bracket: tuple[float, float] | None = None
+    for left, right, f_left, f_right in zip(
+        grid[:-1], grid[1:], values[:-1], values[1:]
+    ):
+        if f_left <= 0.0 <= f_right:
+            bracket = (float(left), float(right))
+            break
+
+    if bracket is None:
+        # Preserve finite fallback values for the simulator/optimizer, but
+        # mark the operating point as non-converged so callers can treat it as
+        # unstable rather than plotting it as a physical saturation plateau.
+        batch = float(resident_limit + 1)
+        eval_batch = upper
+        residual = math.inf
+        converged = False
+    else:
+        left, right = bracket
+        f_left = residual_at(left)
+        f_right = residual_at(right)
+        # Linear interpolation on the first stable bracket is consistent with
+        # the deliberately coarse macro abstraction and avoids a second inner
+        # fixed-point iteration.
+        denominator = f_left - f_right
+        fraction = f_left / denominator if abs(denominator) > 1.0e-12 else 0.5
+        batch = left + min(max(fraction, 0.0), 1.0) * (right - left)
+        eval_batch = min(max(1.0, batch), upper)
+        residual = abs(residual_at(batch))
+        converged = True
+    curves, _ = _resident_curves_at_concurrency(
+        model, config, classes, weights, chunk_tokens, eval_batch
+    )
+    occupancy = min(max(0.0, batch), upper) / max(float(resident_limit), 1.0)
+    slowdown = 1.0 / max(1.0 - occupancy, 1.0e-3)
+    return batch, curves, converged, residual, slowdown
+
+
+def _occupancy_ps_capacity(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    chunk_tokens: int,
+    resident_limit: int,
+) -> tuple[float, float]:
+    """Return the stability boundary implied by the occupancy fixed point.
+
+    At a resident population ``nu``, the fixed point implies
+
+        Lambda(nu) = nu (1 - nu/C_run) / S(nu).
+
+    The maximum of this expression is a derived stability boundary, not an
+    independent-server service rate and is not used to scale each request's
+    service time.
+    """
+    if resident_limit < 2 or sum(weights) <= 0.0:
+        return 0.0, 1.0
+    best_rate = 0.0
+    best_nu = 1.0
+    for nu in range(1, resident_limit):
+        curves, _ = _resident_curves_at_concurrency(
+            model, config, classes, weights, chunk_tokens, float(nu)
+        )
+        base_service = mean_service_time(curves, weights, float(nu))
+        rate = nu * (1.0 - nu / float(resident_limit)) / max(
+            base_service, 1.0e-12
+        )
+        if rate > best_rate:
+            best_rate = rate
+            best_nu = float(nu)
+    return best_rate, best_nu
+
+
+def _two_mode_statistics(
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    curves: list,
+    decode_concurrency: float,
+    chunk_tokens: int,
+) -> tuple[float, float, float, float]:
+    """Aggregate prefill chunks and decode tokens at one concurrency.
+
+    Returns ``(mean_prefill_s, mean_decode_iteration_s, mean_chunks,
+    mean_decode_tokens)``.  The prefill stream is weighted by chunks per
+    request; the decode stream is length-biased by decode residence time.  The
+    two streams are therefore retained separately instead of being represented
+    by one request-level batch.
+    """
+    total = sum(weights)
+    if total <= 0.0:
+        return 0.0, 0.0, 0.0, 0.0
+    request_weights = np.asarray(weights, dtype=float) / total
+    chunks = np.asarray(
+        [math.ceil(max(1, int(round(prompt))) / chunk_tokens) for prompt, _ in classes],
+        dtype=float,
+    )
+    decode_tokens = np.asarray(
+        [max(0, int(round(output)) - 1) for _, output in classes],
+        dtype=float,
+    )
+    prefill = np.asarray(
+        [curve.prefill_at(max(1.0, decode_concurrency)) for curve in curves],
+        dtype=float,
+    )
+    decode = np.asarray(
+        [curve.decode_at(max(1.0, decode_concurrency)) for curve in curves],
+        dtype=float,
+    )
+    residence_weights = request_weights * decode
+    residence_total = float(residence_weights.sum())
+    if residence_total <= 1.0e-12:
+        mean_iteration = float(np.dot(request_weights, decode / np.maximum(decode_tokens, 1.0)))
+    else:
+        mean_iteration = float(
+            np.dot(
+                residence_weights,
+                decode / np.maximum(decode_tokens, 1.0),
+            )
+            / residence_total
+        )
+    return (
+        float(np.dot(request_weights, prefill)),
+        mean_iteration,
+        float(np.dot(request_weights, chunks)),
+        float(np.dot(request_weights, decode_tokens)),
+    )
+
+
+def _two_mode_operating_point(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    arrival_rate_rps: float,
+    chunk_tokens: int,
+    resident_limit: int,
+) -> tuple[float, list, bool, float, float]:
+    """Solve the steady state of the prefill and decode streams."""
+    batch = 0.0
+    residual = math.inf
+    converged = False
+    tau_iter = 0.0
+    for _ in range(100):
+        curves, _ = _resident_curves_at_concurrency(
+            model, config, classes, weights, chunk_tokens, max(1.0, batch)
+        )
+        mean_prefill, tau_iter, mean_chunks, mean_decode_tokens = _two_mode_statistics(
+            classes, weights, curves, max(1.0, batch), chunk_tokens
+        )
+        # A prefill iteration already contains the decode work of the active
+        # set.  Only the excess over a decode-only iteration consumes additional
+        # iteration capacity; charging the whole prefill time would count the
+        # shared decode baseline twice.
+        extra_prefill = max(
+            0.0, mean_prefill - mean_chunks * tau_iter
+        )
+        if arrival_rate_rps * extra_prefill >= 1.0:
+            next_tau = math.inf
+        else:
+            next_tau = tau_iter / max(
+                1.0 - arrival_rate_rps * extra_prefill,
+                1.0e-12,
+            )
+        next_batch = (
+            arrival_rate_rps * mean_decode_tokens * next_tau
+            if math.isfinite(next_tau)
+            else math.inf
+        )
+        residual = abs(next_batch - batch)
+        batch = next_batch
+        if not math.isfinite(batch):
+            batch = float(resident_limit + 1)
+            break
+        if residual <= 1.0e-7 * max(1.0, batch):
+            converged = True
+            break
+        if batch > max(1, resident_limit) * 2.0:
+            break
+    curves, _ = _resident_curves_at_concurrency(
+        model, config, classes, weights, chunk_tokens, max(1.0, batch)
+    )
+    return batch, curves, converged, residual, tau_iter
+
+
+def _two_mode_capacity(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    chunk_tokens: int,
+    resident_limit: int,
+) -> tuple[float, float]:
+    """Capacity from separate prefill and decode stability boundaries."""
+    if resident_limit < 1 or sum(weights) <= 0.0:
+        return 0.0, 1.0
+    best_rate = 0.0
+    best_nu = 1.0
+    total_output = sum(
+        weight * max(0, int(round(output)) - 1)
+        for (_, output), weight in zip(classes, weights)
+    ) / sum(weights)
+    for nu in range(1, resident_limit + 1):
+        curves, _ = _resident_curves_at_concurrency(
+            model, config, classes, weights, chunk_tokens, float(nu)
+        )
+        mean_prefill, tau_iter, _, _ = _two_mode_statistics(
+            classes, weights, curves, float(nu), chunk_tokens
+        )
+        mean_chunks = sum(
+            weight * math.ceil(max(1, int(round(prompt))) / chunk_tokens)
+            for (prompt, _), weight in zip(classes, weights)
+        ) / sum(weights)
+        extra_prefill = max(0.0, mean_prefill - mean_chunks * tau_iter)
+        # At concurrency nu, Little's law gives
+        # nu = Lambda * E[O] * tau_iter/(1-Lambda*E_extra).
+        # Solving this relation for Lambda avoids introducing a fitted
+        # congestion coefficient and separates the two workload streams.
+        candidate = nu / max(
+            total_output * tau_iter + nu * extra_prefill,
+            1.0e-12,
+        )
+        if candidate > best_rate:
+            best_rate = candidate
+            best_nu = float(nu)
+    return best_rate, best_nu
+
+
 def evaluate_llm_instance(
     model: ModelSpec,
     config: LLMConfigSpec,
@@ -66,6 +485,7 @@ def evaluate_llm_instance(
     weights: list[float],
     arrival_rate_rps: float,
     chunk_tokens: int,
+    composition_mode: str = "resident",
 ) -> tuple[LLMInstancePerformance, list[LLMClassPerformance]]:
     """Steady-state performance of one LLM instance under mixed call classes.
 
@@ -74,13 +494,10 @@ def evaluate_llm_instance(
     instance runs the fixed deployment configuration in ``config``; only its
     class composition and total offer rate vary.
     """
-    peer_context = mean_decode_context(classes, weights)
-    curves = [
-        service_curve(
-            model, config, prompt, output, chunk_tokens, peer_decode_context=peer_context
+    if composition_mode not in {"arrival", "resident", "occupancy_ps", "two_mode", "macro"}:
+        raise ValueError(
+            "composition_mode must be 'arrival', 'resident', 'occupancy_ps', 'two_mode', or 'macro'"
         )
-        for prompt, output in classes
-    ]
     residency = residency_capacity(
         classes,
         weights,
@@ -88,30 +505,171 @@ def evaluate_llm_instance(
         config.max_num_seqs,
         chunk_tokens,
     )
-    # The steady concurrency follows from Little's law on the same service
-    # curve; the capacity is the best sustained throughput of that curve below
-    # the KV/sequence residency limit.
-    batch, converged, residual = steady_active_concurrency(
-        curves, weights, arrival_rate_rps, residency.capacity
-    )
-    capacity, capacity_concurrency = throughput_capacity(
-        curves, weights, residency.capacity
-    )
+    if composition_mode == "arrival":
+        peer_context = mean_decode_context(classes, weights)
+        curves = _build_llm_curves(
+            model, config, classes, chunk_tokens, peer_context
+        )
+        # Baseline: one representative batch formed from arriving requests.
+        batch, converged, residual = steady_active_concurrency(
+            curves, weights, arrival_rate_rps, residency.capacity
+        )
+        capacity, capacity_concurrency = throughput_capacity(
+            curves, weights, residency.capacity
+        )
+    elif composition_mode == "resident":
+        # Improved one-batch approximation: the batch remains scalar, but its
+        # context is formed from the residence-time-weighted active classes.
+        batch, curves, converged, residual = _resident_operating_point(
+            model,
+            config,
+            classes,
+            weights,
+            arrival_rate_rps,
+            chunk_tokens,
+            residency.capacity,
+        )
+        capacity, capacity_concurrency = _resident_throughput_capacity(
+            model,
+            config,
+            classes,
+            weights,
+            chunk_tokens,
+            residency.capacity,
+        )
+    elif composition_mode == "occupancy_ps":
+        batch, curves, converged, residual, slowdown = _occupancy_ps_operating_point(
+            model,
+            config,
+            classes,
+            weights,
+            arrival_rate_rps,
+            chunk_tokens,
+            residency.capacity,
+        )
+        capacity, capacity_concurrency = _occupancy_ps_capacity(
+            model,
+            config,
+            classes,
+            weights,
+            chunk_tokens,
+            residency.capacity,
+        )
+    elif composition_mode == "macro":
+        curves = []
+        if residency.capacity < 1:
+            batch = 1.0
+            converged = False
+            residual = math.inf
+            capacity = 0.0
+            capacity_concurrency = 1.0
+            macro_state = None
+            macro_wait = math.inf
+        else:
+            execution = IterationCalibration(
+                config.effective_flops,
+                config.effective_bandwidth_bytes_s,
+            )
+            calibration = TwoModeCalibration(decode=execution, mix=execution)
+            capacity, capacity_concurrency = two_mode_capacity(
+                model,
+                calibration,
+                classes,
+                weights,
+                chunk_tokens,
+                config.max_num_batched_tokens,
+                residency.capacity,
+            )
+            macro_state = two_mode_operating_point(
+                model,
+                calibration,
+                classes,
+                weights,
+                arrival_rate_rps,
+                chunk_tokens,
+                config.max_num_batched_tokens,
+                residency.capacity,
+            )
+            macro_wait, _, _ = two_mode_first_admission_wait(
+                macro_state,
+                arrival_rate_rps,
+                sum(
+                    weight * max(1.0, float(prompt))
+                    / math.ceil(max(1.0, float(prompt)) / chunk_tokens)
+                    for (prompt, _), weight in zip(classes, weights)
+                ) / max(sum(weights), 1.0e-12),
+                sum(
+                    weight * math.ceil(max(1.0, float(prompt)) / chunk_tokens)
+                    for (prompt, _), weight in zip(classes, weights)
+                ) / max(sum(weights), 1.0e-12),
+                capacity,
+            )
+            batch = macro_state.decode_concurrency
+            converged = not macro_state.overloaded
+            residual = 0.0
+    else:
+        batch, curves, converged, residual, tau_iter = _two_mode_operating_point(
+            model,
+            config,
+            classes,
+            weights,
+            arrival_rate_rps,
+            chunk_tokens,
+            residency.capacity,
+        )
+        capacity, capacity_concurrency = _two_mode_capacity(
+            model,
+            config,
+            classes,
+            weights,
+            chunk_tokens,
+            residency.capacity,
+        )
     utilization = arrival_rate_rps / capacity if capacity > 0.0 else math.inf
     stable = (
         converged
         and residency.capacity >= 1
-        and batch < residency.capacity
+        and (batch <= residency.capacity if composition_mode == "macro" else batch < residency.capacity)
         and residency.kv_slack > 0.0
         and utilization < 1.0
     )
+    if composition_mode == "macro":
+        if macro_state is None:
+            mean_service = math.inf
+        else:
+            total = max(sum(weights), 1.0e-12)
+            mean_service = sum(
+                weight * (
+                    math.ceil(max(1.0, float(prompt)) / chunk_tokens)
+                    * macro_state.mixed_iteration_s
+                    + max(0, int(round(output)) - 1) * macro_state.mean_iteration_s
+                )
+                for (prompt, output), weight in zip(classes, weights)
+            ) / total
+    elif composition_mode == "two_mode":
+        mean_prefill, tau_iter, _, mean_decode_tokens = _two_mode_statistics(
+            classes, weights, curves, max(1.0, batch), chunk_tokens
+        )
+        mean_service = mean_prefill + mean_decode_tokens * tau_iter
+    elif composition_mode == "occupancy_ps":
+        eval_batch = min(
+            max(1.0, batch),
+            max(1.0, float(residency.capacity) * 0.999),
+        )
+        mean_service = slowdown * mean_service_time(
+            curves, weights, eval_batch
+        )
+    else:
+        mean_service = mean_service_time(
+            curves, weights, max(1.0, batch)
+        )
     instance = LLMInstancePerformance(
         arrival_rate_rps=arrival_rate_rps,
         active_concurrency=batch,
         active_kv_tokens=residency.active_kv_tokens,
         resident_capacity=residency.capacity,
         kv_slack=residency.kv_slack,
-        mean_service_s=mean_service_time(curves, weights, max(1.0, batch)),
+        mean_service_s=mean_service,
         throughput_capacity_rps=capacity,
         capacity_concurrency=capacity_concurrency,
         utilization=utilization,
@@ -119,17 +677,59 @@ def evaluate_llm_instance(
         fixed_point_residual=residual,
     )
     per_class: list[LLMClassPerformance] = []
-    for (_, output), curve in zip(classes, curves):
-        prefill = curve.prefill_at(max(1.0, batch))
-        decode = curve.decode_at(max(1.0, batch))
+    if composition_mode == "two_mode":
+        _, tau_iter, _, _ = _two_mode_statistics(
+            classes, weights, curves, max(1.0, batch), chunk_tokens
+        )
+    for index, (prompt, output) in enumerate(classes):
+        if composition_mode == "macro":
+            count = max(1, round(output))
+            if macro_state is None:
+                prefill = decode = math.inf
+                tbt = math.inf
+            else:
+                prefill = math.ceil(max(1.0, float(prompt)) / chunk_tokens) * macro_state.mixed_iteration_s
+                decode = (count - 1) * macro_state.mean_iteration_s
+                tbt = macro_state.mean_iteration_s if count > 1 else 0.0
+            per_class.append(
+                LLMClassPerformance(
+                    service_s=prefill + decode,
+                    prefill_s=prefill,
+                    decode_s=decode,
+                    ttft_s=macro_wait + prefill,
+                    tbt_s=tbt,
+                    response_s=macro_wait + prefill + decode,
+                )
+            )
+            continue
+        curve = curves[index]
+        eval_batch = min(
+            max(1.0, batch),
+            max(1.0, float(residency.capacity) * 0.999),
+        )
+        if composition_mode == "occupancy_ps":
+            # A newly admitted request contributes its own prefill work;
+            # resident decode work is represented by the shared slowdown.
+            prefill = slowdown * curve.prefill_at(1.0)
+        else:
+            prefill = curve.prefill_at(eval_batch)
         count = max(1, round(output))
+        decode = (
+            (count - 1) * tau_iter
+            if composition_mode == "two_mode"
+            else slowdown * curve.decode_at(eval_batch)
+            if composition_mode == "occupancy_ps"
+            else curve.decode_at(eval_batch)
+        )
         per_class.append(
             LLMClassPerformance(
                 service_s=prefill + decode,
                 prefill_s=prefill,
                 decode_s=decode,
                 ttft_s=prefill,
-                tbt_s=decode / (count - 1) if count > 1 else 0.0,
+                tbt_s=tau_iter if composition_mode == "two_mode" and count > 1 else (
+                    decode / (count - 1) if count > 1 else 0.0
+                ),
                 response_s=prefill + decode,
             )
         )
@@ -239,7 +839,13 @@ class AnalyticalBackend:
                 for key in keys
             ]
             instance, class_performance = evaluate_llm_instance(
-                model, config, call_classes, rates, sum(rates), chunk_tokens
+                model,
+                config,
+                call_classes,
+                rates,
+                sum(rates),
+                chunk_tokens,
+                composition_mode="macro",
             )
             instance_metrics[candidate_id] = instance
             utilization[candidate_id] = instance.utilization

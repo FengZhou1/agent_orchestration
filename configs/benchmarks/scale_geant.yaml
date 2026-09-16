@@ -2,7 +2,7 @@ id: agent-geant-50
 metadata:
   role: scale
   generated_by: scripts/build_benchmark_scenarios.py
-  generated_on: '2026-09-11'
+  generated_on: '2026-09-16'
   seed: 2026
   source_catalog_sha256: 647e3da5d6de2dc5e47f8b47fcf09797753b9d5dd8d7853e9bfc44ed3d748814
   data_sources:
@@ -30,7 +30,6 @@ metadata:
       name: SNDlib 1.0
       url: https://sndlib.put.poznan.pl/networks.overview.action
       role: Abilene and GEANT topology and coordinates
-  preconstructed_workload_source: C:\Users\01\Desktop\agent\experiments\agent_orchestration\data\preconstructed_agent_workloads.yaml
   preconstructed_workload_families:
   - interactive_rag
   - transactional_tool
@@ -42,6 +41,11 @@ metadata:
   - 0.8
   - 0.9
   - 0.95
+  workload_class_count: 50
+  pattern_flow_count: 165
+  pattern_flow_expansion: all probabilistic choices enumerated; parallel chains retained
+    within each flow
+  request_token_budget: 32000
   arrival_process:
     distribution: stationary intensity (mean-field steady state)
     base_total_rate_rps: 0.004
@@ -58,20 +62,35 @@ metadata:
     link_load: Mbit/s
     latency: s
   quality_status: reference values; replace with pinned benchmark runs
-  slo_status: reference thresholds; replace with low-load P95 calibration
+  slo_status: frozen flow-weighted low-load P95 calibration
   cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
   default_workload: preconstructed agent workflow characteristics with a stationary
     arrival intensity
   infrastructure_status: deterministic reference fixture
   stateless_service_status: reference 2--8 request/s/core range
   calibration_inputs: {}
-  preconstructed_workload_path: C:\Users\01\Desktop\agent\experiments\agent_orchestration\data\preconstructed_agent_workloads.yaml
+  preconstructed_workload_path: data/preconstructed_agent_workloads.yaml
   preconstructed_workload_sha256: 1a9be7a459f4bcb056fb02950de68dbd25d699e289bf32b128778939fbe0fd6a
+  slo_calibration:
+    policy: greedy
+    evaluation_periods: 3600
+    calibration_samples: 16
+    seed: 2026
+    low_load_fraction: 0.2
+    low_load_rate_scale: 1.7906250000000001
+    reference_capacity_rps: 0.03581249999999998
+    reference_arrival_scale: 8.953125
+    limiting_resource: llm:qwen3-32b-h20@ch1.ch
+    ttft_multiplier: 1.5
+    tbt_multiplier: 1.25
+    deadline_multiplier: 1.5
+    arrival_process: stationary_intensity
+    source_scenario_sha256: 15899282437c3f5eb23754ffbee9c5d26a3cb8083becb0b9845e62fd3ed3eed1
 simulation:
   slot_seconds: 1.0
   prefill_chunk_tokens: 512
-  overload_delay_s: 60.0
-  deployment_period_slots: 60
+  overload_delay_s: 600.0
+  orchestration_period_s: 60.0
   max_tool_replicas_per_server: 4
 reward:
   cost_weight: 0.25
@@ -1229,8 +1248,8 @@ applications:
     at1.at: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 9.679979243840236
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -1357,8 +1376,8 @@ applications:
     be1.be: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 11.817483578063698
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -1485,8 +1504,8 @@ applications:
     ch1.ch: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 14.764236425705349
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -1613,8 +1632,8 @@ applications:
     cz1.cz: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 18.7758575985548
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -1741,8 +1760,8 @@ applications:
     de1.de: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 23.44109702018356
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -1869,8 +1888,8 @@ applications:
     es1.es: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 9.6894140480872
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -1997,8 +2016,8 @@ applications:
     fr1.fr: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 11.81352639216181
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2125,8 +2144,8 @@ applications:
     gr1.gr: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 14.789776336868831
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2253,8 +2272,8 @@ applications:
     hr1.hr: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 18.777474665457333
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2381,8 +2400,8 @@ applications:
     hu1.hu: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 23.44501077858111
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2509,8 +2528,8 @@ applications:
     ie1.ie: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 9.68607763301948
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2637,8 +2656,8 @@ applications:
     il1.il: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 11.85097068495773
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2765,8 +2784,8 @@ applications:
     it1.it: 7.692307692307693e-05
   slo:
     type: lat
-    ttft_s: 2.0
-    tbt_s: 0.15
+    ttft_s: 14.767989935208984
+    tbt_s: 0.027243642404263784
   quality:
     qwen3-4b: 0.64
     qwen3-8b: 0.72
@@ -2893,7 +2912,7 @@ applications:
     lu1.lu: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 9.482507496638913
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -3064,7 +3083,7 @@ applications:
     nl1.nl: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 12.409324571429536
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -3235,7 +3254,7 @@ applications:
     ny1.ny: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 16.885375396203237
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -3406,7 +3425,7 @@ applications:
     pl1.pl: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 23.699264850715807
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -3577,7 +3596,7 @@ applications:
     pt1.pt: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 30.960164284043
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -3748,7 +3767,7 @@ applications:
     se1.se: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 9.501336867505142
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -3919,7 +3938,7 @@ applications:
     si1.si: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 12.084638224519356
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -4090,7 +4109,7 @@ applications:
     sk1.sk: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 17.16068463878464
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -4261,7 +4280,7 @@ applications:
     uk1.uk: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 23.68824446709528
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -4432,7 +4451,7 @@ applications:
     at1.at: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 30.943301560497726
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -4603,7 +4622,7 @@ applications:
     be1.be: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 9.15415686604882
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -4774,7 +4793,7 @@ applications:
     ch1.ch: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 12.396223019831638
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -4945,7 +4964,7 @@ applications:
     cz1.cz: 7.692307692307693e-05
   slo:
     type: ddl
-    deadline_s: 8.0
+    deadline_s: 17.159768978469657
   quality:
     qwen3-4b: 0.58
     qwen3-8b: 0.68
@@ -5116,9 +5135,9 @@ applications:
     de1.de: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 98.03547276792715
+    tbt_s: 0.027243642404263784
+    deadline_s: 119.25282176598363
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -5196,6 +5215,7 @@ applications:
       qwen3-8b: 128
       qwen3-14b: 128
       qwen3-32b: 128
+    stage_deadline_s: 4.563497819897769
   - id: search_a
     type: tool
     tool: web_search
@@ -5214,6 +5234,7 @@ applications:
       qwen3-8b: 620
       qwen3-14b: 620
       qwen3-32b: 620
+    stage_deadline_s: 29.275529071178727
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -5226,6 +5247,7 @@ applications:
       qwen3-8b: 560
       qwen3-14b: 560
       qwen3-32b: 560
+    stage_deadline_s: 27.697219582363736
   - id: reflection
     type: llm
     prompt_tokens:
@@ -5238,6 +5260,7 @@ applications:
       qwen3-8b: 520
       qwen3-14b: 520
       qwen3-32b: 520
+    stage_deadline_s: 52.01393104567234
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -5256,6 +5279,7 @@ applications:
       qwen3-8b: 720
       qwen3-14b: 720
       qwen3-32b: 720
+    stage_deadline_s: 86.89338914272099
   - id: summary
     type: llm
     prompt_tokens:
@@ -5323,9 +5347,9 @@ applications:
     es1.es: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 124.84429044145946
+    tbt_s: 0.027243642404263784
+    deadline_s: 152.46934390396774
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -5403,6 +5427,7 @@ applications:
       qwen3-8b: 177
       qwen3-14b: 177
       qwen3-32b: 177
+    stage_deadline_s: 6.553681491130174
   - id: search_a
     type: tool
     tool: web_search
@@ -5421,6 +5446,7 @@ applications:
       qwen3-8b: 796
       qwen3-14b: 796
       qwen3-32b: 796
+    stage_deadline_s: 37.78603554677565
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -5433,6 +5459,7 @@ applications:
       qwen3-8b: 726
       qwen3-14b: 726
       qwen3-32b: 726
+    stage_deadline_s: 35.49756958481749
   - id: reflection
     type: llm
     prompt_tokens:
@@ -5445,6 +5472,7 @@ applications:
       qwen3-8b: 677
       qwen3-14b: 677
       qwen3-32b: 677
+    stage_deadline_s: 67.19007080740056
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -5463,6 +5491,7 @@ applications:
       qwen3-8b: 935
       qwen3-14b: 935
       qwen3-32b: 935
+    stage_deadline_s: 111.3977852305013
   - id: summary
     type: llm
     prompt_tokens:
@@ -5530,9 +5559,9 @@ applications:
     fr1.fr: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 165.65450766691723
+    tbt_s: 0.027243642404263784
+    deadline_s: 203.38150372474445
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -5610,6 +5639,7 @@ applications:
       qwen3-8b: 260
       qwen3-14b: 260
       qwen3-32b: 260
+    stage_deadline_s: 9.642664597202561
   - id: search_a
     type: tool
     tool: web_search
@@ -5628,6 +5658,7 @@ applications:
       qwen3-8b: 1070
       qwen3-14b: 1070
       qwen3-32b: 1070
+    stage_deadline_s: 50.59919380395397
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -5640,6 +5671,7 @@ applications:
       qwen3-8b: 988
       qwen3-14b: 988
       qwen3-32b: 988
+    stage_deadline_s: 48.301652155666424
   - id: reflection
     type: llm
     prompt_tokens:
@@ -5652,6 +5684,7 @@ applications:
       qwen3-8b: 924
       qwen3-14b: 924
       qwen3-32b: 924
+    stage_deadline_s: 90.76087402324669
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -5670,6 +5703,7 @@ applications:
       qwen3-8b: 1275
       qwen3-14b: 1275
       qwen3-32b: 1275
+    stage_deadline_s: 149.14985666162303
   - id: summary
     type: llm
     prompt_tokens:
@@ -5737,9 +5771,9 @@ applications:
     gr1.gr: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 217.99458171167856
+    tbt_s: 0.027243642404263784
+    deadline_s: 268.96198790562426
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -5817,6 +5851,7 @@ applications:
       qwen3-8b: 377
       qwen3-14b: 377
       qwen3-32b: 377
+    stage_deadline_s: 13.477369737581405
   - id: search_a
     type: tool
     tool: web_search
@@ -5835,6 +5870,7 @@ applications:
       qwen3-8b: 1422
       qwen3-14b: 1422
       qwen3-32b: 1422
+    stage_deadline_s: 67.09131178876984
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -5847,6 +5883,7 @@ applications:
       qwen3-8b: 1330
       qwen3-14b: 1330
       qwen3-32b: 1330
+    stage_deadline_s: 64.85007919592312
   - id: reflection
     type: llm
     prompt_tokens:
@@ -5859,6 +5896,7 @@ applications:
       qwen3-8b: 1248
       qwen3-14b: 1248
       qwen3-32b: 1248
+    stage_deadline_s: 120.91118228917632
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -5877,6 +5915,7 @@ applications:
       qwen3-8b: 1719
       qwen3-14b: 1719
       qwen3-32b: 1719
+    stage_deadline_s: 197.6479052434644
   - id: summary
     type: llm
     prompt_tokens:
@@ -5944,9 +5983,9 @@ applications:
     hr1.hr: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 273.8724923848049
+    tbt_s: 0.027243642404263784
+    deadline_s: 339.22465906304274
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -6024,6 +6063,7 @@ applications:
       qwen3-8b: 512
       qwen3-14b: 512
       qwen3-32b: 512
+    stage_deadline_s: 18.2709967200715
   - id: search_a
     type: tool
     tool: web_search
@@ -6042,6 +6082,7 @@ applications:
       qwen3-8b: 1800
       qwen3-14b: 1800
       qwen3-32b: 1800
+    stage_deadline_s: 85.775586023002
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -6054,6 +6095,7 @@ applications:
       qwen3-8b: 1700
       qwen3-14b: 1700
       qwen3-32b: 1700
+    stage_deadline_s: 82.88958169878235
   - id: reflection
     type: llm
     prompt_tokens:
@@ -6066,6 +6108,7 @@ applications:
       qwen3-8b: 1600
       qwen3-14b: 1600
       qwen3-32b: 1600
+    stage_deadline_s: 154.55226595359753
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -6075,22 +6118,23 @@ applications:
   - id: refinement
     type: llm
     prompt_tokens:
-      qwen3-4b: 30000
-      qwen3-8b: 30000
-      qwen3-14b: 30000
-      qwen3-32b: 30000
+      qwen3-4b: 29800
+      qwen3-8b: 29800
+      qwen3-14b: 29800
+      qwen3-32b: 29800
     output_tokens:
       qwen3-4b: 2200
       qwen3-8b: 2200
       qwen3-14b: 2200
       qwen3-32b: 2200
+    stage_deadline_s: 251.22957971083872
   - id: summary
     type: llm
     prompt_tokens:
-      qwen3-4b: 32000
-      qwen3-8b: 32000
-      qwen3-14b: 32000
-      qwen3-32b: 32000
+      qwen3-4b: 30000
+      qwen3-8b: 30000
+      qwen3-14b: 30000
+      qwen3-32b: 30000
     output_tokens:
       qwen3-4b: 2000
       qwen3-8b: 2000
@@ -6151,9 +6195,9 @@ applications:
     hu1.hu: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 98.0393865263247
+    tbt_s: 0.027243642404263784
+    deadline_s: 119.25689651459845
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -6231,6 +6275,7 @@ applications:
       qwen3-8b: 128
       qwen3-14b: 128
       qwen3-32b: 128
+    stage_deadline_s: 4.565512578295323
   - id: search_a
     type: tool
     tool: web_search
@@ -6249,6 +6294,7 @@ applications:
       qwen3-8b: 620
       qwen3-14b: 620
       qwen3-32b: 620
+    stage_deadline_s: 29.27754382957628
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -6261,6 +6307,7 @@ applications:
       qwen3-8b: 560
       qwen3-14b: 560
       qwen3-32b: 560
+    stage_deadline_s: 27.699234340761294
   - id: reflection
     type: llm
     prompt_tokens:
@@ -6273,6 +6320,7 @@ applications:
       qwen3-8b: 520
       qwen3-14b: 520
       qwen3-32b: 520
+    stage_deadline_s: 52.015945804069894
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -6291,6 +6339,7 @@ applications:
       qwen3-8b: 720
       qwen3-14b: 720
       qwen3-32b: 720
+    stage_deadline_s: 86.89540390111854
   - id: summary
     type: llm
     prompt_tokens:
@@ -6358,9 +6407,9 @@ applications:
     ie1.ie: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 124.84095402639176
+    tbt_s: 0.027243642404263784
+    deadline_s: 152.4660073224917
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -6438,6 +6487,7 @@ applications:
       qwen3-8b: 177
       qwen3-14b: 177
       qwen3-32b: 177
+    stage_deadline_s: 6.552013156062456
   - id: search_a
     type: tool
     tool: web_search
@@ -6456,6 +6506,7 @@ applications:
       qwen3-8b: 796
       qwen3-14b: 796
       qwen3-32b: 796
+    stage_deadline_s: 37.78436721170794
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -6468,6 +6519,7 @@ applications:
       qwen3-8b: 726
       qwen3-14b: 726
       qwen3-32b: 726
+    stage_deadline_s: 35.49590124974978
   - id: reflection
     type: llm
     prompt_tokens:
@@ -6480,6 +6532,7 @@ applications:
       qwen3-8b: 677
       qwen3-14b: 677
       qwen3-32b: 677
+    stage_deadline_s: 67.18840247233285
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -6498,6 +6551,7 @@ applications:
       qwen3-8b: 935
       qwen3-14b: 935
       qwen3-32b: 935
+    stage_deadline_s: 111.3961168954336
   - id: summary
     type: llm
     prompt_tokens:
@@ -6565,9 +6619,9 @@ applications:
     il1.il: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 165.69195195971315
+    tbt_s: 0.027243642404263784
+    deadline_s: 203.41894742612266
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -6645,6 +6699,7 @@ applications:
       qwen3-8b: 260
       qwen3-14b: 260
       qwen3-32b: 260
+    stage_deadline_s: 9.661386429998482
   - id: search_a
     type: tool
     tool: web_search
@@ -6663,6 +6718,7 @@ applications:
       qwen3-8b: 1070
       qwen3-14b: 1070
       qwen3-32b: 1070
+    stage_deadline_s: 50.6179156367499
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -6675,6 +6731,7 @@ applications:
       qwen3-8b: 988
       qwen3-14b: 988
       qwen3-32b: 988
+    stage_deadline_s: 48.320373988462336
   - id: reflection
     type: llm
     prompt_tokens:
@@ -6687,6 +6744,7 @@ applications:
       qwen3-8b: 924
       qwen3-14b: 924
       qwen3-32b: 924
+    stage_deadline_s: 90.77959585604262
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -6705,6 +6763,7 @@ applications:
       qwen3-8b: 1275
       qwen3-14b: 1275
       qwen3-32b: 1275
+    stage_deadline_s: 149.16857849441897
   - id: summary
     type: llm
     prompt_tokens:
@@ -6772,9 +6831,9 @@ applications:
     it1.it: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 217.9727953100188
+    tbt_s: 0.027243642404263784
+    deadline_s: 268.9402017239098
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -6852,6 +6911,7 @@ applications:
       qwen3-8b: 377
       qwen3-14b: 377
       qwen3-32b: 377
+    stage_deadline_s: 13.46647665592156
   - id: search_a
     type: tool
     tool: web_search
@@ -6870,6 +6930,7 @@ applications:
       qwen3-8b: 1422
       qwen3-14b: 1422
       qwen3-32b: 1422
+    stage_deadline_s: 67.08041870711
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -6882,6 +6943,7 @@ applications:
       qwen3-8b: 1330
       qwen3-14b: 1330
       qwen3-32b: 1330
+    stage_deadline_s: 64.83918611426328
   - id: reflection
     type: llm
     prompt_tokens:
@@ -6894,6 +6956,7 @@ applications:
       qwen3-8b: 1248
       qwen3-14b: 1248
       qwen3-32b: 1248
+    stage_deadline_s: 120.9002892075165
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -6912,6 +6975,7 @@ applications:
       qwen3-8b: 1719
       qwen3-14b: 1719
       qwen3-32b: 1719
+    stage_deadline_s: 197.6370121618046
   - id: summary
     type: llm
     prompt_tokens:
@@ -6979,9 +7043,9 @@ applications:
     lu1.lu: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 273.8636352144121
+    tbt_s: 0.027243642404263784
+    deadline_s: 339.215684588091
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -7059,6 +7123,7 @@ applications:
       qwen3-8b: 512
       qwen3-14b: 512
       qwen3-32b: 512
+    stage_deadline_s: 18.266525869678702
   - id: search_a
     type: tool
     tool: web_search
@@ -7077,6 +7142,7 @@ applications:
       qwen3-8b: 1800
       qwen3-14b: 1800
       qwen3-32b: 1800
+    stage_deadline_s: 85.77111517260921
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -7089,6 +7155,7 @@ applications:
       qwen3-8b: 1700
       qwen3-14b: 1700
       qwen3-32b: 1700
+    stage_deadline_s: 82.88511084838956
   - id: reflection
     type: llm
     prompt_tokens:
@@ -7101,6 +7168,7 @@ applications:
       qwen3-8b: 1600
       qwen3-14b: 1600
       qwen3-32b: 1600
+    stage_deadline_s: 154.54779510320472
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -7110,22 +7178,23 @@ applications:
   - id: refinement
     type: llm
     prompt_tokens:
-      qwen3-4b: 30000
-      qwen3-8b: 30000
-      qwen3-14b: 30000
-      qwen3-32b: 30000
+      qwen3-4b: 29800
+      qwen3-8b: 29800
+      qwen3-14b: 29800
+      qwen3-32b: 29800
     output_tokens:
       qwen3-4b: 2200
       qwen3-8b: 2200
       qwen3-14b: 2200
       qwen3-32b: 2200
+    stage_deadline_s: 251.22510886044589
   - id: summary
     type: llm
     prompt_tokens:
-      qwen3-4b: 32000
-      qwen3-8b: 32000
-      qwen3-14b: 32000
-      qwen3-32b: 32000
+      qwen3-4b: 30000
+      qwen3-8b: 30000
+      qwen3-14b: 30000
+      qwen3-32b: 30000
     output_tokens:
       qwen3-4b: 2000
       qwen3-8b: 2000
@@ -7186,9 +7255,9 @@ applications:
     nl1.nl: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 98.03704706658485
+    tbt_s: 0.027243642404263784
+    deadline_s: 119.25439565150782
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -7266,6 +7335,7 @@ applications:
       qwen3-8b: 128
       qwen3-14b: 128
       qwen3-32b: 128
+    stage_deadline_s: 4.564284698555486
   - id: search_a
     type: tool
     tool: web_search
@@ -7284,6 +7354,7 @@ applications:
       qwen3-8b: 620
       qwen3-14b: 620
       qwen3-32b: 620
+    stage_deadline_s: 29.276315949836444
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -7296,6 +7367,7 @@ applications:
       qwen3-8b: 560
       qwen3-14b: 560
       qwen3-32b: 560
+    stage_deadline_s: 27.698006461021457
   - id: reflection
     type: llm
     prompt_tokens:
@@ -7308,6 +7380,7 @@ applications:
       qwen3-8b: 520
       qwen3-14b: 520
       qwen3-32b: 520
+    stage_deadline_s: 52.01471792433006
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -7326,6 +7399,7 @@ applications:
       qwen3-8b: 720
       qwen3-14b: 720
       qwen3-32b: 720
+    stage_deadline_s: 86.89417602137871
   - id: summary
     type: llm
     prompt_tokens:
@@ -7393,9 +7467,9 @@ applications:
     ny1.ny: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 4.0
-    tbt_s: 0.2
-    deadline_s: 25.0
+    ttft_s: 124.89401309120058
+    tbt_s: 0.027243642404263784
+    deadline_s: 152.51906568243209
   quality:
     qwen3-4b: 0.48
     qwen3-8b: 0.62
@@ -7473,6 +7547,7 @@ applications:
       qwen3-8b: 177
       qwen3-14b: 177
       qwen3-32b: 177
+    stage_deadline_s: 6.578542380871292
   - id: search_a
     type: tool
     tool: web_search
@@ -7491,6 +7566,7 @@ applications:
       qwen3-8b: 796
       qwen3-14b: 796
       qwen3-32b: 796
+    stage_deadline_s: 37.81089643651677
   - id: draft_b
     type: llm
     prompt_tokens:
@@ -7503,6 +7579,7 @@ applications:
       qwen3-8b: 726
       qwen3-14b: 726
       qwen3-32b: 726
+    stage_deadline_s: 35.52243047455861
   - id: reflection
     type: llm
     prompt_tokens:
@@ -7515,6 +7592,7 @@ applications:
       qwen3-8b: 677
       qwen3-14b: 677
       qwen3-32b: 677
+    stage_deadline_s: 67.2149316971417
   - id: targeted_search_a
     type: tool
     tool: web_search
@@ -7533,6 +7611,7 @@ applications:
       qwen3-8b: 935
       qwen3-14b: 935
       qwen3-32b: 935
+    stage_deadline_s: 111.4226461202424
   - id: summary
     type: llm
     prompt_tokens:
@@ -7600,9 +7679,9 @@ applications:
     pl1.pl: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 154.30194248276234
+    tbt_s: 0.027243642404263784
+    deadline_s: 182.05776552110885
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -7684,6 +7763,7 @@ applications:
       qwen3-8b: 700
       qwen3-14b: 700
       qwen3-32b: 700
+    stage_deadline_s: 24.0353951634825
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -7702,6 +7782,7 @@ applications:
       qwen3-8b: 900
       qwen3-14b: 900
       qwen3-32b: 900
+    stage_deadline_s: 57.07716285076206
   - id: edit_first
     type: tool
     tool: file_processing
@@ -7720,6 +7801,7 @@ applications:
       qwen3-8b: 800
       qwen3-14b: 800
       qwen3-32b: 800
+    stage_deadline_s: 93.39757923098082
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -7735,6 +7817,7 @@ applications:
       qwen3-8b: 1100
       qwen3-14b: 1100
       qwen3-32b: 1100
+    stage_deadline_s: 139.1095453239557
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -7806,9 +7889,9 @@ applications:
     pt1.pt: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 190.2141447106793
+    tbt_s: 0.027243642404263784
+    deadline_s: 225.61998219817372
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -7890,6 +7973,7 @@ applications:
       qwen3-8b: 873
       qwen3-14b: 873
       qwen3-32b: 873
+    stage_deadline_s: 30.077809820132828
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -7908,6 +7992,7 @@ applications:
       qwen3-8b: 1132
       qwen3-14b: 1132
       qwen3-32b: 1132
+    stage_deadline_s: 71.47067308134342
   - id: edit_first
     type: tool
     tool: file_processing
@@ -7926,6 +8011,7 @@ applications:
       qwen3-8b: 1003
       qwen3-14b: 1003
       qwen3-32b: 1003
+    stage_deadline_s: 115.96057180840884
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -7941,6 +8027,7 @@ applications:
       qwen3-8b: 1391
       qwen3-14b: 1391
       qwen3-32b: 1391
+    stage_deadline_s: 173.10218165041263
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -8012,9 +8099,9 @@ applications:
     se1.se: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 246.18198094549314
+    tbt_s: 0.027243642404263784
+    deadline_s: 293.42245692279073
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -8096,6 +8183,7 @@ applications:
       qwen3-8b: 1135
       qwen3-14b: 1135
       qwen3-32b: 1135
+    stage_deadline_s: 38.643287707999264
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -8114,6 +8202,7 @@ applications:
       qwen3-8b: 1487
       qwen3-14b: 1487
       qwen3-32b: 1487
+    stage_deadline_s: 93.17487369059424
   - id: edit_first
     type: tool
     tool: file_processing
@@ -8132,6 +8221,7 @@ applications:
       qwen3-8b: 1311
       qwen3-14b: 1311
       qwen3-32b: 1311
+    stage_deadline_s: 150.41665200031954
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -8147,6 +8237,7 @@ applications:
       qwen3-8b: 1838
       qwen3-14b: 1838
       qwen3-32b: 1838
+    stage_deadline_s: 225.62084650659844
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -8218,9 +8309,9 @@ applications:
     si1.si: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 314.4341896887854
+    tbt_s: 0.027243642404263784
+    deadline_s: 376.7786583166892
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -8302,6 +8393,7 @@ applications:
       qwen3-8b: 1461
       qwen3-14b: 1461
       qwen3-32b: 1461
+    stage_deadline_s: 49.67778941211341
   - id: read_repository
     type: tool
     tool: knowledge_graph
@@ -8320,6 +8412,7 @@ applications:
       qwen3-8b: 1933
       qwen3-14b: 1933
       qwen3-32b: 1933
+    stage_deadline_s: 120.3347628331509
   - id: edit_first
     type: tool
     tool: file_processing
@@ -8338,6 +8431,7 @@ applications:
       qwen3-8b: 1697
       qwen3-14b: 1697
       qwen3-32b: 1697
+    stage_deadline_s: 192.8784256545752
   - id: read_test_logs
     type: tool
     tool: knowledge_graph
@@ -8353,6 +8447,7 @@ applications:
       qwen3-8b: 2404
       qwen3-14b: 2404
       qwen3-32b: 2404
+    stage_deadline_s: 290.43048869126267
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -8424,9 +8519,9 @@ applications:
     sk1.sk: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 383.77002363924316
+    tbt_s: 0.027243642404263784
+    deadline_s: 462.19918260374345
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -8508,6 +8603,7 @@ applications:
       qwen3-8b: 1800
       qwen3-14b: 1800
       qwen3-32b: 1800
+    stage_deadline_s: 61.14482058642332
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -8526,6 +8622,7 @@ applications:
       qwen3-8b: 2400
       qwen3-14b: 2400
       qwen3-32b: 2400
+    stage_deadline_s: 148.97363606575772
   - id: edit_first
     type: tool
     tool: file_processing
@@ -8544,21 +8641,23 @@ applications:
       qwen3-8b: 2100
       qwen3-14b: 2100
       qwen3-32b: 2100
+    stage_deadline_s: 237.75818646822003
   - id: read_test_logs
     type: tool
     tool: information_retrieval
   - id: debug
     type: llm
     prompt_tokens:
-      qwen3-4b: 30000
-      qwen3-8b: 30000
-      qwen3-14b: 30000
-      qwen3-32b: 30000
+      qwen3-4b: 29000
+      qwen3-8b: 29000
+      qwen3-14b: 29000
+      qwen3-32b: 29000
     output_tokens:
       qwen3-4b: 3000
       qwen3-8b: 3000
       qwen3-14b: 3000
       qwen3-32b: 3000
+    stage_deadline_s: 357.84910570026045
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -8568,10 +8667,10 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen3-4b: 32000
-      qwen3-8b: 32000
-      qwen3-14b: 32000
-      qwen3-32b: 32000
+      qwen3-4b: 29600
+      qwen3-8b: 29600
+      qwen3-14b: 29600
+      qwen3-32b: 29600
     output_tokens:
       qwen3-4b: 2400
       qwen3-8b: 2400
@@ -8630,9 +8729,9 @@ applications:
     uk1.uk: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 154.29092225828583
+    tbt_s: 0.027243642404263784
+    deadline_s: 182.04674513748833
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -8714,6 +8813,7 @@ applications:
       qwen3-8b: 700
       qwen3-14b: 700
       qwen3-32b: 700
+    stage_deadline_s: 24.029884879006012
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -8732,6 +8832,7 @@ applications:
       qwen3-8b: 900
       qwen3-14b: 900
       qwen3-32b: 900
+    stage_deadline_s: 57.071652566285564
   - id: edit_first
     type: tool
     tool: file_processing
@@ -8750,6 +8851,7 @@ applications:
       qwen3-8b: 800
       qwen3-14b: 800
       qwen3-32b: 800
+    stage_deadline_s: 93.39206894650432
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -8765,6 +8867,7 @@ applications:
       qwen3-8b: 1100
       qwen3-14b: 1100
       qwen3-32b: 1100
+    stage_deadline_s: 139.10403503947921
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -8836,9 +8939,9 @@ applications:
     at1.at: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 190.19716442205478
+    tbt_s: 0.027243642404263784
+    deadline_s: 225.6031194746284
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -8920,6 +9023,7 @@ applications:
       qwen3-8b: 873
       qwen3-14b: 873
       qwen3-32b: 873
+    stage_deadline_s: 30.06936197150833
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -8938,6 +9042,7 @@ applications:
       qwen3-8b: 1132
       qwen3-14b: 1132
       qwen3-32b: 1132
+    stage_deadline_s: 71.46222523271892
   - id: edit_first
     type: tool
     tool: file_processing
@@ -8956,6 +9061,7 @@ applications:
       qwen3-8b: 1003
       qwen3-14b: 1003
       qwen3-32b: 1003
+    stage_deadline_s: 115.95212395978434
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -8971,6 +9077,7 @@ applications:
       qwen3-8b: 1391
       qwen3-14b: 1391
       qwen3-32b: 1391
+    stage_deadline_s: 173.09373380178812
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -9042,9 +9149,9 @@ applications:
     be1.be: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 246.18612460239245
+    tbt_s: 0.027243642404263784
+    deadline_s: 293.4266005173034
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -9126,6 +9233,7 @@ applications:
       qwen3-8b: 1135
       qwen3-14b: 1135
       qwen3-32b: 1135
+    stage_deadline_s: 38.63370045187342
   - id: read_repository
     type: tool
     tool: knowledge_graph
@@ -9144,6 +9252,7 @@ applications:
       qwen3-8b: 1487
       qwen3-14b: 1487
       qwen3-32b: 1487
+    stage_deadline_s: 93.17694540098094
   - id: edit_first
     type: tool
     tool: file_processing
@@ -9162,6 +9271,7 @@ applications:
       qwen3-8b: 1311
       qwen3-14b: 1311
       qwen3-32b: 1311
+    stage_deadline_s: 150.41872371070625
   - id: read_test_logs
     type: tool
     tool: knowledge_graph
@@ -9177,6 +9287,7 @@ applications:
       qwen3-8b: 1838
       qwen3-14b: 1838
       qwen3-32b: 1838
+    stage_deadline_s: 225.6345771834977
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -9248,9 +9359,9 @@ applications:
     ch1.ch: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 314.3945682381152
+    tbt_s: 0.027243642404263784
+    deadline_s: 376.7389195160324
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -9332,6 +9443,7 @@ applications:
       qwen3-8b: 1461
       qwen3-14b: 1461
       qwen3-32b: 1461
+    stage_deadline_s: 49.669595334468255
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -9350,6 +9462,7 @@ applications:
       qwen3-8b: 1933
       qwen3-14b: 1933
       qwen3-32b: 1933
+    stage_deadline_s: 120.31490978899322
   - id: edit_first
     type: tool
     tool: file_processing
@@ -9368,6 +9481,7 @@ applications:
       qwen3-8b: 1697
       qwen3-14b: 1697
       qwen3-32b: 1697
+    stage_deadline_s: 192.85857261041753
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -9383,6 +9497,7 @@ applications:
       qwen3-8b: 2404
       qwen3-14b: 2404
       qwen3-32b: 2404
+    stage_deadline_s: 290.39897668059245
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -9454,9 +9569,9 @@ applications:
     cz1.cz: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 383.76926893460296
+    tbt_s: 0.027243642404263784
+    deadline_s: 462.1982669434284
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -9538,6 +9653,7 @@ applications:
       qwen3-8b: 1800
       qwen3-14b: 1800
       qwen3-32b: 1800
+    stage_deadline_s: 61.14438538178308
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -9556,6 +9672,7 @@ applications:
       qwen3-8b: 2400
       qwen3-14b: 2400
       qwen3-32b: 2400
+    stage_deadline_s: 148.9732008611175
   - id: edit_first
     type: tool
     tool: file_processing
@@ -9574,21 +9691,23 @@ applications:
       qwen3-8b: 2100
       qwen3-14b: 2100
       qwen3-32b: 2100
+    stage_deadline_s: 237.7577512635798
   - id: read_test_logs
     type: tool
     tool: information_retrieval
   - id: debug
     type: llm
     prompt_tokens:
-      qwen3-4b: 30000
-      qwen3-8b: 30000
-      qwen3-14b: 30000
-      qwen3-32b: 30000
+      qwen3-4b: 29000
+      qwen3-8b: 29000
+      qwen3-14b: 29000
+      qwen3-32b: 29000
     output_tokens:
       qwen3-4b: 3000
       qwen3-8b: 3000
       qwen3-14b: 3000
       qwen3-32b: 3000
+    stage_deadline_s: 357.84867049562024
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -9598,10 +9717,10 @@ applications:
   - id: final
     type: llm
     prompt_tokens:
-      qwen3-4b: 32000
-      qwen3-8b: 32000
-      qwen3-14b: 32000
-      qwen3-32b: 32000
+      qwen3-4b: 29600
+      qwen3-8b: 29600
+      qwen3-14b: 29600
+      qwen3-32b: 29600
     output_tokens:
       qwen3-4b: 2400
       qwen3-8b: 2400
@@ -9660,9 +9779,9 @@ applications:
     de1.de: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 154.2911510740483
+    tbt_s: 0.027243642404263784
+    deadline_s: 182.04697424912808
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -9744,6 +9863,7 @@ applications:
       qwen3-8b: 700
       qwen3-14b: 700
       qwen3-32b: 700
+    stage_deadline_s: 24.029999494768436
   - id: read_repository
     type: tool
     tool: information_retrieval
@@ -9762,6 +9882,7 @@ applications:
       qwen3-8b: 900
       qwen3-14b: 900
       qwen3-32b: 900
+    stage_deadline_s: 57.07176718204799
   - id: edit_first
     type: tool
     tool: file_processing
@@ -9780,6 +9901,7 @@ applications:
       qwen3-8b: 800
       qwen3-14b: 800
       qwen3-32b: 800
+    stage_deadline_s: 93.39218356226675
   - id: read_test_logs
     type: tool
     tool: information_retrieval
@@ -9795,6 +9917,7 @@ applications:
       qwen3-8b: 1100
       qwen3-14b: 1100
       qwen3-32b: 1100
+    stage_deadline_s: 139.10414965524163
   - id: edit_retry
     type: tool
     tool: file_processing
@@ -9866,9 +9989,9 @@ applications:
     es1.es: 8.333333333333333e-05
   slo:
     type: cmp
-    ttft_s: 5.0
-    tbt_s: 0.25
-    deadline_s: 40.0
+    ttft_s: 190.22991715932687
+    tbt_s: 0.027243642404263784
+    deadline_s: 225.6357548924929
   quality:
     qwen3-4b: 0.4
     qwen3-8b: 0.55
@@ -9950,6 +10073,7 @@ applications:
       qwen3-8b: 873
       qwen3-14b: 873
       qwen3-32b: 873
+    stage_deadline_s: 30.07403715575529
   - id: read_repository
     type: tool
     tool: knowledge_graph
@@ -9968,6 +10092,7 @@ applications:
       qwen3-8b: 1132
       qwen3-14b: 1132
       qwen3-32b: 1132
+    stage_deadline_s: 71.47855938347844
   - id: edit_first
     type: tool
     tool: file_processing
@@ -9986,6 +10111,7 @@ applications:
       qwen3-8b: 1003
       qwen3-14b: 1003
       qwen3-32b: 1003
+    stage_deadline_s: 115.96845811054386
   - id: read_test_logs
     type: tool
     tool: knowledge_graph
@@ -10001,6 +10127,7 @@ applications:
       qwen3-8b: 1391
       qwen3-14b: 1391
       qwen3-32b: 1391
+    stage_deadline_s: 173.12172691906022
   - id: edit_retry
     type: tool
     tool: file_processing

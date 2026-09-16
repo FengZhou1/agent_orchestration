@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from runpy import run_path
 
@@ -22,8 +24,13 @@ def test_checked_in_benchmark_scenarios_match_protocol():
     assert len(main.tools) == 6
     assert len(scale.tools) == 8
     assert main.simulation.slot_seconds == 1.0
-    assert main.simulation.deployment_period_slots == 60
+    assert main.simulation.orchestration_period_s == 60.0
+    assert main.simulation.overload_delay_s == 600.0
     assert main.metadata["units"]["link_load"] == "Mbit/s"
+    assert main.metadata["workload_class_count"] == 20
+    assert main.metadata["pattern_flow_count"] == 65
+    assert main.metadata["request_token_budget"] == 32000
+    assert not Path(main.metadata["preconstructed_workload_path"]).is_absolute()
 
 
 def test_main_scenario_has_balanced_families_and_length_classes():
@@ -136,6 +143,23 @@ def test_vllm_configuration_is_fixed_and_gpu_compatible():
         assert config.chunked_prefill
         assert not config.prefix_cache
         assert config.kv_token_capacity >= config.max_model_len
+
+
+def test_application_tokens_keep_engine_margin():
+    scenario = ScenarioLoader.load("configs/benchmarks/main_abilene.yaml")
+    budget = scenario.metadata["request_token_budget"]
+    for application in scenario.applications.values():
+        for node in application.nodes.values():
+            for model in node.prompt_tokens:
+                assert node.prompt_tokens[model] + node.output_tokens[model] <= budget
+
+
+def test_load_levels_are_calibrated_from_checked_in_main_scenario():
+    scenario_path = Path("configs/benchmarks/main_abilene.yaml")
+    payload = json.loads(Path("data/processed/load_levels.json").read_text(encoding="utf-8"))
+    assert payload["scenario"] == "configs/benchmarks/main_abilene.yaml"
+    assert payload["scenario_hash"] == hashlib.sha256(scenario_path.read_bytes()).hexdigest()
+    assert [level["target_load"] for level in payload["levels"]] == [0.4, 0.65, 0.85, 1.05]
 
 
 def test_main_gpu_mix_and_model_deployment_coverage():

@@ -6,7 +6,9 @@ import pytest
 from agent_orch.performance.llm import (
     decode_work,
     mean_service_time,
+    mean_decode_context,
     prefill_work,
+    resident_decode_context,
     roofline_time,
     service_curve,
     service_demand,
@@ -14,8 +16,9 @@ from agent_orch.performance.llm import (
     throughput_capacity,
 )
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.performance.analytical import evaluate_llm_instance
 
-SCENARIO = "configs/benchmarks/main_abilene_revised.yaml"
+SCENARIO = "configs/benchmarks/main_abilene.yaml"
 CLASSES = [(93, 318), (1300, 4458), (1911, 534), (12223, 3541)]
 
 
@@ -112,6 +115,32 @@ def test_steady_concurrency_solves_littles_law_below_the_residency_limit():
 def test_zero_rate_does_not_create_llm_instance_state():
     scenario = ScenarioLoader.load(SCENARIO)
     assert all(rate >= 0.0 for app in scenario.applications.values() for rate in app.ingress_rates.values())
+
+
+def test_active_decode_context_is_length_biased_by_residence_time():
+    _, config, model = _instance("qwen3-14b-h20")
+    classes = [(128, 64), (128, 2048)]
+    weights = [1.0, 1.0]
+    arrival_context = mean_decode_context(classes, weights)
+    curves = [service_curve(model, config, prompt, output, 512, arrival_context)
+              for prompt, output in classes]
+    resident_context = resident_decode_context(classes, weights, curves, 16.0)
+    assert resident_context > arrival_context
+
+
+def test_two_mode_composition_model_is_finite_and_distinguishes_streams():
+    _, config, model = _instance("qwen3-14b-h20")
+    classes = [(2048, 64), (128, 2048)]
+    weights = [1.0, 1.0]
+    arrival, _ = evaluate_llm_instance(
+        model, config, classes, weights, 0.2, 512, composition_mode="arrival"
+    )
+    two_mode, _ = evaluate_llm_instance(
+        model, config, classes, weights, 0.2, 512, composition_mode="two_mode"
+    )
+    assert math.isfinite(two_mode.mean_service_s)
+    assert math.isfinite(two_mode.throughput_capacity_rps)
+    assert two_mode.mean_service_s != pytest.approx(arrival.mean_service_s)
 
 
 @pytest.mark.parametrize("output_tokens", [1, 2, 128])

@@ -289,7 +289,10 @@ def read_simulator_output(path: str | Path) -> pd.DataFrame:
     )
     if "num_preemptions" in frame.columns:
         result["preemptions"] = frame["num_preemptions"].astype(int)
-    result["prefill_s"] = result["ttft_s"] - result["waiting_s"]
+    # TTFT contains only the initial admission delay.  Any later time spent
+    # outside the running set occurs after the first token and must not be
+    # subtracted from the prefill interval.
+    result["prefill_s"] = result["ttft_s"] - result["first_waiting_s"]
     result["decode_s"] = result["response_s"] - result["ttft_s"]
     result["service_s"] = result["response_s"] - result["waiting_s"]
     return result

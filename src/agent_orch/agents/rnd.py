@@ -34,7 +34,7 @@ class RNDModule(nn.Module):
 
 
 class PhaseRunningMoments:
-    """Independent scalar running moments for deployment and routing rewards."""
+    """Independent scalar running moments for the two deployment pools."""
 
     def __init__(self, phases: int = 2) -> None:
         self.count = np.zeros(phases, dtype=np.float64)

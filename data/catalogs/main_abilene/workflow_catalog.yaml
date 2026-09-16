@@ -1,7 +1,7 @@
 metadata:
   role: main
   generated_by: scripts/build_benchmark_scenarios.py
-  generated_on: '2026-09-11'
+  generated_on: '2026-09-16'
   seed: 2026
   source_catalog_sha256: 647e3da5d6de2dc5e47f8b47fcf09797753b9d5dd8d7853e9bfc44ed3d748814
   data_sources:
@@ -29,7 +29,6 @@ metadata:
       name: SNDlib 1.0
       url: https://sndlib.put.poznan.pl/networks.overview.action
       role: Abilene and GEANT topology and coordinates
-  preconstructed_workload_source: C:\Users\01\Desktop\agent\experiments\agent_orchestration\data\preconstructed_agent_workloads.yaml
   preconstructed_workload_families:
   - interactive_rag
   - transactional_tool
@@ -41,14 +40,20 @@ metadata:
   - 0.8
   - 0.9
   - 0.95
+  workload_class_count: 20
+  pattern_flow_count: 65
+  pattern_flow_expansion: all probabilistic choices enumerated; parallel chains retained
+    within each flow
+  request_token_budget: 32000
   arrival_process:
-    distribution: stationary Poisson
+    distribution: stationary intensity (mean-field steady state)
     base_total_rate_rps: 0.004
-    load_scales:
-    - 0.5
-    - 1.0
-    - 2.0
-    - 3.0
+    load_levels:
+    - 0.4
+    - 0.65
+    - 0.85
+    - 1.05
+    load_basis: reference stable capacity from calibrate_load_levels.py
   units:
     arrival_rate: request/s
     service_rate: request/s
@@ -56,15 +61,30 @@ metadata:
     link_load: Mbit/s
     latency: s
   quality_status: reference values; replace with pinned benchmark runs
-  slo_status: reference thresholds; replace with low-load P95 calibration
+  slo_status: frozen flow-weighted low-load P95 calibration
   cost_normalization: A10-hour=1, L20-hour=2, H20-hour=4
-  default_workload: preconstructed agent workflow characteristics with stationary
-    Poisson arrivals
+  default_workload: preconstructed agent workflow characteristics with a stationary
+    arrival intensity
   infrastructure_status: deterministic reference fixture
   stateless_service_status: reference 2--8 request/s/core range
   calibration_inputs: {}
-  preconstructed_workload_path: C:\Users\01\Desktop\agent\experiments\agent_orchestration\data\preconstructed_agent_workloads.yaml
+  preconstructed_workload_path: data/preconstructed_agent_workloads.yaml
   preconstructed_workload_sha256: 1a9be7a459f4bcb056fb02950de68dbd25d699e289bf32b128778939fbe0fd6a
+  slo_calibration:
+    policy: greedy
+    evaluation_periods: 3600
+    calibration_samples: 16
+    seed: 2026
+    low_load_fraction: 0.2
+    low_load_rate_scale: 1.6859375
+    reference_capacity_rps: 0.033718750000000006
+    reference_arrival_scale: 8.4296875
+    limiting_resource: llm:qwen3-32b-h20@CHINng
+    ttft_multiplier: 1.5
+    tbt_multiplier: 1.25
+    deadline_multiplier: 1.5
+    arrival_process: stationary_intensity
+    source_scenario_sha256: 4e483257515cf94c315c9e3d638da281f5aaf970f29107e62b6af744d3d8ede3
 applications:
 - id: interactive_retrieval-t01
   family: interactive_retrieval

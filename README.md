@@ -120,7 +120,7 @@ python scripts/generate_composition_sweep.py `
 
 ```powershell
 python scripts/generate_composition_sweep.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml `
+  --scenario configs/benchmarks/main_abilene.yaml `
   --family-sweep --output configs/generated/family_composition
 ```
 
@@ -128,29 +128,32 @@ python scripts/generate_composition_sweep.py `
 
 四类应用的调用图、概率选择、并行分支以及 LLM 节点输入输出 token 特征均由 `data/preconstructed_agent_workloads.yaml` 给出。每类应用按配置中的截断对数正态分布生成五个分位档位；每个档位都会将所有概率选择组合展开为 pattern flows，并保留其中的并行调用链。
 
-到达过程统一采用平稳强度过程。分析型仿真直接把场景配置中的平均到达率作为排队模型的稳态强度，`--arrival-scale` 对全部强度作统一缩放，不将一秒内的离散请求计数反推为稳态到达率。Main 场景的基准总到达率为 0.004 request/s。实验先求固定参考部署的稳定容量，再按该容量的 0.40、0.65、0.85 和 1.05 倍四档设定负载：
-
-```powershell
-python scripts/calibrate_load_levels.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml `
-  --output data/processed/load_levels_revised.json
-```
-
-在测试集开放前，使用参考容量 20% 的低负载窗口冻结默认 SLO：
+到达过程统一采用平稳强度过程。分析型仿真直接把场景配置中的平均到达率作为排队模型的稳态强度，`--arrival-scale` 对全部强度作统一缩放，不将一秒内的离散请求计数反推为稳态到达率。Main 场景的基准总到达率为 0.004 request/s。实验先使用参考容量 20% 的低负载窗口冻结默认 SLO，并将相同阈值传播到三个资源压力场景：
 
 ```powershell
 python scripts/calibrate_slos.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml `
+  --scenario configs/benchmarks/main_abilene.yaml `
   --low-load-fraction 0.20 `
-  --output configs/benchmarks/main_abilene_revised.yaml
+  --output configs/benchmarks/main_abilene.yaml `
+  --propagate-to configs/benchmarks/stress_network_0p5.yaml `
+                 configs/benchmarks/stress_service_0p5.yaml `
+                 configs/benchmarks/stress_gpu_unavailable.yaml
+```
+
+随后基于正式入口场景求稳定容量，并按其 0.40、0.65、0.85 和 1.05 倍生成四档负载：
+
+```powershell
+python scripts/calibrate_load_levels.py `
+  --scenario configs/benchmarks/main_abilene.yaml `
+  --output data/processed/load_levels.json
 ```
 
 运行基线矩阵，`--load-levels` 会依次执行四档负载：
 
 ```powershell
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml --slots 3600 `
-  --load-levels data/processed/load_levels_revised.json `
+  --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
+  --load-levels data/processed/load_levels.json `
   --seeds 0,1,2,3,4 `
   --output results/baseline_levels
 ```
@@ -175,18 +178,18 @@ python scripts/prepare_llm_profiles.py `
   --source-version <pinned-commit> `
   --output data/processed/llm_profile.csv
 python scripts/validate_llm_model.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml `
+  --scenario configs/benchmarks/main_abilene.yaml `
   --profile data/processed/llm_profile.csv
 ```
 
 验证程序报告 TTFT、TBT、完整响应时延和稳定容量的误差，其有效性判据与 `docs/experiment_protocol.md` 一致。
 
-论文中的 LLM 排队近似可使用 LLMServingSim 2.0 进行分解验证，包含 Roofline 处理时延、稳态有效并发度和 Allen--Cunneen 排队时延。完整步骤和结果口径见 [docs/llmservingsim_queue_validation.md](docs/llmservingsim_queue_validation.md)。
+论文中的 LLM 宏观稳态模型可使用 LLMServingSim 2.0 进行分解验证，分别检查 Roofline 工作量、稳态有效并发度、KV 驻留边界和请求时延趋势。完整步骤和结果口径见 [docs/llmservingsim_queue_validation.md](docs/llmservingsim_queue_validation.md)。
 
 ## 输出与量纲
 
 实验结果以 JSON Lines、Parquet 和运行清单等形式写入 `results/`。所有时间均以秒为单位，到达率与处理率均以请求/秒为单位，单请求数据量以 MB 为单位，链路负载和链路容量以 Mbit/s 为单位，计算量以 FLOPs 为单位，显存访问量以字节为单位。控制时隙长度不改变 Mbps 负载；链路传输时延按一个时隙内的聚合数据量与链路速率之比计算。
 
-联合控制器在两个时间尺度上运行。每个部署周期开始时，Agent 感知混合容量规划器根据节点访问概率、到达率和候选实例能力，确定各无状态服务的副本需求及各模型的有效容量需求。带资源掩码的分类策略随后逐个选择副本服务器或 LLM 候选实例；这些顺序决策共同构成当期部署方案，不推进物理业务时隙。在后续物理时隙内，分组 Dirichlet 策略仅生成应用到模型的工作负载比例，LLM 实例分流和无状态服务路由依据预测服务与网络时延通过 Softmin 解析得到。
+联合控制器按编排周期运行。每个周期开始时，Agent 感知混合容量规划器根据节点访问概率、到达率和候选实例能力，确定各无状态服务的副本需求及各模型的有效容量需求。带资源掩码的分类策略随后按资源池顺序选择副本服务器或 LLM 候选实例；这些顺序决策共同构成当期部署方案，不推进物理业务时隙。部署完成后，分组 Dirichlet 策略生成一次应用到模型的工作负载比例，LLM 实例分流和无状态服务路由依据预测服务与网络时延通过 Softmin 解析得到。
 
-时隙效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。LLM 服务强度、KV cache、无状态服务稳定性和链路带宽分别形成四类动态约束，并由独立拉格朗日乘子更新。一个部署周期结束后，当前方案相对保留上一方案的约束效用增益被均分给本周期的顺序部署动作。RND 仅用于慢时标部署状态探索，其权重随训练进度线性衰减；确定性评估不使用内在奖励。
+周期效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。LLM 实例和无状态服务池分别形成稳定性约束，并由独立拉格朗日乘子更新。容量潜势差分奖励用于引导周期内部署动作，RND 用于训练阶段的部署状态探索并随训练进度衰减；确定性评估不使用内在奖励。

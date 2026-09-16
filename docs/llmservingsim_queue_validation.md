@@ -1,6 +1,6 @@
-# LLM 排队模型验证
+# LLM 宏观稳态服务模型验证
 
-本实验使用 LLMServingSim 2.0 检验论文中的 Roofline 处理时延、稳态有效并发度和 Allen--Cunneen 排队近似。参考配置为单实例 Llama-3.1-8B/RTX4090，采用 BF16、2048 token budget、128 条最大序列、512 token prefill chunk，并关闭 prefix caching。
+本实验使用 LLMServingSim 2.0 检验论文中的 Roofline 工作量、稳态有效并发度、KV 驻留边界和宏观请求时延趋势。参考配置为单实例 Llama-3.1-8B/RTX4090，采用 BF16、2048 token budget、128 条最大序列、512 token prefill chunk，并关闭 prefix caching。解析模型用于描述长期稳态下的平均服务特征，仿真器用于回放请求流并比较负载变化趋势。
 
 ## 运行环境
 
@@ -43,7 +43,7 @@ python scripts/run_llmservingsim_validation.py all --workers 1
 - `capacity_observations.csv`：各工作负载组成的饱和吞吐；
 - `capacity_predictions.csv`：仿真容量与三种诊断模型的容量对比；
 - `calibration.json`：有效计算速率、带宽和固定并发度；
-- `queue_predictions.csv`：三种诊断模型的逐次运行结果；
+- `queue_predictions.csv`：解析稳态模型与仿真的逐次运行结果；
 - `queue_error_summary.csv` 和 `validity.json`：误差与有效性判定；
 - `instrumentation_check.json`：排队指标插桩的无扰动验证；
 - `validation_report.md`：实验结论及论文模型修改建议；

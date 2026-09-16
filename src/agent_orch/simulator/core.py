@@ -60,7 +60,7 @@ class Simulator:
             }
         return self.arrival_trace.at(self.slot, self.scenario)
 
-    def step(
+    def evaluate_period(
         self,
         deployment: DeploymentDecision,
         routing: RoutingDecision,
@@ -116,6 +116,16 @@ class Simulator:
             reward_components=reward_components,
             metrics=metrics,
         )
+
+    # Compatibility alias for non-RL baselines.  The environment invokes
+    # evaluate_period once after composition and never advances a physical
+    # slot during deployment substeps.
+    def step(
+        self,
+        deployment: DeploymentDecision,
+        routing: RoutingDecision,
+    ) -> Transition:
+        return self.evaluate_period(deployment, routing)
 
     def _routing_unserved_violations(
         self,
@@ -218,21 +228,22 @@ class Simulator:
         link_load_mbps: dict[tuple[str, str], float],
     ) -> float:
         cost = 0.0
+        period_seconds = self.scenario.simulation.orchestration_period_s
         for candidate_id, active in deployment.llm_active.items():
             if not active:
                 continue
             candidate = self.scenario.candidates[candidate_id]
             config = self.scenario.llm_configs[candidate.config]
-            cost += config.running_cost_per_slot
+            cost += config.running_cost_per_slot * period_seconds
             if not self.previous_deployment.llm_active.get(candidate_id, 0):
                 cost += config.load_cost
         for pool, replicas in deployment.tool_replicas.items():
             tool_id, _ = pool
             tool = self.scenario.tools[tool_id]
-            cost += replicas * tool.running_cost_per_slot
+            cost += replicas * tool.running_cost_per_slot * period_seconds
             started = max(0, replicas - self.previous_deployment.tool_replicas.get(pool, 0))
             cost += started * tool.start_cost
-        cost += self.backend.network.traffic_cost(link_load_mbps)
+        cost += self.backend.network.traffic_cost(link_load_mbps) * period_seconds
         return cost
 
 

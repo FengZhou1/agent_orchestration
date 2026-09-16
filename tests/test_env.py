@@ -25,7 +25,7 @@ def _valid_action(env, observation):
 
 def _complete_deployment(env, observation):
     infos = []
-    while observation["action_type"] == env.DEPLOYMENT:
+    while observation["action_type"] < env.COMPOSITION:
         previous_slot = env.simulator.slot
         observation, reward, terminated, truncated, info = env.step(
             _valid_action(env, observation)
@@ -45,10 +45,10 @@ def test_environment_completes_deployment_and_routing_phases(scenario):
     observation, deployment_infos = _complete_deployment(env, observation)
     assert deployment_infos
     assert all(info["discount"] == env.deployment_gamma for info in deployment_infos)
-    assert observation["action_type"] == env.ROUTING
+    assert observation["action_type"] == env.COMPOSITION
     observation, reward, _, _, info = env.step(_blank_routing_action(env))
     assert math.isfinite(reward)
-    assert info["phase"] == "routing"
+    assert info["phase"] == "composition"
     assert info["metrics"].total_arrival_rps > 0.0
 
 
@@ -68,7 +68,7 @@ def test_ppo_smoke_update(scenario):
     _, history = train_ppo(
         env,
         updates=1,
-        rollout_steps=scenario.simulation.deployment_period_slots + 2,
+        rollout_steps=32,
         seed=9,
         config=config,
     )
@@ -85,7 +85,7 @@ def test_ppo_reports_rollout_optimization_and_update_progress(scenario):
     rollout_steps = []
     optimization_steps = []
     updates = []
-    step_count = scenario.simulation.deployment_period_slots + 2
+    step_count = 32
     train_ppo(
         env,
         updates=1,
@@ -100,8 +100,8 @@ def test_ppo_reports_rollout_optimization_and_update_progress(scenario):
         on_update=updates.append,
     )
     assert phases == [(0, "collecting"), (0, "optimizing")]
-    assert 0 < rollout_steps[-1][1] <= step_count
-    assert optimization_steps == [(0, 1, 1)]
+    assert rollout_steps[-1][1] >= step_count
+    assert optimization_steps == [(0, 1, 2), (0, 2, 2)]
     assert len(updates) == 1
 
 
@@ -116,7 +116,7 @@ def test_ppo_icm_smoke_update(scenario):
     _, history = train_ppo(
         env,
         updates=1,
-        rollout_steps=scenario.simulation.deployment_period_slots + 2,
+        rollout_steps=32,
         seed=10,
         config=config,
     )
@@ -127,9 +127,9 @@ def test_ppo_icm_smoke_update(scenario):
 def test_routing_only_environment_never_enters_deployment(scenario):
     env = RoutingOnlyEnv(scenario, max_slots=2, seed=12)
     observation, _ = env.reset(seed=12)
-    assert observation["action_type"] == env.ROUTING
+    assert observation["action_type"] == env.COMPOSITION
     observation, _, _, _, _ = env.step(_blank_routing_action(env))
-    assert observation["action_type"] == env.ROUTING
+    assert observation["action_type"] == env.COMPOSITION
 
 
 def test_deployment_only_environment_evaluates_internal_interval(scenario):
@@ -143,9 +143,8 @@ def test_deployment_only_environment_evaluates_internal_interval(scenario):
             _valid_action(env, observation)
         )
     assert terminated
-    assert last_info["evaluated_slots"] == 2
-    assert len(last_info["interval_metrics"]) == 2
-    assert [metrics.slot for metrics in last_info["interval_metrics"]] == [0, 1]
+    assert last_info["period_complete"]
+    assert env.simulator.slot == 2
     assert math.isfinite(reward)
 
 

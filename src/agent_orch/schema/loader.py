@@ -96,7 +96,7 @@ class ScenarioLoader:
                 length_class=str(item.get("length_class", "unspecified")),
             )
 
-        simulation = SimulationSpec(**raw.get("simulation", {}))
+        simulation = SimulationSpec(**dict(raw.get("simulation", {})))
         reward = RewardSpec(**raw.get("reward", {}))
         scenario = Scenario(
             id=raw["id"],
@@ -118,8 +118,8 @@ class ScenarioLoader:
     def validate(scenario: Scenario) -> None:
         if scenario.simulation.slot_seconds <= 0.0:
             raise ValueError("slot_seconds must be positive")
-        if scenario.simulation.deployment_period_slots <= 0:
-            raise ValueError("deployment_period_slots must be positive")
+        if scenario.simulation.orchestration_period_s <= 0:
+            raise ValueError("orchestration_period_s must be positive")
         for link in scenario.links:
             if link.source not in scenario.servers or link.target not in scenario.servers:
                 raise ValueError(f"Link {link.source}->{link.target} references an unknown server")
@@ -217,5 +217,15 @@ class ScenarioLoader:
                         raise ValueError(f"LLM node {app.id}:{node.id} has invalid input tokens")
                     if any(value <= 0.0 for value in node.output_tokens.values()):
                         raise ValueError(f"LLM node {app.id}:{node.id} has invalid output tokens")
+                    for model in scenario.models:
+                        total_tokens = node.prompt_tokens[model] + node.output_tokens[model]
+                        model_configs = [
+                            config for config in scenario.llm_configs.values()
+                            if config.model == model
+                        ]
+                        if any(total_tokens > config.max_model_len for config in model_configs):
+                            raise ValueError(
+                                f"LLM node {app.id}:{node.id} exceeds max_model_len for {model}"
+                            )
                 elif node.tool not in scenario.tools:
                     raise ValueError(f"Node {app.id}:{node.id} references an unknown service")

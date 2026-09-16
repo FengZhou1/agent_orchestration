@@ -37,20 +37,20 @@ Main 场景包含四类应用，每类设置五个模板：
 
 ## 到达过程与数据划分
 
-- 路由时隙：1 秒；
-- 部署周期：60 个时隙；
-- 训练或评估窗口：3,600 个时隙；
+- 链路负载的分析参考间隔：1 秒；
+- 宏观编排周期：60 秒；
+- 训练或评估窗口：3,600 个编排周期；
 - Main 场景基准总到达率：0.004 request/s；
-- 负载档位：基准到达率的 0.5、1、2 和 3 倍；
+- 负载档位：固定参考部署稳定容量的 0.40、0.65、0.85 和 1.05 倍；
 - 分析型仿真在全部对比算法间共享相同的泊松到达强度；随机种子用于算法训练与随机路由。
 
-应用请求服从平稳泊松过程。若应用 $a$ 在接入节点 $g$ 的平均到达率为 $\lambda_a^g$，分析型仿真将 $\lambda_a^g$ 作为 M/GI/$C$ 排队模型的到达强度输入。负载档位通过统一缩放全部 $\lambda_a^g$ 得到，不改变应用组成与接入位置。离散请求计数仅用于事件驱动仿真，不作为稳态排队模型的瞬时到达率。
+应用请求服从平稳泊松过程。若应用 $a$ 在接入节点 $g$ 的平均到达率为 $\lambda_a^g$，分析型仿真将 $\lambda_a^g$ 输入 LLM 的 mixed/decode 稳态模型和无状态服务的 GI/M/$c$ 排队模型。负载档位通过统一缩放全部 $\lambda_a^g$ 得到，不改变应用组成与接入位置。离散请求计数仅用于事件驱动仿真，不作为稳态排队模型的瞬时到达率。`slot_seconds=1` 用于将通信数据量换算为链路负载，部署成本与运行指标按 60 秒编排周期累计。
 
 均衡组成中四类应用各占 25%。另设置四组偏斜组成实验，每次令一类应用占 60%，其余三类按 20%、10% 和 10% 分配，同时保持总到达率不变。性能 profile 网格还改变长请求比例和总调用率。
 
 ## 组件参数
 
-LLM profile 在稳定容量的 20%、40%、60%、80%、95% 和 105% 六个负载点进行测量，覆盖均衡组成和四类应用占优的组成。每个运行点输出 TTFT、TBT、完整响应时延、稳定容量和 KV token 占用。仅当后端明确采用与应用组成无关的性能模型时，profile 才可省略四类应用比例。
+LLMServingSim profile 仅用于独立验证解析服务曲线和配置排序；主编排仿真使用第 3 节的 mixed/decode 稳态解析模型。验证运行点覆盖稳定容量的 20%、40%、60%、80%、95% 和 105%，并记录 TTFT、TBT、完整响应时延、稳定容量和 KV token 占用。
 
 Main 场景包含 Web 检索、信息检索、代码执行、文件处理、结果验证和外部 API 六类无状态服务；Scale 场景增加知识图谱和数据转换服务。在条件允许时，每类服务分别测量 1、2 和 4 vCPU 配置。GI/G/c 近似分别保留到达 SCV 和服务时间 SCV。稳定处理率定义为：错误率低于 1%，且 P95 响应时间不超过低负载 P95 两倍时的最大负载。无法获得实测结果时，以 2--8 请求/秒/核作为初始参考范围，并执行 0.5、1 和 2 倍敏感性实验。
 
@@ -60,7 +60,7 @@ Main 场景包含 Web 检索、信息检索、代码执行、文件处理、结�
 
 ## SLO 与质量校准
 
-在打开测试集前，使用固定参考部署的低负载 P95 时延冻结 SLO：
+在打开测试集前，使用固定参考部署的流量加权低负载 P95 时延冻结 SLO。主场景的阈值原样用于网络降容、无状态服务降速和 GPU 不可用场景：
 
 - latency-sensitive：TTFT 阈值为参考 P95 的 1.5 倍，TBT 阈值为参考 P95 的 1.25 倍；
 - deadline-sensitive：完整响应 deadline 为参考 P95 的 1.5 倍；
@@ -80,8 +80,8 @@ Main 场景包含 Web 检索、信息检索、代码执行、文件处理、结�
 - 各应用模板的 LLM 节点输入、输出 token 均处于预构建负载文件给定的 P50--P95 范围内。
 - 工作流深度、无状态服务调用数、并行宽度和 pattern flow 频率与数据来源中的经验分布一致。
 - 无状态服务处理时间来自低负载内部计时，不得将包含排队和网络的生产端到端 RT 直接作为处理时间。
-- 在留出的 LLM profile 运行点上，中位绝对百分比误差不超过 10%，P95 误差不超过 20%。超过该误差范围的区域直接使用 profile 后端或 LLMServingSim 回放结果，不将其声明为分析预测。
-- LLM 实例的稳态时延由服务曲线给出：TTFT 为常驻并发下的 prefill 处理时间，TBT 为 decode 处理时间除以输出 token 数减一，响应时间为两者之和；KV 与序列槽位只约束常驻上限，准入排队不进入稳态时延，越界记为过载约束代价。
+- 在留出的 LLM profile 运行点上，中位绝对百分比误差不超过 10%，P95 误差不超过 20%。该指标用于验证解析模型的适用范围，不替换主实验中的解析模型。
+- LLM 实例的稳态时延由服务曲线和首次准入等待共同给出：TTFT 为首次准入等待与 prefill 处理时间之和，TBT 为 decode 处理时间除以输出 token 数减一，响应时间为 TTFT 与后续 decode 时间之和；KV 与序列槽位约束常驻运行集，越界记为过载约束代价。
 - 低负载下所有队列保持稳定；接近容量边界时，随并发增长的服务时延和 SLO 违约率应上升，LLM 调用率利用率趋于一；链路、无状态服务和长请求组成压力应分别反映在相应利用率和时延指标中。
 
 ## 可复现实验命令
@@ -98,18 +98,27 @@ python scripts/prepare_llm_profiles.py `
   --input <normalized-LLMServingSim-output.csv> `
   --source-version <pinned-commit> `
   --output data/processed/llm_profile.csv
-python scripts/calibrate_load_levels.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml `
-  --output data/processed/load_levels_revised.json
 python scripts/calibrate_slos.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml `
+  --scenario configs/benchmarks/main_abilene.yaml `
+  --slots 3600 --calibration-samples 16 `
   --low-load-fraction 0.20 `
-  --output configs/benchmarks/main_abilene_revised.yaml
+  --output configs/benchmarks/main_abilene.yaml `
+  --propagate-to configs/benchmarks/stress_network_0p5.yaml `
+                 configs/benchmarks/stress_service_0p5.yaml `
+                 configs/benchmarks/stress_gpu_unavailable.yaml
+python scripts/calibrate_slos.py `
+  --scenario configs/benchmarks/scale_geant.yaml `
+  --slots 3600 --calibration-samples 16 `
+  --low-load-fraction 0.20 `
+  --output configs/benchmarks/scale_geant.yaml
+python scripts/calibrate_load_levels.py `
+  --scenario configs/benchmarks/main_abilene.yaml `
+  --output data/processed/load_levels.json
 python scripts/generate_composition_sweep.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml --family-sweep `
+  --scenario configs/benchmarks/main_abilene.yaml --family-sweep `
   --output configs/generated/family_composition
 python scripts/run_baseline_matrix.py `
-  --scenario configs/benchmarks/main_abilene_revised.yaml --slots 3600 `
-  --load-levels data/processed/load_levels_revised.json --seeds 0,1,2,3,4 `
+  --scenario configs/benchmarks/main_abilene.yaml --slots 3600 `
+  --load-levels data/processed/load_levels.json --seeds 0,1,2,3,4 `
   --output results/baseline_revised
 ```

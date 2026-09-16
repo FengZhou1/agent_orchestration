@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import math
 from typing import Mapping
 
-from agent_orch.performance.llm import service_demand
+from agent_orch.performance.analytical import evaluate_llm_instance
 from agent_orch.performance.queueing import tool_response_time
 from agent_orch.schema.models import DeploymentDecision, NodeType, Scenario
 
@@ -395,16 +395,16 @@ class CapacityPlanner:
             )
 
             config = self.scenario.llm_configs[candidate.config]
-            demand = service_demand(
+            instance, _ = evaluate_llm_instance(
                 self.scenario.models[candidate.model],
                 config,
-                prompt,
-                output,
+                [(prompt, output)],
+                [1.0],
+                0.0,
                 self.scenario.simulation.prefill_chunk_tokens,
+                composition_mode="macro",
             )
-            capacities[candidate_id] = config.max_num_seqs / max(
-                demand.service_s, 1.0e-12
-            )
+            capacities[candidate_id] = instance.throughput_capacity_rps
         return capacities
 
     def _model_workload(

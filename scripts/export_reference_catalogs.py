@@ -180,7 +180,7 @@ MODEL = "qwen3-14b"
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", default="configs/benchmarks/main_abilene_revised.yaml")
+    parser.add_argument("--scenario", default="configs/benchmarks/main_abilene.yaml")
     parser.add_argument("--output", default="data/catalogs/main_abilene")
     args = parser.parse_args()
     export_catalogs(args.scenario, args.output)
