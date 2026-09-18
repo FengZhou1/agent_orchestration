@@ -58,10 +58,16 @@ agent-orch-sim run --scenario configs/toy.yaml --policy greedy --slots 10 --seed
 执行结构化 PPO 冒烟训练：
 
 ```powershell
-agent-orch-sim train --scenario configs/toy.yaml --updates 10 --rollout-steps 256
+agent-orch-sim train `
+  --scenario configs/toy.yaml `
+  --mode joint `
+  --exploration rnd `
+  --updates 10 `
+  --rollout-periods 4 `
+  --device auto
 ```
 
-使用 `--mode joint`、`--mode deploy` 或 `--mode route` 选择联合优化、仅部署优化或仅路由优化。联合模式默认运行带拉格朗日约束和 RND 探索的 DTS-PPO-RND；`--exploration none` 关闭内在奖励，`--exploration icm` 和 Potential Shaping 仅作为显式对照：
+使用 `--mode joint`、`--mode deploy` 或 `--mode route` 选择联合优化、仅部署优化或仅路由优化。联合模式默认运行带拉格朗日约束和 RND 探索的 DTS-PPO-RND；`--exploration none` 关闭内在奖励。ICM 和 Potential Shaping 通过后述矩阵脚本作为显式对照运行：
 
 ```powershell
 agent-orch-sim train --scenario configs/toy.yaml --mode joint --exploration rnd
@@ -79,14 +85,120 @@ python scripts/run_baseline_matrix.py --scenario configs/toy.yaml --slots 600
 python scripts/run_rl_matrix.py `
   --scenario configs/toy.yaml `
   --updates 100 `
-  --rollout-steps 1024 `
+  --rollout-periods 16 `
   --device auto `
   --resume
 ```
 
 训练时，终端进度条分别显示矩阵、轨迹收集、PPO 优化和评估阶段。每个运行目录中的 `training_status.json` 持续覆盖当前进度、耗时和预计剩余时间，`training_history.jsonl` 在每次 PPO update 后立即追加训练指标，`checkpoint.pt` 保存 update 级恢复状态；矩阵根目录中的 `matrix_status.json` 和 `rl_experiment.log` 记录整体进度。`--resume` 从最近完成的 PPO update 继续并跳过已完成的种子—算法组合。使用 `--no-progress` 可关闭终端进度条而保留状态与日志文件。需要完整消融时，显式传入 `--seeds 0,1,2,3,4 --modes joint,deploy,route --variants auto`；Potential Shaping 与 ICM 可通过 `--modes joint --variants potential,icm` 运行。
 
-分阶段训练使用同一策略结构和检查点格式。首先以 `--modes route --training-phase composition` 预训练模型组成分支；随后以 `--modes joint --training-phase deployment --initial-policy <route-policy.pt>` 固定模型组成分支并训练部署分支；最后以 `--modes joint --training-phase joint --initial-policy <deployment-policy.pt>` 解冻两个分支进行联合微调。`--validation-warmup-periods` 指定不计入策略选择分数的预热周期，`--validation-periods` 指定随后用于选择最佳检查点的周期数。
+分阶段训练使用同一策略结构和检查点格式。模型组成预训练采用 `RoutingOnlyEnv`：系统预构造多套资源可行部署，每个 episode 内固定一套部署，不同 episode 按随机种子轮换部署。route-only 训练的 episode 长度与 `--rollout-periods` 相同，因此每次 PPO update 后都会进入新的固定部署上下文。主场景默认构造 8 套可行部署，若场景可行组合不足则使用实际生成数量。
+
+正式训练使用全新的 revision 4 输出目录，不能从旧归一化奖励生成的检查点继续训练。下面给出随机种子 0 的完整三阶段命令：
+
+```powershell
+conda activate agent-orch
+cd C:\Users\01\Desktop\agent\experiments\agent_orchestration
+
+$scenario = "configs/benchmarks/main_abilene.yaml"
+$hash = ((Get-FileHash $scenario -Algorithm SHA256).Hash.Substring(0,16)).ToLower()
+```
+
+第一阶段只训练模型组成策略：
+
+```powershell
+python scripts/run_rl_matrix.py `
+  --scenario $scenario `
+  --seeds 0 `
+  --modes route `
+  --variants no-rnd `
+  --training-phase composition `
+  --updates 100 `
+  --rollout-periods 16 `
+  --update-epochs 4 `
+  --minibatch-size 256 `
+  --train-mapping-samples 128 `
+  --validation-interval 5 `
+  --validation-periods 20 `
+  --validation-warmup-periods 5 `
+  --validation-mapping-samples 128 `
+  --eval-mapping-samples 512 `
+  --train-slots 3600 `
+  --eval-slots 100 `
+  --arrival-scale 7.165234375 `
+  --device cuda `
+  --status-interval-steps 1 `
+  --resume `
+  --output results/formal_v3/stage1_composition
+
+$routeRun = "agent-abilene-20-route-no-rnd-composition-s0-$hash"
+$routePolicy = "results/formal_v3/stage1_composition/$routeRun/policy_best.pt"
+Test-Path $routePolicy
+```
+
+第二阶段加载模型组成策略，冻结组成分支并训练部署策略。该阶段使用 `joint` 环境，使已训练的模型组成策略参与部署方案的周期性能评估：
+
+```powershell
+python scripts/run_rl_matrix.py `
+  --scenario $scenario `
+  --seeds 0 `
+  --modes joint `
+  --variants rnd `
+  --training-phase deployment `
+  --initial-policy $routePolicy `
+  --updates 100 `
+  --rollout-periods 16 `
+  --update-epochs 4 `
+  --minibatch-size 256 `
+  --train-mapping-samples 128 `
+  --validation-interval 5 `
+  --validation-periods 20 `
+  --validation-warmup-periods 5 `
+  --validation-mapping-samples 128 `
+  --eval-mapping-samples 512 `
+  --train-slots 3600 `
+  --eval-slots 100 `
+  --arrival-scale 7.165234375 `
+  --device cuda `
+  --status-interval-steps 20 `
+  --resume `
+  --output results/formal_v3/stage2_deployment
+
+$deployRun = "agent-abilene-20-joint-rnd-deployment-s0-$hash"
+$deployPolicy = "results/formal_v3/stage2_deployment/$deployRun/policy_best.pt"
+Test-Path $deployPolicy
+```
+
+第三阶段解冻两个策略分支并联合微调：
+
+```powershell
+python scripts/run_rl_matrix.py `
+  --scenario $scenario `
+  --seeds 0 `
+  --modes joint `
+  --variants rnd `
+  --training-phase joint `
+  --initial-policy $deployPolicy `
+  --updates 100 `
+  --rollout-periods 16 `
+  --update-epochs 4 `
+  --minibatch-size 256 `
+  --train-mapping-samples 128 `
+  --validation-interval 5 `
+  --validation-periods 20 `
+  --validation-warmup-periods 5 `
+  --validation-mapping-samples 128 `
+  --eval-mapping-samples 512 `
+  --train-slots 3600 `
+  --eval-slots 100 `
+  --arrival-scale 7.165234375 `
+  --device cuda `
+  --status-interval-steps 20 `
+  --resume `
+  --output results/formal_v3/stage3_joint
+```
+
+没有 CUDA 环境时，将上述命令中的 `--device cuda` 改为 `--device cpu`。`--validation-warmup-periods` 指定不计入检查点选择分数的预热周期，`--validation-periods` 指定随后用于选择最佳检查点的周期数。
 
 根据多随机种子汇总结果生成可复现的置信区间和配对显著性检验：
 
@@ -198,4 +310,6 @@ python scripts/validate_llm_model.py `
 
 联合控制器按编排周期运行。每个周期开始时，Agent 感知混合容量规划器根据节点访问概率、到达率和候选实例能力，确定各无状态服务的副本需求及各模型的有效容量需求。带资源掩码的分类策略依次处理每个 LLM 候选实例和每个“无状态服务–服务器”副本池；每个部署项只决策一次，部署子步不推进物理业务时隙。部署完成后，分组 Dirichlet 策略生成一次应用到模型的工作负载比例，LLM 实例分流和无状态服务路由依据预测服务与网络时延通过 Softmin 解析得到。
 
-周期效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。LLM 实例和无状态服务池分别形成稳定性约束，并由独立拉格朗日乘子更新。主算法通过阶段相关 GAE 将周期末效用传递至周期内的部署动作；Potential shaping 作为显式对照，RND 用于训练阶段的部署状态探索并随训练进度衰减。部署与模型组成策略采用独立编码器，可按“模型组成预训练、冻结组成分支训练部署策略、联合微调”的顺序训练。
+周期奖励使用相邻周期的原始性能增量。成本和时延分别取上一周期值减当前周期值，请求级 goodput 和系统质量分别取当前周期值减上一周期值；四项增量按照场景中的目标权重相加。奖励不使用成本参考值或时延参考值归一化。某项相对变化不超过 0.1% 时，该项取 $10^{-3}$ 的小额正奖励；首个周期用于建立参考，各项同样取该小额正奖励。状态向量仍对成本和时延进行固定尺度处理，以保持神经网络输入稳定，该处理不参与奖励计算。
+
+LLM 实例和无状态服务池分别形成稳定性约束，并由独立拉格朗日乘子更新。主算法通过阶段相关 GAE 将周期末效用传递至周期内的部署动作；Potential shaping 作为显式对照，RND 用于训练阶段的部署状态探索并随训练进度衰减。部署与模型组成策略采用独立编码器，并按“模型组成预训练、冻结组成分支训练部署策略、联合微调”的顺序训练。
