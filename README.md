@@ -86,6 +86,8 @@ python scripts/run_rl_matrix.py `
 
 训练时，终端进度条分别显示矩阵、轨迹收集、PPO 优化和评估阶段。每个运行目录中的 `training_status.json` 持续覆盖当前进度、耗时和预计剩余时间，`training_history.jsonl` 在每次 PPO update 后立即追加训练指标，`checkpoint.pt` 保存 update 级恢复状态；矩阵根目录中的 `matrix_status.json` 和 `rl_experiment.log` 记录整体进度。`--resume` 从最近完成的 PPO update 继续并跳过已完成的种子—算法组合。使用 `--no-progress` 可关闭终端进度条而保留状态与日志文件。需要完整消融时，显式传入 `--seeds 0,1,2,3,4 --modes joint,deploy,route --variants auto`；Potential Shaping 与 ICM 可通过 `--modes joint --variants potential,icm` 运行。
 
+分阶段训练使用同一策略结构和检查点格式。首先以 `--modes route --training-phase composition` 预训练模型组成分支；随后以 `--modes joint --training-phase deployment --initial-policy <route-policy.pt>` 固定模型组成分支并训练部署分支；最后以 `--modes joint --training-phase joint --initial-policy <deployment-policy.pt>` 解冻两个分支进行联合微调。`--validation-warmup-periods` 指定不计入策略选择分数的预热周期，`--validation-periods` 指定随后用于选择最佳检查点的周期数。
+
 根据多随机种子汇总结果生成可复现的置信区间和配对显著性检验：
 
 ```powershell
@@ -194,6 +196,6 @@ python scripts/validate_llm_model.py `
 
 实验结果以 JSON Lines、Parquet 和运行清单等形式写入 `results/`。所有时间均以秒为单位，到达率与处理率均以请求/秒为单位，单请求数据量以 MB 为单位，链路负载和链路容量以 Mbit/s 为单位，计算量以 FLOPs 为单位，显存访问量以字节为单位。控制时隙长度不改变 Mbps 负载；链路传输时延按一个时隙内的聚合数据量与链路速率之比计算。
 
-联合控制器按编排周期运行。每个周期开始时，Agent 感知混合容量规划器根据节点访问概率、到达率和候选实例能力，确定各无状态服务的副本需求及各模型的有效容量需求。带资源掩码的分类策略随后按资源池顺序选择副本服务器或 LLM 候选实例；这些顺序决策共同构成当期部署方案，不推进物理业务时隙。部署完成后，分组 Dirichlet 策略生成一次应用到模型的工作负载比例，LLM 实例分流和无状态服务路由依据预测服务与网络时延通过 Softmin 解析得到。
+联合控制器按编排周期运行。每个周期开始时，Agent 感知混合容量规划器根据节点访问概率、到达率和候选实例能力，确定各无状态服务的副本需求及各模型的有效容量需求。带资源掩码的分类策略依次处理每个 LLM 候选实例和每个“无状态服务–服务器”副本池；每个部署项只决策一次，部署子步不推进物理业务时隙。部署完成后，分组 Dirichlet 策略生成一次应用到模型的工作负载比例，LLM 实例分流和无状态服务路由依据预测服务与网络时延通过 Softmin 解析得到。
 
-周期效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。LLM 实例和无状态服务池分别形成稳定性约束，并由独立拉格朗日乘子更新。容量潜势差分奖励用于引导周期内部署动作，RND 用于训练阶段的部署状态探索并随训练进度衰减；确定性评估不使用内在奖励。
+周期效用由固定尺度归一化后的成本和时延、SLO 满足率及质量构成。LLM 实例和无状态服务池分别形成稳定性约束，并由独立拉格朗日乘子更新。主算法通过阶段相关 GAE 将周期末效用传递至周期内的部署动作；Potential shaping 作为显式对照，RND 用于训练阶段的部署状态探索并随训练进度衰减。部署与模型组成策略采用独立编码器，可按“模型组成预训练、冻结组成分支训练部署策略、联合微调”的顺序训练。

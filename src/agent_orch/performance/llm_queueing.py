@@ -487,6 +487,42 @@ def _mean_prefill_chunk_time(
     """Mean mixed-iteration time for one arriving prefill chunk."""
 
     normalized = _normalize(weights)
+    if isinstance(calibration.mix, IterationCalibration):
+        # All chunks share the resident decode work.  Evaluate the Roofline
+        # expression in one vector operation instead of invoking the scalar
+        # iteration model once for every class and chunk at every fixed-point
+        # iteration.
+        chunk_flops: list[float] = []
+        chunk_bytes: list[float] = []
+        chunk_weights: list[float] = []
+        unit = max(1, int(chunk_tokens))
+        for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
+            prompt = max(1, int(round(prompt_tokens)))
+            chunks = math.ceil(prompt / unit)
+            for q in range(chunks):
+                context = float(q * unit)
+                new_tokens = float(min(unit, prompt - q * unit))
+                pre_flops, pre_bytes = _prefill_work(model, new_tokens, context)
+                chunk_flops.append(pre_flops)
+                chunk_bytes.append(pre_bytes - model.weight_bytes)
+                chunk_weights.append(float(weight))
+        if not chunk_flops:
+            return 0.0
+        nu = max(1.0, float(decode_concurrency))
+        dec_flops, dec_bytes = _decode_work(model, max(0.0, float(decode_context)))
+        flops = np.asarray(chunk_flops, dtype=float) + nu * dec_flops
+        memory = (
+            model.weight_bytes
+            + np.asarray(chunk_bytes, dtype=float)
+            + nu * (dec_bytes - model.weight_bytes)
+        )
+        iteration_times = calibration.mix.overhead_s + np.maximum(
+            flops / calibration.mix.compute_rate,
+            memory / calibration.mix.bandwidth_rate,
+        )
+        chunk_mass = np.asarray(chunk_weights, dtype=float)
+        return float(np.dot(chunk_mass, iteration_times) / chunk_mass.sum())
+
     total_chunks = 0.0
     total_time = 0.0
     for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
@@ -686,6 +722,7 @@ def two_mode_operating_point(
     initial_concurrency: float | None = None,
     tolerance: float = 1.0e-6,
     max_iterations: int = 200,
+    capacity_operating_point: tuple[float, float] | None = None,
 ) -> TwoModeSteadyState:
     """Solve a scalar fluid fixed point for the mixed/decode iteration server."""
 
@@ -698,8 +735,18 @@ def two_mode_operating_point(
         [max(1.0, float(p) + max(0.0, float(o) - 1.0) / 2.0) for p, o in classes],
         decode_weights,
     )
-    capacity_rate, capacity_nu = two_mode_capacity(
-        model, calibration, classes, weights, chunk_tokens, token_budget, resident_limit
+    capacity_rate, capacity_nu = (
+        capacity_operating_point
+        if capacity_operating_point is not None
+        else two_mode_capacity(
+            model,
+            calibration,
+            classes,
+            weights,
+            chunk_tokens,
+            token_budget,
+            resident_limit,
+        )
     )
     # The coupled workload equations can have a low-concurrency and a
     # high-concurrency fixed point near saturation.  The long-run operating

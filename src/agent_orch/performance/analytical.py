@@ -589,6 +589,7 @@ def evaluate_llm_instance(
                 chunk_tokens,
                 config.max_num_batched_tokens,
                 residency.capacity,
+                capacity_operating_point=(capacity, capacity_concurrency),
             )
             macro_wait, _, _ = two_mode_first_admission_wait(
                 macro_state,

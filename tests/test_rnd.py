@@ -81,3 +81,15 @@ def test_gae_uses_per_transition_phase_discounts():
         gae_lambda=1.0,
     )
     assert torch.allclose(advantages, torch.tensor([1.0, 1.0]))
+
+
+def test_gae_uses_phase_specific_lambda_without_attenuating_deployment_credit():
+    advantages, _ = _gae(
+        rewards=[0.0, 0.0, 1.0],
+        values=[0.0, 0.0, 0.0],
+        discounts=[1.0, 1.0, 0.99],
+        terminals=[0.0, 0.0, 1.0],
+        bootstrap=0.0,
+        gae_lambda=[1.0, 1.0, 0.95],
+    )
+    assert torch.allclose(advantages, torch.tensor([1.0, 1.0, 1.0]))

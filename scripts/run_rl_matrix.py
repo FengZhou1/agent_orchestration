@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -40,6 +40,35 @@ DEFAULT_SEEDS = "0"
 DEFAULT_MODES = "joint"
 DEFAULT_VARIANTS = "rnd"
 
+_LEGACY_RUN_SPEC_DEFAULTS = {
+    "rollout_periods": 0,
+    "train_mapping_samples": 4096,
+    "eval_mapping_samples": 4096,
+    "update_epochs": 10,
+    "minibatch_size": 256,
+    "validation_interval": 5,
+    "validation_periods": 20,
+    "validation_warmup_periods": 5,
+    "validation_mapping_samples": 128,
+    "training_phase": "joint",
+    "initial_policy": None,
+}
+
+
+def _replace_with_retry(temporary: Path, target: Path) -> None:
+    """Atomically publish an artifact despite transient Windows reader locks."""
+
+    last_error: PermissionError | None = None
+    for attempt in range(12):
+        try:
+            temporary.replace(target)
+            return
+        except PermissionError as error:
+            last_error = error
+            time.sleep(0.025 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
+
 
 def _atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,21 +77,40 @@ def _atomic_json(path: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    temporary.replace(path)
+    try:
+        _replace_with_retry(temporary, path)
+    except PermissionError:
+        # JSON status files may be inspected while the experiment is running.
+        # An in-place fallback preserves progress on Windows when a reader holds
+        # the destination open across the retry window.
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.unlink(missing_ok=True)
 
 
 def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.stem + ".tmp.parquet")
-    frame.to_parquet(temporary, index=False)
-    temporary.replace(path)
+    serializable = frame.copy()
+    for column in serializable.columns:
+        values = serializable[column].dropna()
+        if any(isinstance(value, (dict, list, tuple)) for value in values):
+            serializable[column] = serializable[column].map(
+                lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True)
+                if isinstance(value, (dict, list, tuple))
+                else value
+            )
+    serializable.to_parquet(temporary, index=False)
+    _replace_with_retry(temporary, path)
 
 
 def _atomic_torch(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.stem + ".tmp.pt")
     torch.save(payload, temporary)
-    temporary.replace(path)
+    _replace_with_retry(temporary, path)
 
 
 def _logger(path: Path) -> logging.Logger:
@@ -87,6 +135,11 @@ def _arrival_trace(scenario, slots: int, rate_scale: float):
 
 def _parse_csv(raw: str) -> list[str]:
     return [value.strip() for value in raw.split(",") if value.strip()]
+
+
+def _run_specs_match(saved: dict, requested: dict) -> bool:
+    normalized = {**_LEGACY_RUN_SPEC_DEFAULTS, **saved}
+    return normalized == requested
 
 
 def _evaluate(
@@ -120,19 +173,48 @@ def _summary(
     history: list[dict],
     train_wall_time_s: float,
     decision_times_s: list[float],
+    selection: dict | None = None,
 ) -> dict:
     if not records:
         raise RuntimeError(f"Evaluation for {run_id} produced no physical-slot metrics")
     physical_metrics = summarize_slot_metrics(records)
-    return {
+    result = {
         "run_id": run_id,
         "evaluation_slots": len(records),
         **physical_metrics,
-        "final_training_reward": history[-1]["mean_reward"],
+        "final_transition_reward": history[-1]["mean_reward"],
+        "final_training_utility": history[-1]["mean_utility"],
+        "best_training_utility": max(item["mean_utility"] for item in history),
+        "final_period_return": history[-1]["mean_period_return"],
         "train_wall_time_s": train_wall_time_s,
         "mean_decision_time_ms": 1_000.0 * mean(decision_times_s),
         "p95_decision_time_ms": 1_000.0 * float(np.quantile(decision_times_s, 0.95)),
     }
+    if selection:
+        result.update(selection)
+    return result
+
+
+def _mean_evaluation_utility(
+    env: AgentOrchestrationEnv,
+    records: list[dict],
+    warmup_periods: int = 0,
+) -> float:
+    if not records:
+        return float("-inf")
+    utilities: list[float] = []
+    previous: dict[str, float] | None = None
+    for record in records:
+        utility, _, previous = env._incremental_utility(
+            record["cost"],
+            record["mean_latency_s"],
+            record["goodput_rps"],
+            record["quality"],
+            previous,
+        )
+        utilities.append(utility)
+    scored = utilities[max(0, int(warmup_periods)) :]
+    return float(np.mean(scored)) if scored else float("-inf")
 
 
 def _combinations(modes: list[str], variants: list[str]) -> list[tuple[str, str]]:
@@ -166,11 +248,11 @@ def _combinations(modes: list[str], variants: list[str]) -> list[tuple[str, str]
 
 def _variant_config(variant: str) -> tuple[PPOConfig, bool]:
     if variant == "rnd":
-        return PPOConfig(constrained=True, exploration_mode="rnd"), True
+        return PPOConfig(constrained=True, exploration_mode="rnd"), False
     if variant == "no-rnd":
-        return PPOConfig(constrained=True, exploration_mode="none"), True
+        return PPOConfig(constrained=True, exploration_mode="none"), False
     if variant == "unconstrained-rnd":
-        return PPOConfig(constrained=False, exploration_mode="rnd"), True
+        return PPOConfig(constrained=False, exploration_mode="rnd"), False
     if variant == "icm":
         return PPOConfig(constrained=True, exploration_mode="icm"), False
     if variant == "potential":
@@ -192,6 +274,53 @@ def main() -> int:
     )
     parser.add_argument("--updates", type=int, default=100)
     parser.add_argument("--rollout-steps", type=int, default=1024)
+    parser.add_argument(
+        "--rollout-periods",
+        type=int,
+        default=16,
+        help=(
+            "complete orchestration periods collected per PPO update; set to 0 "
+            "to retain the legacy transition-count budget"
+        ),
+    )
+    parser.add_argument("--update-epochs", type=int, default=10)
+    parser.add_argument("--minibatch-size", type=int, default=256)
+    parser.add_argument(
+        "--train-mapping-samples",
+        type=int,
+        default=128,
+        help="physical execution mappings sampled per pattern flow during training",
+    )
+    parser.add_argument(
+        "--eval-mapping-samples",
+        type=int,
+        default=512,
+        help="physical execution mappings sampled per pattern flow during evaluation",
+    )
+    parser.add_argument(
+        "--validation-interval",
+        type=int,
+        default=5,
+        help="PPO updates between deterministic policy-selection evaluations",
+    )
+    parser.add_argument(
+        "--validation-periods",
+        type=int,
+        default=20,
+        help="scored orchestration periods in each policy-selection evaluation",
+    )
+    parser.add_argument(
+        "--validation-warmup-periods",
+        type=int,
+        default=5,
+        help="unscored warm-up periods before each policy-selection evaluation",
+    )
+    parser.add_argument(
+        "--validation-mapping-samples",
+        type=int,
+        default=128,
+        help="physical mappings sampled during policy-selection evaluation",
+    )
     parser.add_argument("--train-slots", type=int, default=600)
     parser.add_argument("--eval-slots", type=int, default=600)
     parser.add_argument("--arrival-scale", type=float, default=1.0)
@@ -216,8 +345,53 @@ def main() -> int:
         action="store_true",
         help="Resume PPO updates from checkpoints and skip completed runs",
     )
+    parser.add_argument(
+        "--training-phase",
+        choices=("auto", "joint", "deployment", "composition"),
+        default="auto",
+        help=(
+            "actor branch updated by PPO; auto maps joint/deploy/route modes to "
+            "joint/deployment/composition"
+        ),
+    )
+    parser.add_argument(
+        "--initial-policy",
+        default=None,
+        help="policy.pt or policy_final.pt used to initialize a curriculum stage",
+    )
     parser.add_argument("--output", default="results/rl_matrix")
     args = parser.parse_args()
+
+    if args.rollout_periods < 0:
+        raise ValueError("--rollout-periods must be non-negative")
+    if args.update_epochs <= 0 or args.minibatch_size <= 0:
+        raise ValueError("PPO update epochs and minibatch size must be positive")
+    if (
+        args.train_mapping_samples <= 0
+        or args.eval_mapping_samples <= 0
+        or args.validation_mapping_samples <= 0
+    ):
+        raise ValueError("Physical mapping sample counts must be positive")
+    if (
+        args.validation_interval <= 0
+        or args.validation_periods <= 0
+        or args.validation_warmup_periods < 0
+    ):
+        raise ValueError("Validation interval and periods must be positive")
+
+    initial_policy_path = (
+        Path(args.initial_policy).resolve() if args.initial_policy else None
+    )
+    initial_policy_state = None
+    if initial_policy_path is not None:
+        if not initial_policy_path.exists():
+            raise FileNotFoundError(initial_policy_path)
+        initial_payload = torch.load(
+            initial_policy_path, map_location="cpu", weights_only=False
+        )
+        initial_policy_state = initial_payload.get(
+            "policy_state_dict", initial_payload
+        )
 
     modes = _parse_csv(args.modes)
     variants = _parse_csv(args.variants)
@@ -268,6 +442,7 @@ def main() -> int:
     )
 
     manifest = {
+        "implementation_revision": 4,
         "scenario": str(scenario_path),
         "scenario_hash": scenario_hash,
         "seeds": seeds,
@@ -276,6 +451,15 @@ def main() -> int:
         "combinations": combinations,
         "updates": args.updates,
         "rollout_steps": args.rollout_steps,
+        "rollout_periods": args.rollout_periods,
+        "update_epochs": args.update_epochs,
+        "minibatch_size": args.minibatch_size,
+        "train_mapping_samples": args.train_mapping_samples,
+        "eval_mapping_samples": args.eval_mapping_samples,
+        "validation_interval": args.validation_interval,
+        "validation_periods": args.validation_periods,
+        "validation_warmup_periods": args.validation_warmup_periods,
+        "validation_mapping_samples": args.validation_mapping_samples,
         "train_slots": args.train_slots,
         "eval_slots": args.eval_slots,
         "arrival_process": "stationary_poisson_intensity",
@@ -283,6 +467,8 @@ def main() -> int:
         "device": hardware,
         "status_interval_steps": args.status_interval_steps,
         "resume_enabled": args.resume,
+        "training_phase": args.training_phase,
+        "initial_policy": str(initial_policy_path) if initial_policy_path else None,
         "python": platform.python_version(),
         "numpy": np.__version__,
         "torch": torch.__version__,
@@ -322,26 +508,56 @@ def main() -> int:
             for mode, variant in combinations
         ):
             config, potential_shaping = _variant_config(variant)
-            run_id = f"{scenario.id}-{mode}-{variant}-s{seed}-{scenario_hash}"
+            training_phase = (
+                {"joint": "joint", "deploy": "deployment", "route": "composition"}[
+                    mode
+                ]
+                if args.training_phase == "auto"
+                else args.training_phase
+            )
+            config = replace(
+                config,
+                update_epochs=args.update_epochs,
+                minibatch_size=args.minibatch_size,
+                training_phase=training_phase,
+            )
+            run_id = (
+                f"{scenario.id}-{mode}-{variant}-{training_phase}-s{seed}-"
+                f"{scenario_hash}"
+            )
             run_dir = output / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
             run_spec = {
+                "implementation_revision": 4,
                 "scenario_hash": scenario_hash,
                 "seed": seed,
                 "mode": mode,
                 "variant": variant,
                 "updates": args.updates,
                 "rollout_steps": args.rollout_steps,
+                "rollout_periods": args.rollout_periods,
+                "update_epochs": args.update_epochs,
+                "minibatch_size": args.minibatch_size,
+                "train_mapping_samples": args.train_mapping_samples,
+                "eval_mapping_samples": args.eval_mapping_samples,
+                "validation_interval": args.validation_interval,
+                "validation_periods": args.validation_periods,
+                "validation_warmup_periods": args.validation_warmup_periods,
+                "validation_mapping_samples": args.validation_mapping_samples,
                 "train_slots": args.train_slots,
                 "eval_slots": args.eval_slots,
                 "arrival_scale": args.arrival_scale,
+                "training_phase": training_phase,
+                "initial_policy": (
+                    str(initial_policy_path) if initial_policy_path else None
+                ),
             }
             complete_path = run_dir / "run_complete.json"
             run_slots_path = run_dir / "evaluation_slots.parquet"
             run_summary_path = run_dir / "run_summary.parquet"
             if args.resume and complete_path.exists():
                 completed = json.loads(complete_path.read_text(encoding="utf-8"))
-                if completed.get("run_spec") != run_spec:
+                if not _run_specs_match(completed.get("run_spec", {}), run_spec):
                     raise ValueError(
                         f"Completed run {run_id} does not match the requested configuration"
                     )
@@ -361,21 +577,30 @@ def main() -> int:
             )
             train_env = env_class(
                 scenario,
-                max_slots=args.train_slots,
+                max_slots=(
+                    args.rollout_periods
+                    if mode == "route" and args.rollout_periods > 0
+                    else args.train_slots
+                ),
                 potential_shaping=potential_shaping,
                 seed=seed,
                 arrival_trace=train_trace,
+                mapping_samples=args.train_mapping_samples,
             )
             print(f"Starting training run {run_id}", flush=True)
             logger.info("starting training run %s", run_id)
             checkpoint_path = run_dir / "checkpoint.pt"
+            best_policy_path = run_dir / "policy_best.pt"
+            if not args.resume:
+                checkpoint_path.unlink(missing_ok=True)
+                best_policy_path.unlink(missing_ok=True)
             resume_state = None
             previous_train_wall_time_s = 0.0
             if args.resume and checkpoint_path.exists():
                 checkpoint = torch.load(
                     checkpoint_path, map_location=resolved_device, weights_only=False
                 )
-                if checkpoint.get("run_spec") != run_spec:
+                if not _run_specs_match(checkpoint.get("run_spec", {}), run_spec):
                     raise ValueError(
                         f"Checkpoint for {run_id} does not match the requested configuration"
                     )
@@ -388,6 +613,54 @@ def main() -> int:
                     run_id,
                     resume_state.get("next_update", 0),
                 )
+            best_validation_utility = float("-inf")
+            best_validation_update = -1
+            best_validation_violation_fraction = float("inf")
+            best_validation_mean_violations = float("inf")
+            best_validation_key = (float("-inf"),) * 3
+            if args.resume and best_policy_path.exists():
+                best_payload = torch.load(
+                    best_policy_path,
+                    map_location=resolved_device,
+                    weights_only=False,
+                )
+                best_validation_utility = float(
+                    best_payload.get("validation_utility", float("-inf"))
+                )
+                best_validation_update = int(best_payload.get("update", -1))
+                best_validation_violation_fraction = float(
+                    best_payload.get("violation_slot_fraction", float("inf"))
+                )
+                best_validation_mean_violations = float(
+                    best_payload.get("mean_violations", float("inf"))
+                )
+                best_validation_key = (
+                    -best_validation_violation_fraction,
+                    -best_validation_mean_violations,
+                    best_validation_utility,
+                )
+
+            validation_seed = seed + 5_000
+            validation_total_periods = (
+                args.validation_warmup_periods + args.validation_periods
+            )
+            validation_trace = _arrival_trace(
+                scenario, validation_total_periods, args.arrival_scale
+            )
+            validation_env = env_class(
+                scenario,
+                max_slots=validation_total_periods,
+                potential_shaping=False,
+                seed=validation_seed,
+                arrival_trace=validation_trace,
+                mapping_samples=args.validation_mapping_samples,
+            )
+            validation_policy = StructuredActorCritic(validation_env, config).to(
+                resolved_device
+            )
+            validation_history_path = run_dir / "validation_history.jsonl"
+            if resume_state is None:
+                validation_history_path.unlink(missing_ok=True)
             train_started = time.perf_counter()
             initial_update = int(resume_state.get("next_update", 0)) if resume_state else 0
             history_stream = run_dir / "training_history.jsonl"
@@ -402,17 +675,31 @@ def main() -> int:
                 run_id=run_id,
                 output_dir=run_dir,
                 updates=args.updates,
-                rollout_steps=args.rollout_steps,
+                rollout_steps=(
+                    args.rollout_periods
+                    if args.rollout_periods > 0
+                    else args.rollout_steps
+                ),
+                rollout_unit=(
+                    "orchestration_period"
+                    if args.rollout_periods > 0
+                    else "transition"
+                ),
                 update_epochs=config.update_epochs,
                 minibatch_size=config.minibatch_size,
                 device=resolved_device,
-                status_interval_steps=args.status_interval_steps,
+                status_interval_steps=(
+                    1 if args.rollout_periods > 0 else args.status_interval_steps
+                ),
                 show_progress=not args.no_progress,
                 initial_update=initial_update,
                 append_history=bool(resume_state),
             )
 
             def save_checkpoint(training_state: dict) -> None:
+                nonlocal best_validation_utility, best_validation_update
+                nonlocal best_validation_violation_fraction
+                nonlocal best_validation_mean_violations, best_validation_key
                 _atomic_torch(
                     checkpoint_path,
                     {
@@ -426,12 +713,108 @@ def main() -> int:
                         "updated_at_utc": _timestamp(),
                     },
                 )
+                completed_update = int(training_state["next_update"])
+                should_validate = (
+                    completed_update % args.validation_interval == 0
+                    or completed_update == args.updates
+                )
+                if not should_validate:
+                    return
+                validation_policy.load_state_dict(training_state["policy_state_dict"])
+                validation_policy.eval()
+                validation_records, _ = _evaluate(
+                    validation_env,
+                    validation_policy,
+                    validation_seed,
+                    resolved_device,
+                )
+                scored_validation_records = validation_records[
+                    args.validation_warmup_periods :
+                ]
+                validation_utility = _mean_evaluation_utility(
+                    validation_env,
+                    validation_records,
+                    args.validation_warmup_periods,
+                )
+                validation_mean_violations = float(
+                    np.mean(
+                        [record.get("violations", 0) for record in scored_validation_records]
+                    )
+                )
+                validation_violation_fraction = float(
+                    np.mean(
+                        [
+                            record.get("violations", 0) > 0
+                            for record in scored_validation_records
+                        ]
+                    )
+                )
+                validation_key = (
+                    -validation_violation_fraction,
+                    -validation_mean_violations,
+                    validation_utility,
+                )
+                with validation_history_path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        json.dumps(
+                            {
+                                "update": completed_update,
+                                "mean_utility": validation_utility,
+                                "periods": len(scored_validation_records),
+                                "warmup_periods": args.validation_warmup_periods,
+                                "mean_violations": validation_mean_violations,
+                                "violation_slot_fraction": validation_violation_fraction,
+                            }
+                        )
+                        + "\n"
+                    )
+                if validation_key > best_validation_key:
+                    best_validation_utility = validation_utility
+                    best_validation_update = completed_update
+                    best_validation_violation_fraction = (
+                        validation_violation_fraction
+                    )
+                    best_validation_mean_violations = validation_mean_violations
+                    best_validation_key = validation_key
+                    _atomic_torch(
+                        best_policy_path,
+                        {
+                            "policy_state_dict": {
+                                key: value.detach().cpu()
+                                for key, value in training_state[
+                                    "policy_state_dict"
+                                ].items()
+                            },
+                            "validation_utility": validation_utility,
+                            "violation_slot_fraction": validation_violation_fraction,
+                            "mean_violations": validation_mean_violations,
+                            "update": completed_update,
+                            "seed": seed,
+                            "run_spec": run_spec,
+                        },
+                    )
+                logger.info(
+                    "validated %s at update %d: violations=%.3f/%.3f utility=%.6f "
+                    "best=%.3f/%.3f/%.6f@%d",
+                    run_id,
+                    completed_update,
+                    validation_violation_fraction,
+                    validation_mean_violations,
+                    validation_utility,
+                    best_validation_violation_fraction,
+                    best_validation_mean_violations,
+                    best_validation_utility,
+                    best_validation_update,
+                )
 
             with reporter:
                 policy, history = train_ppo(
                     train_env,
                     updates=args.updates,
                     rollout_steps=args.rollout_steps,
+                    rollout_periods=(
+                        args.rollout_periods if args.rollout_periods > 0 else None
+                    ),
                     seed=seed,
                     config=config,
                     device=resolved_device,
@@ -440,12 +823,44 @@ def main() -> int:
                     on_optimization_step=reporter.on_optimization_step,
                     on_update=reporter.on_update,
                     resume_state=resume_state,
+                    initial_policy_state_dict=initial_policy_state,
                     on_checkpoint=save_checkpoint,
                 )
             train_wall_time_s = (
                 previous_train_wall_time_s + time.perf_counter() - train_started
             )
-            torch.save(
+            final_policy_payload = {
+                "policy_state_dict": {
+                    key: value.detach().cpu()
+                    for key, value in policy.state_dict().items()
+                },
+                "ppo_config": asdict(config),
+                "layout_signature": {
+                    "models": train_env.layout.models,
+                    "candidates": train_env.layout.candidates,
+                    "servers": train_env.layout.servers,
+                    "deployment_targets": train_env.layout.deployment_targets,
+                    "model_groups": train_env.layout.model_groups,
+                },
+                "seed": seed,
+                "device": hardware,
+                "selection": "final",
+            }
+            _atomic_torch(
+                run_dir / "policy_final.pt",
+                final_policy_payload,
+            )
+            selected_policy = "final"
+            if best_policy_path.exists():
+                best_payload = torch.load(
+                    best_policy_path,
+                    map_location=resolved_device,
+                    weights_only=False,
+                )
+                policy.load_state_dict(best_payload["policy_state_dict"])
+                selected_policy = "best_validation"
+            _atomic_torch(
+                run_dir / "policy.pt",
                 {
                     "policy_state_dict": {
                         key: value.detach().cpu()
@@ -461,8 +876,14 @@ def main() -> int:
                     },
                     "seed": seed,
                     "device": hardware,
+                    "selection": selected_policy,
+                    "selected_update": best_validation_update,
+                    "validation_utility": best_validation_utility,
+                    "validation_violation_slot_fraction": (
+                        best_validation_violation_fraction
+                    ),
+                    "validation_mean_violations": best_validation_mean_violations,
                 },
-                run_dir / "policy.pt",
             )
             (run_dir / "training_history.json").write_text(
                 json.dumps(history, indent=2), encoding="utf-8"
@@ -479,6 +900,7 @@ def main() -> int:
                 potential_shaping=False,
                 seed=seed + 10_000,
                 arrival_trace=eval_trace,
+                mapping_samples=args.eval_mapping_samples,
             )
             eval_bar = tqdm(
                 total=args.eval_slots,
@@ -521,6 +943,19 @@ def main() -> int:
                         history,
                         train_wall_time_s,
                         decision_times,
+                        {
+                            "selected_policy": selected_policy,
+                            "selected_update": best_validation_update,
+                            "selected_validation_utility": best_validation_utility,
+                            "selected_validation_violation_slot_fraction": (
+                                best_validation_violation_fraction
+                            ),
+                            "selected_validation_mean_violations": (
+                                best_validation_mean_violations
+                            ),
+                            "state_cost_scale": eval_env.cost_reference,
+                            "state_latency_scale": eval_env.latency_reference,
+                        },
                     ),
             }
             _atomic_parquet(pd.DataFrame(decorated_records), run_slots_path)

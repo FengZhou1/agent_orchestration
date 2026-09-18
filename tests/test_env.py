@@ -78,6 +78,25 @@ def test_ppo_smoke_update(scenario):
     assert history[0]["mean_rnd_loss"] >= 0.0
 
 
+def test_ppo_can_budget_rollouts_by_complete_orchestration_period(scenario):
+    env = AgentOrchestrationEnv(
+        scenario, max_slots=4, seed=29, mapping_samples=8
+    )
+    config = PPOConfig(update_epochs=1, minibatch_size=256, hidden_size=32)
+    _, history = train_ppo(
+        env,
+        updates=1,
+        rollout_steps=1,
+        rollout_periods=2,
+        seed=29,
+        config=config,
+    )
+    assert history[0]["routing_steps"] == 2
+    assert history[0]["transition_steps"] > history[0]["routing_steps"]
+    assert history[0]["collection_time_s"] >= 0.0
+    assert history[0]["optimization_time_s"] >= 0.0
+
+
 def test_ppo_reports_rollout_optimization_and_update_progress(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=19)
     config = PPOConfig(update_epochs=1, minibatch_size=32, hidden_size=32)
@@ -101,8 +120,11 @@ def test_ppo_reports_rollout_optimization_and_update_progress(scenario):
     )
     assert phases == [(0, "collecting"), (0, "optimizing")]
     assert rollout_steps[-1][1] >= step_count
-    assert optimization_steps == [(0, 1, 2), (0, 2, 2)]
     assert len(updates) == 1
+    expected_steps = math.ceil(updates[0]["transition_steps"] / config.minibatch_size)
+    assert optimization_steps == [
+        (0, step, expected_steps) for step in range(1, expected_steps + 1)
+    ]
 
 
 def test_ppo_resumes_from_update_checkpoint(scenario):
@@ -166,9 +188,22 @@ def test_ppo_icm_smoke_update(scenario):
 def test_routing_only_environment_never_enters_deployment(scenario):
     env = RoutingOnlyEnv(scenario, max_slots=2, seed=12)
     observation, _ = env.reset(seed=12)
+    deployment = env.current_deployment.copy()
     assert observation["action_type"] == env.COMPOSITION
     observation, _, _, _, _ = env.step(_blank_routing_action(env))
     assert observation["action_type"] == env.COMPOSITION
+    assert env.current_deployment == deployment
+
+
+def test_routing_only_environment_rotates_feasible_fixed_deployments(scenario):
+    env = RoutingOnlyEnv(scenario, max_slots=1, seed=0)
+    signatures = set()
+    for seed in range(8):
+        _, info = env.reset(seed=seed)
+        assert env.planner.deployment_feasible(env.current_deployment)
+        signatures.add(env._deployment_signature(env.current_deployment))
+        assert info["fixed_deployment_count"] >= 2
+    assert len(signatures) >= 2
 
 
 def test_deployment_only_environment_evaluates_internal_interval(scenario):
@@ -187,22 +222,67 @@ def test_deployment_only_environment_evaluates_internal_interval(scenario):
     assert math.isfinite(reward)
 
 
-def test_normalized_reward_has_separate_constraint_cost(scenario):
+def test_incremental_reward_has_separate_constraint_cost(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=15)
     observation, _ = env.reset(seed=15)
     observation, deployment_infos = _complete_deployment(env, observation)
     assert all(info["constraint_cost"] == 0.0 for info in deployment_infos)
     _, reward, _, _, routing_info = env.step(_blank_routing_action(env))
     components = routing_info["reward_components"]
-    assert -1.0 <= reward <= 1.0
+    expected = (
+        scenario.reward.cost_weight * components["cost_delta"]
+        + scenario.reward.latency_weight * components["latency_delta"]
+        + scenario.reward.goodput_weight * components["goodput_delta"]
+        + scenario.reward.quality_weight * components["quality_delta"]
+    )
+    assert reward == pytest.approx(expected)
+    assert components["cost_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
+    assert components["latency_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
+    assert components["goodput_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
+    assert components["quality_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
     assert set(components) == {
         "utility",
-        "cost_normalized",
-        "latency_normalized",
-        "goodput_normalized",
-        "quality_normalized",
+        "cost_delta",
+        "latency_delta",
+        "goodput_delta",
+        "quality_delta",
     }
     assert routing_info["constraint_cost"] >= 0.0
+
+
+def test_incremental_reward_uses_raw_previous_period_differences(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=2, seed=22)
+    previous = {"cost": 10.0, "latency": 8.0, "goodput": 4.0, "quality": 0.7}
+    utility, components, current = env._incremental_utility(
+        cost=8.0,
+        mean_latency=7.0,
+        goodput=5.5,
+        quality=0.8,
+        previous=previous,
+    )
+    assert components["cost_delta"] == pytest.approx(2.0)
+    assert components["latency_delta"] == pytest.approx(1.0)
+    assert components["goodput_delta"] == pytest.approx(1.5)
+    assert components["quality_delta"] == pytest.approx(0.1)
+    expected = 0.25 * (2.0 + 1.0 + 1.5 + 0.1)
+    assert utility == pytest.approx(expected)
+    assert current == {
+        "cost": 8.0,
+        "latency": 7.0,
+        "goodput": 5.5,
+        "quality": 0.8,
+    }
+
+
+def test_feature_vector_excludes_horizon_progress_and_duplicate_phase(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=2, seed=31)
+    observation, _ = env.reset(seed=31)
+    features = observation["features"].copy()
+    env._period_index = 1_000
+    env.phase = env.COMPOSITION
+    changed = env._observation()
+    np.testing.assert_allclose(changed["features"], features)
+    assert changed["action_type"] == env.COMPOSITION
 
 
 def test_sequential_deployment_builds_a_feasible_capacity_plan(scenario):
@@ -237,3 +317,42 @@ def test_deployment_and_first_routing_share_the_same_physical_slot(scenario):
     _, _, _, _, routing_info = env.step(_blank_routing_action(env))
     assert routing_info["discount"] == env.gamma
     assert env.simulator.slot == 1
+
+
+def test_each_deployment_item_is_processed_exactly_once(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=1, seed=41)
+    observation, _ = env.reset(seed=41)
+    visited = []
+    while observation["action_type"] < env.COMPOSITION:
+        visited.append(env._current_demand)
+        action = _blank_routing_action(env)
+        action["deploy"] = 0
+        observation, _, _, _, _ = env.step(action)
+    expected = len(env.layout.candidates) + len(env.layout.tools) * len(
+        env.layout.servers
+    )
+    assert len(visited) == expected
+    assert len(set(visited)) == expected
+
+
+def test_actor_branches_can_be_frozen_independently(scenario):
+    env = AgentOrchestrationEnv(scenario, max_slots=1, seed=42)
+    policy = StructuredActorCritic(env, PPOConfig(hidden_size=32))
+    policy.set_training_phase("deployment")
+    assert all(
+        parameter.requires_grad
+        for parameter in policy.deployment_encoder.parameters()
+    )
+    assert all(
+        not parameter.requires_grad
+        for parameter in policy.composition_encoder.parameters()
+    )
+    policy.set_training_phase("composition")
+    assert all(
+        not parameter.requires_grad
+        for parameter in policy.deployment_encoder.parameters()
+    )
+    assert all(
+        parameter.requires_grad
+        for parameter in policy.composition_encoder.parameters()
+    )

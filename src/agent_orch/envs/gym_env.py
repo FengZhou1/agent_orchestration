@@ -34,13 +34,14 @@ class StructuredActionLayout:
             for app in scenario.applications.values()
             for ingress in app.ingress_rates
         )
-        targets = (("stop", ""),)
-        targets += tuple(("add_candidate", item) for item in candidates)
-        targets += tuple(("remove_candidate", item) for item in candidates)
-        targets += tuple(("add_server", item) for item in servers)
-        targets += tuple(("remove_server", item) for item in servers)
+        targets = (("keep", "0"), ("add", "1"), ("remove", "2"))
         return StructuredActionLayout(
-            models, candidates, servers, tools, model_groups, targets
+            models,
+            candidates,
+            servers,
+            tools,
+            model_groups,
+            targets,
         )
 
     @property
@@ -68,6 +69,8 @@ class AgentOrchestrationEnv(gym.Env):
     DEPLOYMENT = LLM_DEPLOYMENT
     ROUTING = COMPOSITION
     CONSTRAINT_NAMES = ("llm", "service")
+    REWARD_TIE_RELATIVE_TOLERANCE = 1.0e-3
+    REWARD_TIE_BONUS = 1.0e-3
 
     def __init__(
         self,
@@ -77,6 +80,7 @@ class AgentOrchestrationEnv(gym.Env):
         seed: int = 0,
         arrival_trace: ArrivalTrace | None = None,
         gamma: float = 0.99,
+        mapping_samples: int = 4096,
     ):
         super().__init__()
         self.scenario = scenario
@@ -84,30 +88,31 @@ class AgentOrchestrationEnv(gym.Env):
         self.potential_shaping = potential_shaping
         self.layout = StructuredActionLayout.build(scenario)
         self.planner = CapacityPlanner(scenario)
-        self.simulator = Simulator(scenario)
+        self.simulator = Simulator(scenario, max_mapping_samples=mapping_samples)
         self.simulator.set_arrival_trace(arrival_trace)
         self.physical_router = PhysicalRouter(scenario)
         self._seed = seed
         self.gamma = gamma
         self.deployment_gamma = 1.0
         self.phase = self.LLM_DEPLOYMENT
-        self.cost_min, self.cost_max = self._fixed_cost_bounds()
+        self.current_deployment = self.planner.initial_deployment()
+        self.cost_reference = self._default_cost_reference()
+        self.latency_reference = self._default_latency_reference()
         self.arrival_scale = max(
             1.0,
             sum(rate for app in scenario.applications.values() for rate in app.ingress_rates.values()),
         )
-        self.current_deployment = self.planner.initial_deployment()
         self._base_deployment = self.current_deployment.copy()
         self.last_routing = GreedyPolicy(scenario, seed).routing(self.current_deployment)
         self._last_slot_components = self._empty_slot_components()
+        self._last_performance_reference: dict[str, float] | None = None
         self._last_constraint_vector = np.zeros(2, dtype=np.float32)
         self._planning_model_share = self._uniform_model_share()
         self._period_index = 0
         self._capacity_plan: CapacityPlan | None = None
-        self._deployment_targets: list[tuple[str, str]] = []
+        self._deployment_targets: list[tuple[str, str, str]] = []
         self._deployment_target_index = 0
-        self._current_demand: tuple[str, str] | None = None
-        self._touched_targets: set[tuple[str, str]] = set()
+        self._current_demand: tuple[str, str, str] | None = None
         self._last_placement = -1
         self._deployment_actions_in_period = 0
         self._planning_shortfall = {"llm": 0.0, "tool": 0.0}
@@ -140,6 +145,7 @@ class AgentOrchestrationEnv(gym.Env):
         self._base_deployment = self.current_deployment.copy()
         self.last_routing = GreedyPolicy(self.scenario, self._seed).routing(self.current_deployment)
         self._last_slot_components = self._empty_slot_components()
+        self._last_performance_reference = None
         self._last_constraint_vector = np.zeros(2, dtype=np.float32)
         self._planning_model_share = self._uniform_model_share()
         self._period_index = 0
@@ -157,29 +163,24 @@ class AgentOrchestrationEnv(gym.Env):
         mask = self._deploy_mask()
         if selected < 0 or selected >= len(mask) or not mask[selected]:
             raise ValueError("The sequential deployment action is masked or invalid")
-        action_kind, action_id = self.layout.deployment_targets[selected]
-        target_kind, target_id = self._current_demand
-        if action_kind == "stop":
-            self._advance_deployment_target()
-        elif target_kind == "llm" and action_kind in {"add_candidate", "remove_candidate"}:
-            candidate = self.scenario.candidates[action_id]
-            if candidate.model != target_id:
-                raise ValueError("The selected candidate serves another model")
-            self.current_deployment.llm_active[action_id] = int(action_kind == "add_candidate")
-            self._touched_targets.add((action_kind, action_id))
-            self._last_placement = selected
-            self._deployment_actions_in_period += 1
-        elif target_kind == "tool" and action_kind in {"add_server", "remove_server"}:
-            key = (target_id, action_id)
-            current = self.current_deployment.tool_replicas.get(key, 0)
-            self.current_deployment.tool_replicas[key] = max(
-                0, current + (1 if action_kind == "add_server" else -1)
-            )
-            self._touched_targets.add((action_kind, action_id))
-            self._last_placement = selected
-            self._deployment_actions_in_period += 1
+        target_kind, target_id, target_server = self._current_demand
+        changed = False
+        if target_kind == "llm":
+            current = int(self.current_deployment.llm_active.get(target_id, 0))
+            desired = current if selected == 0 else int(selected == 1)
+            self.current_deployment.llm_active[target_id] = desired
+            changed = desired != current
+        elif target_kind == "tool":
+            key = (target_id, target_server)
+            current = int(self.current_deployment.tool_replicas.get(key, 0))
+            desired = current + (1 if selected == 1 else -1 if selected == 2 else 0)
+            self.current_deployment.tool_replicas[key] = int(desired)
+            changed = desired != current
         else:
             raise ValueError("The deployment action does not match the active target")
+        self._last_placement = selected
+        self._deployment_actions_in_period += int(changed)
+        self._advance_deployment_target()
         info = {
             "discount": 1.0,
             "phase": self._phase_name(),
@@ -191,7 +192,7 @@ class AgentOrchestrationEnv(gym.Env):
             "reward_components": {"utility": 0.0},
         }
         reward = 0.0
-        if self.potential_shaping and action_kind != "stop":
+        if self.potential_shaping and changed:
             new_potential = self._deployment_potential()
             reward = float(new_potential - self._last_potential)
             self._last_potential = new_potential
@@ -275,36 +276,28 @@ class AgentOrchestrationEnv(gym.Env):
         mask = np.zeros(self.layout.deployment_action_size, dtype=np.int8)
         if self._current_demand is None:
             return mask
-        target_kind, target_id = self._current_demand
-        for index, (action_kind, action_id) in enumerate(self.layout.deployment_targets):
-            if action_kind == "stop":
-                mask[index] = 1
-                continue
-            if (action_kind, action_id) in self._touched_targets:
-                continue
-            if target_kind == "llm" and action_kind in {"add_candidate", "remove_candidate"}:
-                candidate = self.scenario.candidates[action_id]
-                if candidate.model != target_id:
-                    continue
-                active = bool(self.current_deployment.llm_active.get(action_id, 0))
-                if action_kind == "add_candidate":
-                    mask[index] = int(not active and self.planner.feasible_activation(self.current_deployment, action_id))
-                else:
-                    active_count = sum(
-                        self.current_deployment.llm_active.values()
-                    )
-                    mask[index] = int(active and active_count > 1)
-            elif target_kind == "tool" and action_kind in {"add_server", "remove_server"}:
-                key = (target_id, action_id)
-                current = self.current_deployment.tool_replicas.get(key, 0)
-                if action_kind == "add_server":
-                    mask[index] = int(self.planner.feasible_tool_replica(self.current_deployment, target_id, action_id))
-                else:
-                    total = sum(
-                        self.current_deployment.tool_replicas.get((target_id, server), 0)
-                        for server in self.layout.servers
-                    )
-                    mask[index] = int(current > 0 and total > 1)
+        target_kind, target_id, target_server = self._current_demand
+        if target_kind == "llm":
+            current = int(self.current_deployment.llm_active.get(target_id, 0))
+            mask[0] = 1
+            if not current:
+                mask[1] = int(
+                    self.planner.feasible_activation(self.current_deployment, target_id)
+                )
+            if current:
+                mask[2] = 1
+            return mask
+
+        current = int(
+            self.current_deployment.tool_replicas.get((target_id, target_server), 0)
+        )
+        mask[0] = 1
+        mask[1] = int(
+            self.planner.feasible_tool_replica(
+                self.current_deployment, target_id, target_server
+            )
+        )
+        mask[2] = int(current > 0)
         return mask
 
     def _begin_deployment_cycle(self) -> None:
@@ -313,11 +306,17 @@ class AgentOrchestrationEnv(gym.Env):
         self._capacity_plan = self.planner.plan(
             arrival_rates, self._planning_model_share, self._period_index
         )
-        model_targets = [("llm", model) for model in self.scenario.models]
-        tool_targets = [("tool", tool) for tool in self.scenario.tools]
+        model_targets = [
+            ("llm", candidate_id, "")
+            for candidate_id in self.planner.candidate_order()
+        ]
+        tool_targets = [
+            ("tool", tool, server)
+            for tool in self.layout.tools
+            for server in self.layout.servers
+        ]
         self._deployment_targets = model_targets + tool_targets
         self._deployment_target_index = 0
-        self._touched_targets = set()
         self._last_placement = -1
         self._deployment_actions_in_period = 0
         self._planning_shortfall = {"llm": 0.0, "tool": 0.0}
@@ -329,7 +328,6 @@ class AgentOrchestrationEnv(gym.Env):
     def _advance_deployment_target(self) -> None:
         if self._current_demand is not None:
             self._deployment_target_index += 1
-        self._touched_targets = set()
         if self._deployment_target_index >= len(self._deployment_targets):
             self._current_demand = None
             self.phase = self.COMPOSITION
@@ -362,37 +360,76 @@ class AgentOrchestrationEnv(gym.Env):
         return float(-(llm_gap + service_gap))
 
     def _slot_reward(self, metrics, arrival_rates):
-        return self._normalized_utility(
-            metrics.cost, metrics.mean_latency_s, metrics.slo_attainment,
-            metrics.quality, metrics.app_latency_s, arrival_rates
+        del arrival_rates
+        utility, components, current = self._incremental_utility(
+            metrics.cost,
+            metrics.mean_latency_s,
+            metrics.goodput_rps,
+            metrics.quality,
+            self._last_performance_reference,
         )
+        self._last_performance_reference = current
+        return utility, components
 
-    def _normalized_utility(self, cost, mean_latency, attainment, quality, app_latency, arrival_rates):
-        cost_normalized = float(np.clip((cost - self.cost_min) / max(self.cost_max - self.cost_min, 1.0e-12), 0.0, 1.0))
-        total_rate = sum(max(0.0, rate) for rate in arrival_rates.values())
-        if total_rate > 0.0 and app_latency:
-            latency_normalized = sum(
-                sum(max(0.0, arrival_rates.get((app.id, ingress), 0.0)) for ingress in app.ingress_rates)
-                * min(1.0, app_latency.get(app.id, mean_latency) / self._app_latency_reference(app.id))
-                for app in self.scenario.applications.values()
-            ) / total_rate
+    def _incremental_utility(
+        self,
+        cost: float,
+        mean_latency: float,
+        goodput: float,
+        quality: float,
+        previous: dict[str, float] | None,
+    ) -> tuple[float, dict[str, float], dict[str, float]]:
+        current = {
+            "cost": float(cost),
+            "latency": float(mean_latency),
+            "goodput": float(goodput),
+            "quality": float(quality),
+        }
+        if previous is None:
+            raw_deltas = {name: 0.0 for name in current}
         else:
-            latency_normalized = min(1.0, mean_latency / max(float(np.mean([self._app_latency_reference(a) for a in self.scenario.applications])), 1.0e-12))
+            raw_deltas = {
+                "cost": float(previous["cost"] - current["cost"]),
+                "latency": float(previous["latency"] - current["latency"]),
+                "goodput": float(current["goodput"] - previous["goodput"]),
+                "quality": float(current["quality"] - previous["quality"]),
+            }
+        deltas = {
+            name: self._tie_adjusted_delta(
+                value,
+                current[name],
+                None if previous is None else previous[name],
+            )
+            for name, value in raw_deltas.items()
+        }
         components = {
-            "cost_normalized": cost_normalized,
-            "latency_normalized": float(latency_normalized),
-            "goodput_normalized": float(np.clip(attainment, 0.0, 1.0)),
-            "quality_normalized": float(np.clip(quality, 0.0, 1.0)),
+            "cost_delta": deltas["cost"],
+            "latency_delta": deltas["latency"],
+            "goodput_delta": deltas["goodput"],
+            "quality_delta": deltas["quality"],
         }
         weights = self.scenario.reward
         utility = (
-            weights.goodput_weight * components["goodput_normalized"]
-            + weights.quality_weight * components["quality_normalized"]
-            - weights.cost_weight * cost_normalized
-            - weights.latency_weight * latency_normalized
+            weights.cost_weight * components["cost_delta"]
+            + weights.latency_weight * components["latency_delta"]
+            + weights.goodput_weight * components["goodput_delta"]
+            + weights.quality_weight * components["quality_delta"]
         )
         components["utility"] = float(utility)
-        return float(utility), components
+        return float(utility), components, current
+
+    def _tie_adjusted_delta(
+        self,
+        delta: float,
+        current: float,
+        previous: float | None,
+    ) -> float:
+        if previous is None:
+            return self.REWARD_TIE_BONUS
+        scale = max(abs(float(current)), abs(float(previous)), 1.0e-12)
+        if abs(float(delta)) <= self.REWARD_TIE_RELATIVE_TOLERANCE * scale:
+            return self.REWARD_TIE_BONUS
+        return float(delta)
 
     def _slot_constraint_vector(self, metrics) -> np.ndarray:
         llm = max([max(0.0, value - 0.9) for value in metrics.llm_utilization.values()] or [0.0])
@@ -419,27 +456,52 @@ class AgentOrchestrationEnv(gym.Env):
         )
         return max(ttft + max(0.0, output_tokens - 1.0) * tbt, 1.0e-9)
 
-    def _fixed_cost_bounds(self):
+    def _default_cost_reference(self) -> float:
+        """Steady running cost of the scenario's reference deployment."""
+
         period_seconds = self.scenario.simulation.orchestration_period_s
-        min_llm = min(
-            self.scenario.llm_configs[c.config].running_cost_per_slot * period_seconds
-            for c in self.scenario.candidates.values()
+        llm_cost = sum(
+            self.scenario.llm_configs[
+                self.scenario.candidates[candidate_id].config
+            ].running_cost_per_slot
+            * period_seconds
+            for candidate_id, active in self.current_deployment.llm_active.items()
+            if active
         )
-        min_tools = sum(
-            tool.running_cost_per_slot * period_seconds
-            for tool in self.scenario.tools.values()
+        service_cost = sum(
+            replicas
+            * self.scenario.tools[tool_id].running_cost_per_slot
+            * period_seconds
+            for (tool_id, _), replicas in self.current_deployment.tool_replicas.items()
         )
-        maximum = sum(
-            self.scenario.llm_configs[c.config].running_cost_per_slot * period_seconds
-            + self.scenario.llm_configs[c.config].load_cost
-            for c in self.scenario.candidates.values()
+        return max(float(llm_cost + service_cost), 1.0e-12)
+
+    def _default_latency_reference(self) -> float:
+        """Arrival-weighted application SLO reference under the base workload."""
+
+        weighted = sum(
+            max(0.0, rate) * self._app_latency_reference(app.id)
+            for app in self.scenario.applications.values()
+            for rate in app.ingress_rates.values()
         )
-        maximum += sum(
-            self.scenario.simulation.max_tool_replicas_per_server
-            * (tool.running_cost_per_slot * period_seconds + tool.start_cost)
-            for tool in self.scenario.tools.values() for _ in self.scenario.servers
+        total_rate = sum(
+            max(0.0, rate)
+            for app in self.scenario.applications.values()
+            for rate in app.ingress_rates.values()
         )
-        return float(min_llm + min_tools), float(max(maximum, min_llm + min_tools + 1.0))
+        if total_rate > 0.0:
+            return max(float(weighted / total_rate), 1.0e-12)
+        return max(
+            float(
+                np.mean(
+                    [
+                        self._app_latency_reference(app_id)
+                        for app_id in self.scenario.applications
+                    ]
+                )
+            ),
+            1.0e-12,
+        )
 
     def _uniform_model_share(self):
         probability = 1.0 / max(1, len(self.scenario.models))
@@ -452,13 +514,19 @@ class AgentOrchestrationEnv(gym.Env):
 
     @staticmethod
     def _empty_slot_components():
-        return {"utility": 0.0, "cost_normalized": 0.0, "latency_normalized": 0.0, "goodput_normalized": 0.0, "quality_normalized": 0.0}
+        return {
+            "utility": 0.0,
+            "cost_delta": 0.0,
+            "latency_delta": 0.0,
+            "goodput_delta": 0.0,
+            "quality_delta": 0.0,
+        }
 
     def _phase_name(self) -> str:
         return {self.LLM_DEPLOYMENT: "llm_deployment", self.SERVICE_DEPLOYMENT: "service_deployment", self.COMPOSITION: "composition"}[self.phase]
 
     def _feature_vector(self) -> np.ndarray:
-        features: list[float] = [self._period_index / max(1, self.max_periods)]
+        features: list[float] = []
         features.extend(float(self.current_deployment.llm_active.get(cid, 0)) for cid in self.layout.candidates)
         features.extend(
             self.current_deployment.tool_replicas.get((tool, server), 0) / max(1, self.scenario.simulation.max_tool_replicas_per_server)
@@ -469,16 +537,35 @@ class AgentOrchestrationEnv(gym.Env):
             for app in self.scenario.applications.values() for ingress, rate in app.ingress_rates.items()
         )
         metrics = self.simulator.last_metrics
-        features.extend([self._last_slot_components.get("cost_normalized", 0.0), self._last_slot_components.get("latency_normalized", 0.0), metrics.slo_attainment if metrics else 0.0, metrics.quality if metrics else 0.0, *self._last_constraint_vector.tolist()])
+        features.extend([
+            metrics.cost / self.cost_reference if metrics else 0.0,
+            metrics.mean_latency_s / self.latency_reference if metrics else 0.0,
+            metrics.slo_attainment if metrics else 0.0,
+            metrics.quality if metrics else 0.0,
+            *self._last_constraint_vector.tolist(),
+        ])
         features.extend(min(2.0, metrics.llm_utilization.get(cid, 0.0)) if metrics else 0.0 for cid in self.layout.candidates)
         features.extend(min(2.0, metrics.tool_utilization.get(f"{tool}@{server}", 0.0)) if metrics else 0.0 for tool in self.layout.tools for server in self.layout.servers)
         features.extend(min(2.0, metrics.link_utilization.get(f"{link.source}->{link.target}", 0.0)) if metrics else 0.0 for link in self.scenario.links)
         remaining = self.planner.normalized_remaining_resources(self.current_deployment)
         for server in self.layout.servers:
             features.extend(remaining[server])
-        features.extend(float(self._current_demand == ("llm", model)) for model in self.layout.models)
-        features.extend(float(self._current_demand == ("tool", tool)) for tool in self.layout.tools)
-        features.extend([self._deployment_target_index / max(1, len(self._deployment_targets)), float(self.phase == self.COMPOSITION)])
+        features.extend(
+            float(
+                self._current_demand is not None
+                and self._current_demand[0] == "llm"
+                and self._current_demand[1] == candidate
+            )
+            for candidate in self.layout.candidates
+        )
+        features.extend(
+            float(self._current_demand == ("tool", tool, server))
+            for tool in self.layout.tools
+            for server in self.layout.servers
+        )
+        features.append(
+            self._deployment_target_index / max(1, len(self._deployment_targets))
+        )
         return np.clip(np.asarray(features, dtype=np.float32), -10.0, 10.0)
 
     def _observation(self):
@@ -487,7 +574,14 @@ class AgentOrchestrationEnv(gym.Env):
 
 
 class RoutingOnlyEnv(AgentOrchestrationEnv):
-    """Fixed deployment with one composition/evaluation transition per period."""
+    """Composition training under one fixed deployment context per episode."""
+
+    def __init__(self, *args, fixed_deployment_count: int = 8, **kwargs):
+        self.fixed_deployment_count = max(1, int(fixed_deployment_count))
+        self._fixed_deployment_catalog: list[DeploymentDecision] = []
+        self._fixed_deployment_index = 0
+        super().__init__(*args, **kwargs)
+        self._fixed_deployment_catalog = self._build_fixed_deployment_catalog()
 
     def _begin_deployment_cycle(self) -> None:
         self._base_deployment = self.current_deployment.copy()
@@ -499,7 +593,6 @@ class RoutingOnlyEnv(AgentOrchestrationEnv):
         self._deployment_targets = []
         self._deployment_target_index = 0
         self._current_demand = None
-        self._touched_targets = set()
         self._deployment_actions_in_period = 0
         self._period_initial_potential = self._deployment_potential()
         self._last_potential = self._period_initial_potential
@@ -507,10 +600,115 @@ class RoutingOnlyEnv(AgentOrchestrationEnv):
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         observation, _ = super().reset(seed=seed, options=options)
-        self.current_deployment = self.planner.initial_deployment()
+        if not self._fixed_deployment_catalog:
+            self._fixed_deployment_catalog = self._build_fixed_deployment_catalog()
+        deployment_rng = np.random.default_rng(abs(int(self._seed)))
+        self._fixed_deployment_index = int(
+            deployment_rng.integers(len(self._fixed_deployment_catalog))
+        )
+        self.current_deployment = self._fixed_deployment_catalog[
+            self._fixed_deployment_index
+        ].copy()
         self._base_deployment = self.current_deployment.copy()
+        self.last_routing = GreedyPolicy(self.scenario, self._seed).routing(
+            self.current_deployment
+        )
         self.phase = self.COMPOSITION
-        return self._observation(), {"discount": self.gamma, "phase": "composition"}
+        return self._observation(), {
+            "discount": self.gamma,
+            "phase": "composition",
+            "fixed_deployment_index": self._fixed_deployment_index,
+            "fixed_deployment_count": len(self._fixed_deployment_catalog),
+        }
+
+    def _build_fixed_deployment_catalog(self) -> list[DeploymentDecision]:
+        catalog = [self.planner.initial_deployment()]
+        signatures = {self._deployment_signature(catalog[0])}
+        models = tuple(self.scenario.models)
+        tools = tuple(self.scenario.tools)
+        max_attempts = max(
+            self.fixed_deployment_count * 4,
+            max((len(self.scenario.candidates), len(self.scenario.servers)), default=1),
+        )
+        for offset in range(1, max_attempts + 1):
+            deployment = self.planner.empty_deployment()
+            complete = True
+            for model_index, model in enumerate(models):
+                candidates = sorted(
+                    (
+                        candidate
+                        for candidate in self.scenario.candidates.values()
+                        if candidate.model == model
+                    ),
+                    key=lambda item: (
+                        self.scenario.llm_configs[item.config].running_cost_per_slot,
+                        item.server,
+                        item.config,
+                        item.id,
+                    ),
+                )
+                candidates = self._rotate(candidates, offset + model_index)
+                selected = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if self.planner.feasible_activation(deployment, candidate.id)
+                    ),
+                    None,
+                )
+                if selected is None:
+                    complete = False
+                    break
+                deployment.llm_active[selected.id] = 1
+            if not complete:
+                continue
+            for tool_index, tool_id in enumerate(tools):
+                servers = sorted(
+                    self.scenario.servers,
+                    key=lambda server_id: (
+                        -self.scenario.tools[tool_id].service_rate[server_id],
+                        server_id,
+                    ),
+                )
+                servers = self._rotate(servers, offset + tool_index)
+                selected_server = next(
+                    (
+                        server_id
+                        for server_id in servers
+                        if self.planner.feasible_tool_replica(
+                            deployment, tool_id, server_id
+                        )
+                    ),
+                    None,
+                )
+                if selected_server is None:
+                    complete = False
+                    break
+                deployment.tool_replicas[(tool_id, selected_server)] = 1
+            if not complete or not self.planner.deployment_feasible(deployment):
+                continue
+            signature = self._deployment_signature(deployment)
+            if signature in signatures:
+                continue
+            signatures.add(signature)
+            catalog.append(deployment)
+            if len(catalog) >= self.fixed_deployment_count:
+                break
+        return catalog
+
+    @staticmethod
+    def _rotate(values: list[Any], offset: int) -> list[Any]:
+        if not values:
+            return []
+        pivot = offset % len(values)
+        return values[pivot:] + values[:pivot]
+
+    @staticmethod
+    def _deployment_signature(deployment: DeploymentDecision) -> tuple:
+        return (
+            tuple(sorted(deployment.llm_active.items())),
+            tuple(sorted(deployment.tool_replicas.items())),
+        )
 
 
 class DeploymentOnlyEnv(AgentOrchestrationEnv):

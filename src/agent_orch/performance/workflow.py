@@ -28,10 +28,18 @@ class WorkflowResult:
 class WorkflowEvaluator:
     _MAX_MAPPING_SAMPLES = 4096
 
-    def __init__(self, scenario: Scenario, backend: AnalyticalBackend):
+    def __init__(
+        self,
+        scenario: Scenario,
+        backend: AnalyticalBackend,
+        max_mapping_samples: int = _MAX_MAPPING_SAMPLES,
+    ):
         self.scenario = scenario
         self.backend = backend
+        self.max_mapping_samples = max(1, int(max_mapping_samples))
         self._mapping_cache: dict[tuple[str, str, str, str], list[tuple[dict[str, tuple[str, str | None]], float]]] = {}
+        self._path_delay_cache: dict[tuple[str, str], float] = {}
+        self._first_token_delay_cache: dict[tuple[str, str, float], float] = {}
 
     def evaluate(
         self,
@@ -41,6 +49,8 @@ class WorkflowEvaluator:
         arrival_rates: dict[tuple[str, str], float] | None = None,
     ) -> WorkflowResult:
         self._mapping_cache = {}
+        self._path_delay_cache = {}
+        self._first_token_delay_cache = {}
         app_latency: dict[str, float] = {}
         flow_metrics: dict[str, dict[str, float]] = {}
         goodput = 0.0
@@ -211,7 +221,7 @@ class WorkflowEvaluator:
         for node_choices in choices:
             cardinality *= len(node_choices)
         outcomes: list[tuple[dict[str, tuple[str, str | None]], float]] = []
-        if cardinality <= self._MAX_MAPPING_SAMPLES:
+        if cardinality <= self.max_mapping_samples:
             for combination in itertools.product(*choices):
                 probability = 1.0
                 mapping: dict[str, tuple[str, str | None]] = {}
@@ -226,7 +236,7 @@ class WorkflowEvaluator:
         seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
         import numpy as np
         rng = np.random.default_rng(seed)
-        for _ in range(self._MAX_MAPPING_SAMPLES):
+        for _ in range(self.max_mapping_samples):
             mapping = {}
             for node_choices in choices:
                 probabilities = np.asarray([item[2] for item in node_choices], dtype=float)
@@ -234,7 +244,7 @@ class WorkflowEvaluator:
                 index = int(rng.choice(len(node_choices), p=probabilities))
                 node_id, location, _ = node_choices[index]
                 mapping[node_id] = location
-            outcomes.append((mapping, 1.0 / self._MAX_MAPPING_SAMPLES))
+            outcomes.append((mapping, 1.0 / self.max_mapping_samples))
         self._mapping_cache[cache_key] = outcomes
         return outcomes
 
@@ -269,18 +279,14 @@ class WorkflowEvaluator:
         prefix_delays: list[float] = []
         for chain in flow.chains:
             first = location(chain[0])
-            delay = overload if not first else self.backend.network.path_delay(
-                ingress, first, result.link_load_mbps
-            )
+            delay = overload if not first else self._path_delay(ingress, first, result)
             for source, target in zip(chain[:-1], chain[1:]):
                 delay += node_response(source)
                 source_server, target_server = location(source), location(target)
                 if not source_server or not target_server:
                     delay += overload
                 else:
-                    delay += self.backend.network.path_delay(
-                        source_server, target_server, result.link_load_mbps
-                    )
+                    delay += self._path_delay(source_server, target_server, result)
             prefix_delays.append(delay)
         critical_prefix = max(prefix_delays, default=overload)
         final_server = location(flow.final_node)
@@ -296,12 +302,12 @@ class WorkflowEvaluator:
                 final_perf.ttft_s,
                 final_perf.tbt_s,
             )
-        exit_delay = overload if not final_server else self.backend.network.path_delay(
-            final_server, ingress, result.link_load_mbps
+        exit_delay = overload if not final_server else self._path_delay(
+            final_server, ingress, result
         )
         output_tokens = max(1.0, app.nodes[flow.final_node].output_tokens[model])
         token_data = app.exit_data_mb[model] / output_tokens
-        first_token_return = overload if not final_server else self.backend.network.first_token_return_delay(
+        first_token_return = overload if not final_server else self._first_token_delay(
             final_server, ingress, token_data
         )
         stage_times: dict[str, float] = {}
@@ -315,14 +321,14 @@ class WorkflowEvaluator:
                 index = chain.index(node.id)
                 prefix = chain[: index + 1]
                 first_server = location(prefix[0])
-                delay = overload if not first_server else self.backend.network.path_delay(
-                    ingress, first_server, result.link_load_mbps
+                delay = overload if not first_server else self._path_delay(
+                    ingress, first_server, result
                 )
                 for source, target in zip(prefix[:-1], prefix[1:]):
                     delay += node_response(source)
                     source_server, target_server = location(source), location(target)
-                    delay += overload if not source_server or not target_server else self.backend.network.path_delay(
-                        source_server, target_server, result.link_load_mbps
+                    delay += overload if not source_server or not target_server else self._path_delay(
+                        source_server, target_server, result
                     )
                 delay += node_response(node.id)
                 prefixes.append(delay)
@@ -334,6 +340,34 @@ class WorkflowEvaluator:
             final_tbt,
             stage_times,
         )
+
+    def _path_delay(
+        self,
+        source: str,
+        target: str,
+        result: AnalyticalResult,
+    ) -> float:
+        key = (source, target)
+        if key not in self._path_delay_cache:
+            self._path_delay_cache[key] = self.backend.network.path_delay(
+                source, target, result.link_load_mbps
+            )
+        return self._path_delay_cache[key]
+
+    def _first_token_delay(
+        self,
+        source: str,
+        target: str,
+        token_data_mb: float,
+    ) -> float:
+        key = (source, target, float(token_data_mb))
+        if key not in self._first_token_delay_cache:
+            self._first_token_delay_cache[key] = (
+                self.backend.network.first_token_return_delay(
+                    source, target, token_data_mb
+                )
+            )
+        return self._first_token_delay_cache[key]
 
     def _node_response(
         self,
@@ -408,7 +442,7 @@ class WorkflowEvaluator:
             return self.scenario.simulation.overload_delay_s
         return sum(
             probability
-            * self.backend.network.path_delay(u, v, result.link_load_mbps)
+            * self._path_delay(u, v, result)
             for u, v, probability in pairs
         )
 
@@ -426,9 +460,7 @@ class WorkflowEvaluator:
         )
         return sum(
             probability
-            * self.backend.network.path_delay(
-                ingress, server, result.link_load_mbps
-            )
+            * self._path_delay(ingress, server, result)
             for server, probability in distribution.items()
         )
 
@@ -446,9 +478,7 @@ class WorkflowEvaluator:
         )
         return sum(
             probability
-            * self.backend.network.path_delay(
-                server, ingress, result.link_load_mbps
-            )
+            * self._path_delay(server, ingress, result)
             for server, probability in distribution.items()
         )
 
@@ -469,7 +499,7 @@ class WorkflowEvaluator:
         )
         return sum(
             probability
-            * self.backend.network.first_token_return_delay(server, ingress, token_data)
+            * self._first_token_delay(server, ingress, token_data)
             for server, probability in distribution.items()
         )
 

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -54,6 +55,38 @@ def test_progress_reporter_streams_status_and_history(tmp_path):
     lines = (tmp_path / "training_history.jsonl").read_text().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["mean_reward"] == 0.5
+
+
+def test_progress_reporter_retries_transient_windows_replace_lock(
+    tmp_path, monkeypatch
+):
+    original_replace = Path.replace
+    attempts = {"count": 0}
+
+    def transient_lock(path, target):
+        attempts["count"] += 1
+        if attempts["count"] <= 2:
+            raise PermissionError(5, "destination is temporarily locked")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", transient_lock)
+    with TrainingProgressReporter(
+        run_id="locked-status",
+        output_dir=tmp_path,
+        updates=1,
+        rollout_steps=1,
+        update_epochs=1,
+        minibatch_size=1,
+        device="cpu",
+        status_interval_steps=1,
+        show_progress=False,
+    ) as reporter:
+        reporter.on_phase(0, "collecting")
+        reporter.on_rollout_step(0, 1)
+
+    status = json.loads((tmp_path / "training_status.json").read_text())
+    assert status["status"] == "completed"
+    assert attempts["count"] >= 3
 
 
 def test_progress_reporter_appends_after_resumed_update(tmp_path):

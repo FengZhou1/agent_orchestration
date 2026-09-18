@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import random
+import time
 from typing import Any, Callable, Literal
 
 import numpy as np
@@ -27,6 +28,7 @@ CheckpointCallback = Callable[[dict[str, Any]], None]
 class PPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
+    deployment_gae_lambda: float = 1.0
     clip_ratio: float = 0.2
     learning_rate: float = 3.0e-4
     update_epochs: int = 10
@@ -58,6 +60,7 @@ class PPOConfig:
     rnd_reward_clip: float = 5.0
     rnd_loss_coefficient: float = 1.0
     icm_scale: float = 0.01
+    training_phase: Literal["joint", "deployment", "composition"] = "joint"
 
 
 class StructuredActorCritic(nn.Module):
@@ -66,7 +69,13 @@ class StructuredActorCritic(nn.Module):
         self.layout = env.layout
         feature_size = env.observation_space["features"].shape[0]
         hidden = config.hidden_size
-        self.encoder = nn.Sequential(
+        self.deployment_encoder = nn.Sequential(
+            nn.Linear(feature_size + 3, hidden),
+            nn.Tanh(),
+            nn.Linear(hidden, hidden),
+            nn.Tanh(),
+        )
+        self.composition_encoder = nn.Sequential(
             nn.Linear(feature_size + 3, hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
@@ -77,19 +86,50 @@ class StructuredActorCritic(nn.Module):
         self.deployment_value_head = nn.Linear(hidden, 1)
         self.routing_value_head = nn.Linear(hidden, 1)
 
-    def _encode(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
+    def _encoded_phases(
+        self, observation: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         features = observation["features"]
         if features.ndim == 1:
             features = features.unsqueeze(0)
         action_type = observation["action_type"].long().view(-1)
         phase = torch.nn.functional.one_hot(action_type, num_classes=3).float()
-        return self.encoder(torch.cat([features, phase], dim=-1))
+        inputs = torch.cat([features, phase], dim=-1)
+        return (
+            self.deployment_encoder(inputs),
+            self.composition_encoder(inputs),
+            action_type,
+        )
+
+    def set_training_phase(
+        self, phase: Literal["joint", "deployment", "composition"]
+    ) -> None:
+        for parameter in self.parameters():
+            parameter.requires_grad_(True)
+        if phase == "deployment":
+            modules = (
+                self.composition_encoder,
+                self.model_head,
+                self.routing_value_head,
+            )
+        elif phase == "composition":
+            modules = (
+                self.deployment_encoder,
+                self.deploy_head,
+                self.deployment_value_head,
+            )
+        else:
+            return
+        for module in modules:
+            for parameter in module.parameters():
+                parameter.requires_grad_(False)
 
     def value(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
-        hidden = self._encode(observation)
-        phases = observation["action_type"].long().view(-1)
-        deployment = self.deployment_value_head(hidden).squeeze(-1)
-        routing = self.routing_value_head(hidden).squeeze(-1)
+        deployment_hidden, composition_hidden, phases = self._encoded_phases(
+            observation
+        )
+        deployment = self.deployment_value_head(deployment_hidden).squeeze(-1)
+        routing = self.routing_value_head(composition_hidden).squeeze(-1)
         return torch.where(
             phases < AgentOrchestrationEnv.COMPOSITION, deployment, routing
         )
@@ -102,16 +142,23 @@ class StructuredActorCritic(nn.Module):
         device: torch.device | str = "cpu",
     ) -> tuple[dict[str, Any], float, float]:
         obs = _observation_to_tensors(observation, device, batched=False)
-        hidden = self._encode(obs)
-        value = self.value(obs)
         phase = int(observation["action_type"])
+        features = obs["features"]
+        if features.ndim == 1:
+            features = features.unsqueeze(0)
+        phase_one_hot = torch.nn.functional.one_hot(
+            obs["action_type"].long().view(-1), num_classes=3
+        ).float()
+        inputs = torch.cat([features, phase_one_hot], dim=-1)
         action = {
             "deploy": 0,
             "model": np.zeros(self.layout.model_action_size, dtype=np.float32),
         }
         if phase < AgentOrchestrationEnv.COMPOSITION:
+            deployment_hidden = self.deployment_encoder(inputs)
+            value = self.deployment_value_head(deployment_hidden).squeeze(-1)
             selected, log_prob, _ = _sample_categorical(
-                self.deploy_head(hidden).squeeze(0),
+                self.deploy_head(deployment_hidden).squeeze(0),
                 torch.as_tensor(
                     observation["deploy_mask"], dtype=torch.bool, device=device
                 ),
@@ -119,8 +166,10 @@ class StructuredActorCritic(nn.Module):
             )
             action["deploy"] = int(selected.item())
         else:
+            composition_hidden = self.composition_encoder(inputs)
+            value = self.routing_value_head(composition_hidden).squeeze(-1)
             model, model_logp, _ = _sample_grouped_dirichlet(
-                self.model_head(hidden).squeeze(0),
+                self.model_head(composition_hidden).squeeze(0),
                 torch.as_tensor(observation["model_mask"], device=device),
                 len(self.layout.model_groups),
                 len(self.layout.models),
@@ -135,10 +184,11 @@ class StructuredActorCritic(nn.Module):
         observation: dict[str, torch.Tensor],
         actions: dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        hidden = self._encode(observation)
-        phases = observation["action_type"].long().view(-1)
-        deployment_values = self.deployment_value_head(hidden).squeeze(-1)
-        routing_values = self.routing_value_head(hidden).squeeze(-1)
+        deployment_hidden, composition_hidden, phases = self._encoded_phases(
+            observation
+        )
+        deployment_values = self.deployment_value_head(deployment_hidden).squeeze(-1)
+        routing_values = self.routing_value_head(composition_hidden).squeeze(-1)
         values = torch.where(
             phases < AgentOrchestrationEnv.COMPOSITION,
             deployment_values,
@@ -146,10 +196,10 @@ class StructuredActorCritic(nn.Module):
         )
         log_probs = torch.zeros_like(values)
         entropies = torch.zeros_like(values)
-        for index in range(hidden.shape[0]):
+        for index in range(deployment_hidden.shape[0]):
             if int(phases[index].item()) < AgentOrchestrationEnv.COMPOSITION:
                 deploy_logp, deploy_entropy = _evaluate_categorical(
-                    self.deploy_head(hidden[index]),
+                    self.deploy_head(deployment_hidden[index]),
                     observation["deploy_mask"][index],
                     actions["deploy"][index],
                 )
@@ -157,7 +207,7 @@ class StructuredActorCritic(nn.Module):
                 entropies[index] = deploy_entropy
                 continue
             model_logp, model_entropy = _evaluate_grouped_dirichlet(
-                self.model_head(hidden[index]),
+                self.model_head(composition_hidden[index]),
                 observation["model_mask"][index],
                 actions["model"][index],
                 len(self.layout.model_groups),
@@ -175,11 +225,13 @@ def train_ppo(
     seed: int = 0,
     config: PPOConfig = PPOConfig(),
     device: str = "cpu",
+    rollout_periods: int | None = None,
     on_phase: PhaseCallback | None = None,
     on_rollout_step: RolloutProgressCallback | None = None,
     on_optimization_step: OptimizationProgressCallback | None = None,
     on_update: UpdateCallback | None = None,
     resume_state: dict[str, Any] | None = None,
+    initial_policy_state_dict: dict[str, Any] | None = None,
     on_checkpoint: CheckpointCallback | None = None,
 ) -> tuple[StructuredActorCritic, list[dict[str, float]]]:
     device = resolve_device(device)
@@ -191,7 +243,13 @@ def train_ppo(
         torch.cuda.manual_seed_all(seed)
     env.gamma = config.gamma
     policy = StructuredActorCritic(env, config).to(device)
-    optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate)
+    if initial_policy_state_dict is not None and resume_state is None:
+        policy.load_state_dict(initial_policy_state_dict)
+    policy.set_training_phase(config.training_phase)
+    trainable_parameters = [
+        parameter for parameter in policy.parameters() if parameter.requires_grad
+    ]
+    optimizer = torch.optim.Adam(trainable_parameters, lr=config.learning_rate)
     rnd = (
         RNDModule(
             env.observation_space["features"].shape[0] + 3,
@@ -263,13 +321,33 @@ def train_ppo(
             )
 
     for update in range(start_update, updates):
+        collection_started = time.perf_counter()
         if on_phase is not None:
             on_phase(update, "collecting")
         records: list[dict[str, Any]] = []
         period_complete = False
-        while len(records) < max(1, rollout_steps) or not period_complete:
+        completed_periods = 0
+        target_periods = (
+            max(1, int(rollout_periods)) if rollout_periods is not None else None
+        )
+        while True:
             phase = int(observation["action_type"])
-            action, log_prob, value = policy.act(observation, device=device)
+            active_phase = (
+                config.training_phase == "joint"
+                or (
+                    config.training_phase == "deployment"
+                    and phase < AgentOrchestrationEnv.COMPOSITION
+                )
+                or (
+                    config.training_phase == "composition"
+                    and phase == AgentOrchestrationEnv.COMPOSITION
+                )
+            )
+            action, log_prob, value = policy.act(
+                observation,
+                deterministic=not active_phase,
+                device=device,
+            )
             next_observation, raw_reward, terminated, truncated, info = env.step(action)
             is_composition = phase == AgentOrchestrationEnv.COMPOSITION
             constraint_vector = np.asarray(
@@ -282,7 +360,11 @@ def train_ppo(
                     constraint_limits, config.constrained
                 )
             else:
-                reward = config.shaping_coefficient * float(raw_reward)
+                reward = (
+                    config.shaping_coefficient * float(raw_reward)
+                    if active_phase
+                    else 0.0
+                )
             records.append({
                 "observation": observation,
                 "next_observation": next_observation,
@@ -296,23 +378,42 @@ def train_ppo(
                 "terminal": bool(terminated or truncated),
                 "discount": float(info.get("discount", config.gamma)),
                 "phase": phase,
-                "policy_action_active": not bool(info.get("policy_action_ignored", False)),
+                "policy_action_active": active_phase
+                and not bool(info.get("policy_action_ignored", False)),
             })
             observation = next_observation
             period_complete = is_composition
+            if is_composition:
+                completed_periods += 1
             if terminated or truncated:
                 episode_counter += 1
                 observation, _ = env.reset(seed=seed + episode_counter)
             if on_rollout_step is not None:
-                on_rollout_step(update, len(records))
-            if is_composition and len(records) >= max(1, rollout_steps):
+                on_rollout_step(
+                    update,
+                    completed_periods if target_periods is not None else len(records),
+                )
+            if target_periods is not None and completed_periods >= target_periods:
                 break
+            if (
+                target_periods is None
+                and is_composition
+                and len(records) >= max(1, rollout_steps)
+            ):
+                break
+
+        collection_time_s = time.perf_counter() - collection_started
 
         exploration_weight = _exploration_weight(config, update, updates)
         intrinsic_raw = np.zeros(len(records), dtype=np.float32)
         intrinsic_normalized = np.zeros(len(records), dtype=np.float32)
         rnd_states = None
-        deployment_indices = [i for i, r in enumerate(records) if r["phase"] < AgentOrchestrationEnv.COMPOSITION]
+        deployment_indices = [
+            i
+            for i, r in enumerate(records)
+            if r["phase"] < AgentOrchestrationEnv.COMPOSITION
+            and r["policy_action_active"]
+        ]
         if rnd is not None and deployment_indices:
             states = [records[i]["next_observation"] for i in deployment_indices]
             rnd_states = _rnd_state_inputs(states, device)
@@ -357,12 +458,27 @@ def train_ppo(
                 bootstrap = float(
                     policy.value(_observation_to_tensors(observation, device, batched=False)).item()
                 )
+        gae_lambdas = [
+            config.deployment_gae_lambda
+            if r["phase"] < AgentOrchestrationEnv.COMPOSITION
+            else config.gae_lambda
+            for r in records
+        ]
         advantages, returns = _gae(
             [float(r["reward"]) for r in records], values,
             [float(r["discount"]) for r in records],
-            [float(r["terminal"]) for r in records], bootstrap, config.gae_lambda
+            [float(r["terminal"]) for r in records], bootstrap, gae_lambdas
         )
-        advantages = _normalize_advantages(advantages)
+        advantages = _normalize_phase_advantages(
+            advantages,
+            np.asarray(
+                [
+                    int(r["phase"] == AgentOrchestrationEnv.COMPOSITION)
+                    for r in records
+                ],
+                dtype=np.int64,
+            ),
+        )
         returns_tensor = torch.as_tensor(returns, dtype=torch.float32, device=device)
         advantages = advantages.to(device)
         old_log_probs = torch.as_tensor([r["log_prob"] for r in records], dtype=torch.float32, device=device)
@@ -376,6 +492,7 @@ def train_ppo(
         optimizer_steps_per_update = config.update_epochs * math.ceil(len(records) / config.minibatch_size)
         if on_phase is not None:
             on_phase(update, "optimizing")
+        optimization_started = time.perf_counter()
         for _ in range(config.update_epochs):
             np.random.shuffle(indices)
             for start in range(0, len(records), config.minibatch_size):
@@ -403,7 +520,7 @@ def train_ppo(
                 loss = actor_loss + config.value_coefficient * value_loss - config.entropy_coefficient * entropy_term
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), config.max_grad_norm)
+                nn.utils.clip_grad_norm_(trainable_parameters, config.max_grad_norm)
                 optimizer.step()
                 losses.append(float(loss.item()))
                 if icm is not None and icm_optimizer is not None:
@@ -427,6 +544,8 @@ def train_ppo(
                 if on_optimization_step is not None:
                     on_optimization_step(update, optimization_step, optimizer_steps_per_update)
 
+        optimization_time_s = time.perf_counter() - optimization_started
+
         composition_records = [r for r in records if r["phase"] == AgentOrchestrationEnv.COMPOSITION]
         mean_constraints = (
             np.mean(np.stack([r["constraint_vector"] for r in composition_records]), axis=0)
@@ -444,12 +563,45 @@ def train_ppo(
             "mean_reward": float(np.mean([r["reward"] for r in records])),
             "mean_utility": float(np.mean([r["utility"] for r in composition_records])) if composition_records else 0.0,
             "mean_lagrangian_reward": float(np.mean([r["external_reward"] for r in records])),
+            "mean_period_return": float(
+                np.sum([r["reward"] for r in records])
+                / max(len(composition_records), 1)
+            ),
+            "mean_external_period_return": float(
+                np.sum([r["external_reward"] for r in records])
+                / max(len(composition_records), 1)
+            ),
+            "mean_composition_lagrangian_reward": float(
+                np.mean([r["external_reward"] for r in composition_records])
+            ) if composition_records else 0.0,
+            "mean_deployment_shaping_reward": float(
+                np.mean(
+                    [
+                        r["external_reward"]
+                        for r in records
+                        if r["phase"] < AgentOrchestrationEnv.COMPOSITION
+                    ]
+                )
+            ) if deployment_indices else 0.0,
+            "deployment_shaping_return_per_period": float(
+                np.sum(
+                    [
+                        r["external_reward"]
+                        for r in records
+                        if r["phase"] < AgentOrchestrationEnv.COMPOSITION
+                    ]
+                )
+                / max(len(composition_records), 1)
+            ),
             "mean_constraint_cost": float(np.sum(mean_constraints)),
             "lagrange_multiplier": float(np.sum(lagrange_multipliers)),
             "next_lagrange_multiplier": float(np.sum(next_lagrange)),
             "mean_loss": float(np.mean(losses)) if losses else 0.0,
             "deployment_steps": float(sum(r["phase"] < AgentOrchestrationEnv.COMPOSITION for r in records)),
             "routing_steps": float(len(composition_records)),
+            "transition_steps": float(len(records)),
+            "collection_time_s": float(collection_time_s),
+            "optimization_time_s": float(optimization_time_s),
             "exploration_weight": float(exploration_weight),
             "mean_intrinsic_reward": float(np.mean(intrinsic_normalized)) if deployment_indices else 0.0,
             "mean_raw_intrinsic_reward": float(np.mean(intrinsic_raw)) if deployment_indices else 0.0,
@@ -571,6 +723,16 @@ def _normalize_advantages(values: torch.Tensor) -> torch.Tensor:
     if len(values) <= 1:
         return values
     return (values - values.mean()) / (values.std(unbiased=False) + 1.0e-8)
+
+
+def _normalize_phase_advantages(
+    values: torch.Tensor, phase_groups: np.ndarray
+) -> torch.Tensor:
+    normalized = values.clone()
+    for phase in np.unique(phase_groups):
+        mask = torch.as_tensor(phase_groups == phase, dtype=torch.bool)
+        normalized[mask] = _normalize_advantages(values[mask])
+    return normalized
 
 
 def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -749,16 +911,22 @@ def _gae(
     discounts: list[float],
     terminals: list[float],
     bootstrap: float,
-    gae_lambda: float,
+    gae_lambda: float | list[float] | np.ndarray,
 ) -> tuple[torch.Tensor, list[float]]:
     advantages = np.zeros(len(rewards), dtype=np.float32)
     next_value = bootstrap
     next_advantage = 0.0
+    if np.isscalar(gae_lambda):
+        lambdas = np.full(len(rewards), float(gae_lambda), dtype=np.float32)
+    else:
+        lambdas = np.asarray(gae_lambda, dtype=np.float32)
+        if len(lambdas) != len(rewards):
+            raise ValueError("GAE lambda must be scalar or match the rollout length")
     for index in reversed(range(len(rewards))):
         continuation = 1.0 - terminals[index]
         discount = discounts[index] * continuation
         delta = rewards[index] + discount * next_value - values[index]
-        next_advantage = delta + discount * gae_lambda * next_advantage
+        next_advantage = delta + discount * float(lambdas[index]) * next_advantage
         advantages[index] = next_advantage
         next_value = values[index]
     returns = (advantages + np.asarray(values, dtype=np.float32)).tolist()

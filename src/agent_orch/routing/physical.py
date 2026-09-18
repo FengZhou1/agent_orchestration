@@ -37,6 +37,7 @@ class PhysicalRouter:
         self.scenario = scenario
         self.config = config
         self.network = NetworkBackend(scenario.links)
+        self._service_time_cache: dict[tuple[str, str, float, float], float] = {}
 
     def route(
         self,
@@ -122,15 +123,24 @@ class PhysicalRouter:
             ):
                 continue
             config = self.scenario.llm_configs[candidate.config]
-            instance, _ = evaluate_llm_instance(
-                self.scenario.models[model],
-                config,
-                [(node.prompt_tokens[model], node.output_tokens[model])],
-                [1.0],
-                0.0,
-                self.scenario.simulation.prefill_chunk_tokens,
-                composition_mode="macro",
+            service_key = (
+                model,
+                candidate.config,
+                float(node.prompt_tokens[model]),
+                float(node.output_tokens[model]),
             )
+            if service_key not in self._service_time_cache:
+                instance, _ = evaluate_llm_instance(
+                    self.scenario.models[model],
+                    config,
+                    [(node.prompt_tokens[model], node.output_tokens[model])],
+                    [1.0],
+                    0.0,
+                    self.scenario.simulation.prefill_chunk_tokens,
+                    composition_mode="macro",
+                )
+                self._service_time_cache[service_key] = instance.mean_service_s
+            service_time = self._service_time_cache[service_key]
             utilization = (
                 previous_metrics.llm_utilization.get(candidate_id, 0.0)
                 if previous_metrics is not None
@@ -151,7 +161,7 @@ class PhysicalRouter:
                 model_share,
                 arrival_rates,
             )
-            projected_utilization = utilization + projected_rate * instance.mean_service_s
+            projected_utilization = utilization + projected_rate * service_time
             if projected_utilization >= 1.0:
                 continue
             residual = self._residual_capacity(projected_utilization)
@@ -166,7 +176,7 @@ class PhysicalRouter:
             )
             if network_delay is None:
                 continue
-            costs[candidate_id] = network_delay + instance.mean_service_s / residual
+            costs[candidate_id] = network_delay + service_time / residual
         return _softmin(costs, self.config.llm_inverse_temperature)
 
     def _projected_llm_arrival_rate(

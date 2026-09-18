@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -42,6 +42,10 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--scenario", required=True)
     train.add_argument("--updates", type=int, default=10)
     train.add_argument("--rollout-steps", type=int, default=256)
+    train.add_argument("--rollout-periods", type=int, default=16)
+    train.add_argument("--update-epochs", type=int, default=10)
+    train.add_argument("--minibatch-size", type=int, default=256)
+    train.add_argument("--mapping-samples", type=int, default=128)
     train.add_argument(
         "--periods", "--max-slots", dest="periods", type=int, default=600,
         help="number of macro orchestration periods"
@@ -146,14 +150,28 @@ def main() -> int:
         }[args.mode]
         env = env_class(
             scenario,
-            max_slots=args.periods,
+            max_slots=(
+                args.rollout_periods
+                if args.mode == "route" and args.rollout_periods > 0
+                else args.periods
+            ),
             potential_shaping=args.potential_shaping,
             seed=args.seed,
             arrival_trace=arrival_trace,
+            mapping_samples=args.mapping_samples,
         )
-        config = PPOConfig(
-            constrained=not args.unconstrained,
-            exploration_mode=args.exploration,
+        config = replace(
+            PPOConfig(
+                constrained=not args.unconstrained,
+                exploration_mode=args.exploration,
+                training_phase={
+                    "joint": "joint",
+                    "deploy": "deployment",
+                    "route": "composition",
+                }[args.mode],
+            ),
+            update_epochs=args.update_epochs,
+            minibatch_size=args.minibatch_size,
         )
         output = Path(args.output).resolve()
         output.mkdir(parents=True, exist_ok=True)
@@ -167,11 +185,20 @@ def main() -> int:
             run_id=run_id,
             output_dir=output,
             updates=args.updates,
-            rollout_steps=args.rollout_steps,
+            rollout_steps=(
+                args.rollout_periods if args.rollout_periods > 0 else args.rollout_steps
+            ),
+            rollout_unit=(
+                "orchestration_period"
+                if args.rollout_periods > 0
+                else "transition"
+            ),
             update_epochs=config.update_epochs,
             minibatch_size=config.minibatch_size,
             device=resolved_device,
-            status_interval_steps=args.status_interval_steps,
+            status_interval_steps=(
+                1 if args.rollout_periods > 0 else args.status_interval_steps
+            ),
             show_progress=not args.no_progress,
             status_filename=f"{run_id}.training_status.json",
             history_filename=f"{run_id}.training_history.jsonl",
@@ -181,6 +208,9 @@ def main() -> int:
                 env,
                 updates=args.updates,
                 rollout_steps=args.rollout_steps,
+                rollout_periods=(
+                    args.rollout_periods if args.rollout_periods > 0 else None
+                ),
                 seed=args.seed,
                 config=config,
                 device=resolved_device,

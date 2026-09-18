@@ -20,10 +20,12 @@ from agent_orch.workload import ArrivalTrace
 
 
 class Simulator:
-    def __init__(self, scenario: Scenario):
+    def __init__(self, scenario: Scenario, max_mapping_samples: int = 4096):
         self.scenario = scenario
         self.backend = AnalyticalBackend(scenario)
-        self.workflow = WorkflowEvaluator(scenario, self.backend)
+        self.workflow = WorkflowEvaluator(
+            scenario, self.backend, max_mapping_samples=max_mapping_samples
+        )
         self.decoder = ActionDecoder(scenario)
         self.slot = 0
         self.rng = np.random.default_rng(0)
@@ -99,6 +101,20 @@ class Simulator:
                 "violation_labels": sorted(set(analytical.violations)),
                 "kv_stable": analytical.llm_kv_stable,
                 "flow_metrics": workflow.flow_metrics,
+                "active_llm_instances": sorted(
+                    candidate_id
+                    for candidate_id, active in deployment.llm_active.items()
+                    if active
+                ),
+                "stateless_service_replicas": {
+                    f"{tool_id}@{server_id}": int(replicas)
+                    for (tool_id, server_id), replicas in deployment.tool_replicas.items()
+                    if replicas > 0
+                },
+                "model_composition": {
+                    f"{app_id}@{ingress}:{model_id}": float(share)
+                    for (app_id, ingress, model_id), share in routing.model_share.items()
+                },
             },
         )
         reward_components = {

@@ -24,6 +24,7 @@ class TrainingProgressReporter:
         update_epochs: int,
         minibatch_size: int,
         device: str,
+        rollout_unit: str = "transition",
         status_interval_steps: int = 32,
         show_progress: bool = True,
         initial_update: int = 0,
@@ -35,6 +36,7 @@ class TrainingProgressReporter:
         self.output_dir = Path(output_dir)
         self.updates = updates
         self.rollout_steps = rollout_steps
+        self.rollout_unit = rollout_unit
         self.optimizer_steps = update_epochs * math.ceil(
             rollout_steps / minibatch_size
         )
@@ -185,6 +187,7 @@ class TrainingProgressReporter:
             "updates_total": self.updates,
             "rollout_step": self._rollout_step,
             "rollout_steps_per_update": self.rollout_steps,
+            "rollout_unit": self.rollout_unit,
             "optimizer_step": self._optimizer_step,
             "optimizer_steps_per_update": self._optimizer_total_current,
             "completed_work_units": self._completed_units,
@@ -201,12 +204,32 @@ class TrainingProgressReporter:
         }
         if error is not None:
             payload["error"] = error
-        temporary = self.status_path.with_suffix(self.status_path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
+        serialized = json.dumps(
+            payload, ensure_ascii=False, indent=2, sort_keys=True
         )
-        temporary.replace(self.status_path)
+        temporary = self.status_path.with_suffix(self.status_path.suffix + ".tmp")
+        temporary.write_text(serialized, encoding="utf-8")
+        for attempt in range(8):
+            try:
+                temporary.replace(self.status_path)
+                return
+            except PermissionError:
+                if attempt < 7:
+                    time.sleep(0.02 * (attempt + 1))
+
+        # A progress snapshot is observational state.  On Windows, a reader can
+        # temporarily hold the destination open and prevent an atomic replace.
+        # Fall back to an in-place update and, if that is also locked, leave the
+        # previous valid snapshot in place without interrupting PPO training.
+        try:
+            self.status_path.write_text(serialized, encoding="utf-8")
+        except PermissionError:
+            pass
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except PermissionError:
+                pass
 
     def _elapsed(self) -> float:
         return max(0.0, time.perf_counter() - self._started)

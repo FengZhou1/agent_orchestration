@@ -395,20 +395,44 @@ def _bootstrap_interval(values: np.ndarray, samples: int = 5_000) -> tuple[float
 def load_training_history(results: Path) -> pd.DataFrame:
     records = []
     pattern = re.compile(
-        r"-(joint|deploy|route)-(rnd|no-rnd|unconstrained-rnd|potential|icm)-s(\d+)-"
+        r"-(joint|deploy|route)-(rnd|no-rnd|unconstrained-rnd|potential|icm)"
+        r"(?:-(?:joint|deployment|composition))?-s(\d+)-"
     )
-    for path in (results / "rl_matrix").glob("*/training_history.json"):
+    for path in (results / "rl_matrix").glob("*/validation_history.jsonl"):
         match = pattern.search(path.parent.name)
         if not match:
             continue
         mode, variant, seed = match.group(1), match.group(2), int(match.group(3))
         method = RL_LABELS[(mode, variant)]
-        for record in _load_json(path):
-            records.append({"method": method, "seed": seed, **record})
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                records.append({"method": method, "seed": seed, **record})
+    if not records:
+        for path in (results / "rl_matrix").glob("*/training_history.json"):
+            match = pattern.search(path.parent.name)
+            if not match:
+                continue
+            mode, variant, seed = match.group(1), match.group(2), int(match.group(3))
+            method = RL_LABELS[(mode, variant)]
+            for record in _load_json(path):
+                records.append(
+                    {
+                        "method": method,
+                        "seed": seed,
+                        "update": record["update"],
+                        "mean_utility": record["mean_utility"],
+                    }
+                )
     frame = pd.DataFrame(records)
-    frame["reward_smooth"] = frame.groupby(["method", "seed"])["mean_reward"].transform(
+    if "violation_slot_fraction" not in frame:
+        frame["violation_slot_fraction"] = np.nan
+    frame["utility_smooth"] = frame.groupby(["method", "seed"])["mean_utility"].transform(
         lambda series: series.rolling(5, min_periods=1, center=True).mean()
     )
+    frame["violation_smooth"] = frame.groupby(["method", "seed"])[
+        "violation_slot_fraction"
+    ].transform(lambda series: series.rolling(5, min_periods=1, center=True).mean())
     return frame
 
 
@@ -433,23 +457,57 @@ def plot_convergence(history: pd.DataFrame, output: Path) -> None:
             sns.color_palette("colorblind", 5),
         )
     )
-    fig, axes = plt.subplots(1, 3, figsize=(7.16, 2.35))
-    for axis, (title, methods) in zip(axes, panels):
+    has_violation_history = history["violation_smooth"].notna().any()
+    rows = 2 if has_violation_history else 1
+    fig, axes = plt.subplots(
+        rows,
+        3,
+        figsize=(7.16, 4.2 if has_violation_history else 2.35),
+        sharex="col" if has_violation_history else False,
+        squeeze=False,
+    )
+    for column, (title, methods) in enumerate(panels):
+        utility_axis = axes[0, column]
+        violation_axis = axes[1, column] if has_violation_history else None
         for method in methods:
             subset = history[history.method == method]
-            pivot = subset.pivot(index="update", columns="seed", values="reward_smooth")
+            pivot = subset.pivot(index="update", columns="seed", values="utility_smooth")
             center = pivot.mean(axis=1).to_numpy(dtype=float)
             low, high = _row_bootstrap_band(pivot.to_numpy(dtype=float))
             updates = pivot.index.to_numpy(dtype=float)
-            axis.plot(updates, center, label=method, color=palette[method], linewidth=1.2)
-            axis.fill_between(updates, low, high, color=palette[method], alpha=0.18, linewidth=0)
-        axis.set_title(title)
-        axis.set_xlabel("Training Update")
-        axis.set_ylabel("Mean Reward")
-        axis.grid(alpha=0.25)
+            utility_axis.plot(
+                updates, center, label=method, color=palette[method], linewidth=1.2
+            )
+            utility_axis.fill_between(
+                updates, low, high, color=palette[method], alpha=0.18, linewidth=0
+            )
+            violation_pivot = (
+                subset.pivot(
+                    index="update", columns="seed", values="violation_smooth"
+                ).dropna(how="all")
+                if has_violation_history
+                else pd.DataFrame()
+            )
+            if violation_axis is not None and not violation_pivot.empty:
+                violation_axis.plot(
+                    violation_pivot.index.to_numpy(dtype=float),
+                    violation_pivot.mean(axis=1).to_numpy(dtype=float),
+                    color=palette[method],
+                    linewidth=1.2,
+                )
+        utility_axis.set_title(title)
+        utility_axis.set_ylabel("Validation Utility")
+        utility_axis.grid(alpha=0.25)
+        if violation_axis is not None:
+            violation_axis.set_xlabel("Training Update")
+            violation_axis.set_ylabel("Violation-Slot Fraction")
+            violation_axis.set_ylim(-0.02, 1.02)
+            violation_axis.grid(alpha=0.25)
+        else:
+            utility_axis.set_xlabel("Training Update")
         if len(methods) > 1:
-            axis.legend(frameon=False)
-    fig.subplots_adjust(wspace=0.34)
+            utility_axis.legend(frameon=False)
+    fig.subplots_adjust(wspace=0.34, hspace=0.28 if has_violation_history else 0.0)
     _save(fig, output, "fig4_training_convergence")
 
 
@@ -487,7 +545,11 @@ def plot_overhead(rl: pd.DataFrame, output: Path) -> None:
             capsize=2,
         )
         axis.set_ylabel(label)
-        axis.set_xticks(np.arange(len(order)), ["Route", "Deploy", "Joint", "+Pot.", "+ICM"], rotation=30)
+        axis.set_xticks(
+            np.arange(len(order)),
+            ["Route", "Deploy", "DTS", "Unconst.", "DTS+RND"],
+            rotation=30,
+        )
         axis.grid(axis="x", visible=False)
         axis.grid(axis="y", alpha=0.25)
     fig.subplots_adjust(wspace=0.45)
