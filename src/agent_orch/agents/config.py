@@ -61,6 +61,7 @@ class PPOConfig:
     composition_fixed_concentration: float | None = None
     target_kl: float | None = None
     factorized_credit: bool = False
+    composition_group_features: bool = False
 
     def for_constraint_count(self, count: int) -> "PPOConfig":
         """Resize every constraint vector to ``count`` entries.

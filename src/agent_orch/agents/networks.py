@@ -20,6 +20,53 @@ from .distributions import (
 from .rollout import _observation_to_tensors
 
 
+def _build_group_features(env: Any) -> torch.Tensor:
+    """Per-(application, ingress) features for the composition head.
+
+    These are the quantities the composition decision actually depends on: how
+    tight the application's latency SLO is, how good each model is for it, how
+    much work it carries and how large its prompts are.  They are static for a
+    scenario, so they are built once and registered as a buffer.
+    """
+
+    scenario = env.scenario
+    layout = env.layout
+    models = list(layout.models)
+    rows: list[list[float]] = []
+    for app_id, ingress in layout.model_groups:
+        app = scenario.applications[app_id]
+        slo = app.slo
+        ttft = slo.ttft_s or scenario.simulation.overload_delay_s
+        tbt = slo.tbt_s or 0.0
+        deadline = slo.deadline_s or ttft
+        prompt_tokens = [
+            float(np.mean(list(node.prompt_tokens.values())))
+            for node in app.nodes.values()
+            if getattr(node, "type", None) is not None and str(node.type) in ("llm", "NodeType.LLM")
+        ]
+        output_tokens = [
+            float(np.mean(list(node.output_tokens.values())))
+            for node in app.nodes.values()
+            if getattr(node, "type", None) is not None and str(node.type) in ("llm", "NodeType.LLM")
+        ]
+        rate = float(app.ingress_rates.get(ingress, 0.0))
+        row = [
+            *[float(app.quality.get(model, 0.0)) for model in models],
+            min(2.0, rate / max(scenario.simulation.orchestration_period_s, 1.0e-9)),
+            float(slo.type == "lat"),
+            float(slo.type == "ddl"),
+            float(slo.type == "cmp"),
+            min(4.0, ttft / 10.0),
+            min(4.0, tbt / 0.05),
+            min(4.0, deadline / 20.0),
+            min(4.0, (float(np.mean(prompt_tokens)) if prompt_tokens else 0.0) / 4096.0),
+            min(4.0, (float(np.mean(output_tokens)) if output_tokens else 0.0) / 1024.0),
+            min(2.0, len(app.pattern_flows) / 4.0),
+        ]
+        rows.append(row)
+    return torch.tensor(rows, dtype=torch.float32)
+
+
 class StructuredActorCritic(nn.Module):
     def __init__(self, env: AgentOrchestrationEnv, config: PPOConfig = PPOConfig()):
         super().__init__()
@@ -40,12 +87,24 @@ class StructuredActorCritic(nn.Module):
             nn.Tanh(),
         )
         self.deploy_head = nn.Linear(hidden, self.layout.deployment_action_size)
-        self.model_head = nn.Linear(
-            hidden,
-            len(self.layout.models)
-            if config.shared_composition_head
-            else self.layout.model_action_size,
-        )
+        if config.composition_group_features:
+            group_features = _build_group_features(env)
+            self.register_buffer("group_features", group_features, persistent=True)
+            self.composition_group_head = nn.Sequential(
+                nn.Linear(hidden + group_features.shape[1], hidden),
+                nn.Tanh(),
+                nn.Linear(hidden, len(self.layout.models)),
+            )
+            self.model_head = nn.Linear(hidden, 1)  # unused placeholder, kept for parity
+        else:
+            self.register_buffer("group_features", torch.zeros(0, 0), persistent=False)
+            self.composition_group_head = None
+            self.model_head = nn.Linear(
+                hidden,
+                len(self.layout.models)
+                if config.shared_composition_head
+                else self.layout.model_action_size,
+            )
         self.deployment_value_head = nn.Linear(hidden, 1)
         self.routing_value_head = nn.Linear(hidden, 1)
 
@@ -88,6 +147,21 @@ class StructuredActorCritic(nn.Module):
                 parameter.requires_grad_(False)
 
     def _composition_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        if self.composition_group_head is not None:
+            # Give the head the features of the group it is deciding for.  With a
+            # shared hidden vector the per-group differences can only come from
+            # separate rows of one weight matrix, so the policy has to learn the
+            # association between a head index and the corresponding slice of the
+            # observation -- which is exactly what a small rollout cannot learn.
+            groups = len(self.layout.model_groups)
+            width = len(self.layout.models)
+            batch = hidden.shape[0]
+            expanded = hidden.unsqueeze(1).expand(batch, groups, hidden.shape[-1])
+            features = self.group_features.to(hidden.device).unsqueeze(0).expand(
+                batch, groups, self.group_features.shape[-1]
+            )
+            stacked = torch.cat([expanded, features], dim=-1)
+            return self.composition_group_head(stacked).reshape(batch, groups * width)
         logits = self.model_head(hidden)
         if not self.config.shared_composition_head:
             return logits

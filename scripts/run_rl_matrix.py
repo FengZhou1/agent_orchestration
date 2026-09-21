@@ -363,6 +363,17 @@ def main() -> int:
     parser.add_argument("--update-epochs", type=int, default=10)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument(
+        "--composition-group-features",
+        action="store_true",
+        help=(
+            "feed the composition head the features of the group it is deciding "
+            "for (SLO type and thresholds, per-model quality, token demand, "
+            "arrival rate). With a shared hidden vector the per-group decision "
+            "can only differ through separate rows of one weight matrix, so the "
+            "policy has to learn the head-index-to-observation association"
+        ),
+    )
+    parser.add_argument(
         "--factorized-credit",
         action="store_true",
         help=(
@@ -827,8 +838,12 @@ def main() -> int:
                         ),
                         "target_kl": args.target_kl,
                 "factorized_credit": args.factorized_credit,
+                "composition_group_features": args.composition_group_features,
                         "factorized_credit": (
                             True if args.factorized_credit else None
+                        ),
+                        "composition_group_features": (
+                            True if args.composition_group_features else None
                         ),
                         "lagrangian_learning_rates": (
                             (args.lagrangian_learning_rate,) * 2
