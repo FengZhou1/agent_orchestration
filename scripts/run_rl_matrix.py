@@ -363,6 +363,23 @@ def main() -> int:
     parser.add_argument("--update-epochs", type=int, default=10)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument(
+        "--lagrangian-learning-rate",
+        type=float,
+        default=None,
+        help=(
+            "dual ascent step for every constraint. The default of 0.05 makes "
+            "the multiplier grow by lr*c per update; when a stage cannot remove "
+            "the violation it diverges linearly and the penalty then dwarfs the "
+            "utility it is supposed to bound"
+        ),
+    )
+    parser.add_argument(
+        "--max-lagrange-multiplier",
+        type=float,
+        default=None,
+        help="cap on every multiplier, so an unsatisfiable constraint cannot dominate",
+    )
+    parser.add_argument(
         "--baseline-periods",
         type=int,
         default=None,
@@ -774,6 +791,16 @@ def main() -> int:
                         "composition_entropy_coefficient": args.composition_entropy_coefficient,
                         "composition_gamma": args.composition_gamma,
                         "constrained": False if args.unconstrained else None,
+                        "lagrangian_learning_rates": (
+                            (args.lagrangian_learning_rate,) * 2
+                            if args.lagrangian_learning_rate is not None
+                            else None
+                        ),
+                        "max_lagrange_multipliers": (
+                            (args.max_lagrange_multiplier,) * 2
+                            if args.max_lagrange_multiplier is not None
+                            else None
+                        ),
                         "composition_group_relative_advantages": (
                             True if args.composition_group_relative else None
                         ),
@@ -809,6 +836,8 @@ def main() -> int:
                 "composition_gamma": args.composition_gamma,
                 "composition_group_relative": args.composition_group_relative,
                 "unconstrained": args.unconstrained,
+                "lagrangian_learning_rate": args.lagrangian_learning_rate,
+                "max_lagrange_multiplier": args.max_lagrange_multiplier,
                 "shared_composition_head": args.shared_composition_head,
                 "train_mapping_samples": args.train_mapping_samples,
                 "eval_mapping_samples": args.eval_mapping_samples,
@@ -878,9 +907,17 @@ def main() -> int:
             logger.info("starting training run %s", run_id)
             checkpoint_path = run_dir / "checkpoint.pt"
             best_policy_path = run_dir / "policy_best.pt"
+            # Checkpoint selection by the 3-context validation window is noisy and
+            # does not track the held-out gate, so a second "best" is kept by the
+            # smoothed training objective.  Every PPO run so far peaks well before
+            # its final update, and without this the peak cannot be recovered.
+            best_train_policy_path = run_dir / "policy_best_train.pt"
+            best_train_utility = float("-inf")
+            best_train_update = -1
             if not args.resume:
                 checkpoint_path.unlink(missing_ok=True)
                 best_policy_path.unlink(missing_ok=True)
+                best_train_policy_path.unlink(missing_ok=True)
             resume_state = None
             previous_train_wall_time_s = 0.0
             if args.resume and checkpoint_path.exists():
@@ -1038,10 +1075,19 @@ def main() -> int:
                 }
             )
 
+            def _smoothed_train_utility(history: list, window: int = 20) -> float:
+                values = [
+                    float(row["mean_learning_utility"])
+                    for row in history[-window:]
+                    if "mean_learning_utility" in row
+                ]
+                return float(mean(values)) if values else float("-inf")
+
             def save_checkpoint(training_state: dict) -> None:
                 nonlocal best_validation_utility, best_validation_update
                 nonlocal best_validation_violation_fraction
                 nonlocal best_validation_mean_violations, best_validation_key
+                nonlocal best_train_utility, best_train_update
                 _atomic_torch(
                     checkpoint_path,
                     {
@@ -1055,6 +1101,24 @@ def main() -> int:
                         "updated_at_utc": _timestamp(),
                     },
                 )
+                smoothed = _smoothed_train_utility(training_state.get("history", []))
+                if smoothed > best_train_utility:
+                    best_train_utility = smoothed
+                    best_train_update = int(training_state["next_update"])
+                    _atomic_torch(
+                        best_train_policy_path,
+                        {
+                            "policy_state_dict": {
+                                key: value.detach().cpu()
+                                for key, value in training_state["policy_state_dict"].items()
+                            },
+                            "smoothed_training_utility": smoothed,
+                            "update": best_train_update,
+                            "seed": seed,
+                            "selection": "best_smoothed_training_utility",
+                            "run_spec": run_spec,
+                        },
+                    )
                 completed_update = int(training_state["next_update"])
                 should_validate = (
                     completed_update % args.validation_interval == 0
