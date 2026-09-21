@@ -48,7 +48,14 @@ class ArrivalTrace:
         seed: int = 0,
         rate_scale: float = 1.0,
     ) -> "ArrivalTrace":
-        """Backward-compatible alias for the analytical Poisson intensity."""
+        """Compatibility alias for :meth:`stationary_poisson_intensity`.
+
+        The name is historical.  The analytical model consumes an *intensity*
+        (requests per second) per slot, not a sampled arrival sequence, so
+        ``seed`` is accepted and ignored: two calls with different seeds return
+        identical traces.  Use ``stationary_poisson_intensity`` in new code.
+        """
+
         del seed
         return ArrivalTrace.stationary_poisson_intensity(
             scenario,

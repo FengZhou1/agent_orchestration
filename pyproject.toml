@@ -19,6 +19,7 @@ dependencies = [
 rl = ["torch>=2.3", "gymnasium>=0.29", "tqdm>=4.66"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 plot = ["matplotlib>=3.8", "seaborn>=0.13"]
+telemetry = ["torch>=2.3", "tensorboard>=2.16", "swanlab>=0.10"]
 
 [project.scripts]
 agent-orch-sim = "agent_orch.cli:main"

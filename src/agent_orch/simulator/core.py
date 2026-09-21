@@ -28,7 +28,6 @@ class Simulator:
         )
         self.decoder = ActionDecoder(scenario)
         self.slot = 0
-        self.rng = np.random.default_rng(0)
         self.previous_deployment = self._empty_deployment()
         self.last_metrics: SlotMetrics | None = None
         self.arrival_trace: ArrivalTrace | None = None
@@ -44,8 +43,14 @@ class Simulator:
         )
 
     def reset(self, seed: int = 0) -> dict[str, Any]:
+        """Return to slot zero.
+
+        The steady-state evaluation is deterministic given the scenario, the
+        arrival trace and the decision tuple, so ``seed`` only marks the run in
+        bookkeeping; it does not perturb any simulated quantity.
+        """
+
         self.slot = 0
-        self.rng = np.random.default_rng(seed)
         self.previous_deployment = self._empty_deployment()
         self.last_metrics = None
         return self.observation()

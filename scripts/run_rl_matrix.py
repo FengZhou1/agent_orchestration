@@ -26,7 +26,9 @@ from agent_orch.agents import (
 )
 from agent_orch.envs import AgentOrchestrationEnv, DeploymentOnlyEnv, RoutingOnlyEnv
 from agent_orch.metrics import summarize_slot_metrics
+from agent_orch.objective import PROFILES, ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.telemetry import build_run_logger
 from agent_orch.workload import ArrivalTrace
 
 
@@ -149,21 +151,42 @@ def _evaluate(
     device: str = "cpu",
     on_step=None,
 ) -> tuple[list[dict], list[float]]:
-    observation, _ = env.reset(seed=seed)
     records: list[dict] = []
     decision_times: list[float] = []
-    terminated = False
-    truncated = False
-    while not (terminated or truncated):
-        started = time.perf_counter()
-        action, _, _ = policy.act(observation, deterministic=True, device=device)
-        decision_times.append(time.perf_counter() - started)
-        observation, _, terminated, truncated, info = env.step(action)
-        if "metrics" in info:
-            records.append(asdict(info["metrics"]))
-        records.extend(asdict(metrics) for metrics in info.get("interval_metrics", []))
-        if on_step is not None:
-            on_step(len(records))
+    if isinstance(env, RoutingOnlyEnv) and len(env._fixed_deployment_catalog) > 1:
+        context_count = min(3, len(env._fixed_deployment_catalog))
+        deployment_indices = np.linspace(
+            0,
+            len(env._fixed_deployment_catalog) - 1,
+            context_count,
+            dtype=int,
+        ).tolist()
+    else:
+        deployment_indices = [None]
+    for context_offset, deployment_index in enumerate(deployment_indices):
+        options = (
+            {"fixed_deployment_index": deployment_index}
+            if deployment_index is not None
+            else None
+        )
+        observation, _ = env.reset(seed=seed + context_offset, options=options)
+        terminated = False
+        truncated = False
+        while not (terminated or truncated):
+            started = time.perf_counter()
+            action, _, _ = policy.act(observation, deterministic=True, device=device)
+            decision_times.append(time.perf_counter() - started)
+            observation, _, terminated, truncated, info = env.step(action)
+            if "metrics" in info:
+                metric = asdict(info["metrics"])
+                metric["_validation_context"] = context_offset
+                records.append(metric)
+            for metrics in info.get("interval_metrics", []):
+                metric = asdict(metrics)
+                metric["_validation_context"] = context_offset
+                records.append(metric)
+            if on_step is not None:
+                on_step(len(records))
     return records, decision_times
 
 
@@ -203,17 +226,30 @@ def _mean_evaluation_utility(
     if not records:
         return float("-inf")
     utilities: list[float] = []
-    previous: dict[str, float] | None = None
+    # The validation trace is a stationary Poisson intensity trace, so the
+    # current simulator rates are the same rates used for every validation
+    # period.  Keep checkpoint scoring aligned with the environment reward
+    # instead of calling the removed incremental-delta interface.
+    arrival_rates = env.simulator.current_arrival_rates()
     for record in records:
-        utility, _, previous = env._incremental_utility(
+        utility, _ = env._normalized_utility(
             record["cost"],
             record["mean_latency_s"],
-            record["goodput_rps"],
+            record["slo_attainment"],
             record["quality"],
-            previous,
+            record.get("app_latency_s", {}),
+            arrival_rates,
         )
         utilities.append(utility)
-    scored = utilities[max(0, int(warmup_periods)) :]
+    context_ids = [record.get("_validation_context", 0) for record in records]
+    scored: list[float] = []
+    for context_id in dict.fromkeys(context_ids):
+        context_utilities = [
+            utility
+            for utility, record_context in zip(utilities, context_ids)
+            if record_context == context_id
+        ]
+        scored.extend(context_utilities[max(0, int(warmup_periods)) :])
     return float(np.mean(scored)) if scored else float("-inf")
 
 
@@ -244,6 +280,38 @@ def _combinations(modes: list[str], variants: list[str]) -> list[tuple[str, str]
             f"{invalid}"
         )
     return combinations
+
+
+def _resolve_training_library(args, scenario):
+    """Load the deployment library and select the requested split.
+
+    Composition training must not see the deployments the gate scores, so the
+    split is applied here and the resulting library is handed to every
+    environment the run builds.
+    """
+
+    from agent_orch.deployment import DeploymentLibrary
+
+    path = (
+        Path(args.deployment_library)
+        if args.deployment_library
+        else DeploymentLibrary.default_path(scenario.id)
+    )
+    if not path.exists():
+        if args.deployment_library:
+            raise FileNotFoundError(
+                f"Deployment library {path} not found; run scripts/build_deployment_library.py"
+            )
+        return None
+    library = DeploymentLibrary.load(path)
+    if args.library_split == "all":
+        return library
+    train_library, test_library = library.train_test_split(
+        test_fraction=args.library_test_fraction,
+        seed=args.library_split_seed,
+        stratify=True,
+    )
+    return train_library if args.library_split == "train" else test_library
 
 
 def _variant_config(variant: str) -> tuple[PPOConfig, bool]:
@@ -283,8 +351,94 @@ def main() -> int:
             "to retain the legacy transition-count budget"
         ),
     )
+    parser.add_argument(
+        "--rollout-contexts",
+        type=int,
+        default=2,
+        help=(
+            "fixed deployment contexts collected per PPO update in route mode; "
+            "each context uses rollout-periods"
+        ),
+    )
     parser.add_argument("--update-epochs", type=int, default=10)
     parser.add_argument("--minibatch-size", type=int, default=256)
+    parser.add_argument(
+        "--baseline-periods",
+        type=int,
+        default=None,
+        help=(
+            "periods the uniform control variate is averaged over; 0 matches the "
+            "episode length. The system reaches its fixed point within a few "
+            "periods, so a short window is equivalent and much cheaper"
+        ),
+    )
+    parser.add_argument(
+        "--baseline-warmup",
+        type=int,
+        default=None,
+        help="periods discarded before averaging the control variate",
+    )
+    parser.add_argument(
+        "--unconstrained",
+        action="store_true",
+        help=(
+            "drop the Lagrangian penalty and optimise the raw utility. A stage "
+            "whose deployment is exogenous cannot remove a deployment-level "
+            "utilization violation, so the dual variable grows until the penalty "
+            "dwarfs the objective"
+        ),
+    )
+    parser.add_argument(
+        "--composition-group-relative",
+        action="store_true",
+        help=(
+            "normalise composition advantages within each episode. A rollout spans "
+            "several exogenous deployment contexts, so batch-wide normalisation "
+            "encodes mostly 'which context am I in' rather than what the "
+            "composition decision changed"
+        ),
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=None,
+        help="override PPO Adam learning rate",
+    )
+    parser.add_argument(
+        "--composition-learning-rate",
+        type=float,
+        default=None,
+        help="override the composition-stage PPO Adam learning rate",
+    )
+    parser.add_argument(
+        "--composition-concentration-min",
+        type=float,
+        default=None,
+        help="minimum Dirichlet concentration for composition actions",
+    )
+    parser.add_argument(
+        "--composition-entropy-coefficient",
+        type=float,
+        default=None,
+        help="entropy coefficient used by the composition action head",
+    )
+    parser.add_argument(
+        "--composition-gamma",
+        type=float,
+        default=None,
+        help="discount used only by composition training (default 0 for route mode)",
+    )
+    parser.add_argument(
+        "--composition-deployment-index",
+        type=int,
+        default=None,
+        help="fix RoutingOnlyEnv to one catalog deployment for diagnostic runs",
+    )
+    parser.add_argument(
+        "--shared-composition-head",
+        action="store_true",
+        help="use one shared model-composition head for all application groups",
+    )
     parser.add_argument(
         "--train-mapping-samples",
         type=int,
@@ -360,10 +514,71 @@ def main() -> int:
         help="policy.pt or policy_final.pt used to initialize a curriculum stage",
     )
     parser.add_argument("--output", default="results/rl_matrix")
+    parser.add_argument(
+        "--objective-profile",
+        default="slo_constrained",
+        choices=list(PROFILES),
+        help=(
+            "slo_constrained keeps SLO attainment as a constraint and optimises "
+            "quality/cost/latency; legacy reproduces the four-term equal-weight sum"
+        ),
+    )
+    parser.add_argument("--attainment-target", type=float, default=0.9)
+    parser.add_argument(
+        "--no-attainment-constraint",
+        action="store_true",
+        help=(
+            "drop the attainment constraint. Required when the deployment is "
+            "exogenous (composition-only training): attainment is bounded by the "
+            "deployment, so the dual variable would chase an unremovable violation"
+        ),
+    )
+    parser.add_argument(
+        "--deployment-library",
+        default=None,
+        help="path to a deployment library JSON; defaults to data/processed/<scenario>",
+    )
+    parser.add_argument(
+        "--library-sampler",
+        default="cycle",
+        choices=["cycle", "uniform", "fixed"],
+        help="how composition training draws deployment contexts from the library",
+    )
+    parser.add_argument(
+        "--library-split",
+        default="train",
+        choices=["all", "train", "test"],
+        help=(
+            "which side of the stratified deployment-library split to train on; "
+            "the gate is scored on 'test' so the two must not overlap"
+        ),
+    )
+    parser.add_argument("--library-test-fraction", type=float, default=0.25)
+    parser.add_argument("--library-split-seed", type=int, default=2026)
+    parser.add_argument(
+        "--potential-cost-weight",
+        type=float,
+        default=0.0,
+        help="cost share of the deployment potential shaping term (0 disables it)",
+    )
+    parser.add_argument(
+        "--telemetry",
+        default="both",
+        choices=["none", "tensorboard", "swanlab", "both"],
+        help="which experiment trackers to write",
+    )
+    parser.add_argument("--swanlab-project", default="agent-orch")
+    parser.add_argument(
+        "--swanlab-online",
+        action="store_true",
+        help="upload to SwanLab instead of writing an offline run",
+    )
     args = parser.parse_args()
 
     if args.rollout_periods < 0:
         raise ValueError("--rollout-periods must be non-negative")
+    if args.rollout_contexts <= 0:
+        raise ValueError("--rollout-contexts must be positive")
     if args.update_epochs <= 0 or args.minibatch_size <= 0:
         raise ValueError("PPO update epochs and minibatch size must be positive")
     if (
@@ -378,6 +593,25 @@ def main() -> int:
         or args.validation_warmup_periods < 0
     ):
         raise ValueError("Validation interval and periods must be positive")
+
+    objective_spec = (
+        ObjectiveSpec.slo_constrained(
+            None if args.no_attainment_constraint else args.attainment_target
+        )
+        if args.objective_profile == "slo_constrained"
+        else ObjectiveSpec.legacy()
+    )
+    print(
+        "Objective profile: %s (constraints: %s)"
+        % (objective_spec.profile, ", ".join(objective_spec.constraint_names)),
+        flush=True,
+    )
+    # Validation and evaluation must score with the same objective as training,
+    # otherwise checkpoint selection optimises something the run does not report.
+    scoring_kwargs: dict[str, object] = {
+        "objective": objective_spec,
+    }
+    library_kwargs: dict[str, object] = {}
 
     initial_policy_path = (
         Path(args.initial_policy).resolve() if args.initial_policy else None
@@ -412,6 +646,16 @@ def main() -> int:
     scenario_path = Path(args.scenario).resolve()
     scenario_hash = hashlib.sha256(scenario_path.read_bytes()).hexdigest()[:16]
     scenario = ScenarioLoader.load(scenario_path)
+    training_library = _resolve_training_library(args, scenario)
+    if training_library is not None:
+        scoring_kwargs["deployment_library"] = training_library
+        print(
+            "Deployment library: %d entries (split=%s)"
+            % (len(training_library), args.library_split),
+            flush=True,
+        )
+    elif args.deployment_library:
+        scoring_kwargs["deployment_library_path"] = args.deployment_library
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     logger = _logger(output / "rl_experiment.log")
@@ -452,6 +696,7 @@ def main() -> int:
         "updates": args.updates,
         "rollout_steps": args.rollout_steps,
         "rollout_periods": args.rollout_periods,
+        "rollout_contexts": args.rollout_contexts,
         "update_epochs": args.update_epochs,
         "minibatch_size": args.minibatch_size,
         "train_mapping_samples": args.train_mapping_samples,
@@ -520,6 +765,24 @@ def main() -> int:
                 update_epochs=args.update_epochs,
                 minibatch_size=args.minibatch_size,
                 training_phase=training_phase,
+                **{
+                    key: value
+                    for key, value in {
+                        "learning_rate": args.learning_rate,
+                        "composition_learning_rate": args.composition_learning_rate,
+                        "composition_concentration_min": args.composition_concentration_min,
+                        "composition_entropy_coefficient": args.composition_entropy_coefficient,
+                        "composition_gamma": args.composition_gamma,
+                        "constrained": False if args.unconstrained else None,
+                        "composition_group_relative_advantages": (
+                            True if args.composition_group_relative else None
+                        ),
+                        "shared_composition_head": (
+                            True if args.shared_composition_head else None
+                        ),
+                    }.items()
+                    if value is not None
+                },
             )
             run_id = (
                 f"{scenario.id}-{mode}-{variant}-{training_phase}-s{seed}-"
@@ -536,8 +799,17 @@ def main() -> int:
                 "updates": args.updates,
                 "rollout_steps": args.rollout_steps,
                 "rollout_periods": args.rollout_periods,
+                "rollout_contexts": args.rollout_contexts,
                 "update_epochs": args.update_epochs,
                 "minibatch_size": args.minibatch_size,
+                "learning_rate": args.learning_rate,
+                "composition_learning_rate": args.composition_learning_rate,
+                "composition_concentration_min": args.composition_concentration_min,
+                "composition_entropy_coefficient": args.composition_entropy_coefficient,
+                "composition_gamma": args.composition_gamma,
+                "composition_group_relative": args.composition_group_relative,
+                "unconstrained": args.unconstrained,
+                "shared_composition_head": args.shared_composition_head,
                 "train_mapping_samples": args.train_mapping_samples,
                 "eval_mapping_samples": args.eval_mapping_samples,
                 "validation_interval": args.validation_interval,
@@ -575,6 +847,17 @@ def main() -> int:
             train_trace = _arrival_trace(
                 scenario, args.train_slots, args.arrival_scale
             )
+            composition_kwargs: dict[str, object] = {}
+            if mode == "route":
+                composition_kwargs["sampler_mode"] = args.library_sampler
+                if args.baseline_periods is not None:
+                    composition_kwargs["baseline_periods"] = args.baseline_periods
+                if args.baseline_warmup is not None:
+                    composition_kwargs["baseline_warmup"] = args.baseline_warmup
+                if args.composition_deployment_index is not None:
+                    composition_kwargs["fixed_deployment_index"] = (
+                        args.composition_deployment_index
+                    )
             train_env = env_class(
                 scenario,
                 max_slots=(
@@ -586,6 +869,10 @@ def main() -> int:
                 seed=seed,
                 arrival_trace=train_trace,
                 mapping_samples=args.train_mapping_samples,
+                objective=objective_spec,
+                deployment_library_path=args.deployment_library,
+                potential_cost_weight=args.potential_cost_weight,
+                **composition_kwargs,
             )
             print(f"Starting training run {run_id}", flush=True)
             logger.info("starting training run %s", run_id)
@@ -654,6 +941,15 @@ def main() -> int:
                 seed=validation_seed,
                 arrival_trace=validation_trace,
                 mapping_samples=args.validation_mapping_samples,
+                **scoring_kwargs,
+                **(
+                    {
+                        "fixed_deployment_index": args.composition_deployment_index,
+                        "sampler_mode": args.library_sampler,
+                    }
+                    if mode == "route" and args.composition_deployment_index is not None
+                    else ({"sampler_mode": args.library_sampler} if mode == "route" else {})
+                ),
             )
             validation_policy = StructuredActorCritic(validation_env, config).to(
                 resolved_device
@@ -677,6 +973,11 @@ def main() -> int:
                 updates=args.updates,
                 rollout_steps=(
                     args.rollout_periods
+                    * (
+                        args.rollout_contexts
+                        if mode == "route" and args.rollout_periods > 0
+                        else 1
+                    )
                     if args.rollout_periods > 0
                     else args.rollout_steps
                 ),
@@ -694,6 +995,47 @@ def main() -> int:
                 show_progress=not args.no_progress,
                 initial_update=initial_update,
                 append_history=bool(resume_state),
+            )
+            run_logger = build_run_logger(
+                args.telemetry,
+                output_dir=run_dir,
+                # ``run_id`` encodes scenario/mode/variant/phase/seed, which are
+                # identical across every ablation of the same experiment, so it
+                # cannot name the run on its own.  The output directory is what
+                # actually distinguishes an experiment, so it leads the name.
+                run_name=f"{output.name} | {mode}-{variant}-{training_phase}-s{seed}",
+                config={
+                    **run_spec,
+                    "objective": objective_spec.to_dict(),
+                    "scenario_id": scenario.id,
+                    "constraint_names": list(train_env.constraint_names),
+                    "deployment_library": (
+                        str(args.deployment_library)
+                        if args.deployment_library
+                        else (
+                            str(
+                                Path("data/processed")
+                                / f"deployment_library_{scenario.id}.json"
+                            )
+                            if mode == "route"
+                            else None
+                        )
+                    ),
+                    "library_strata": (
+                        train_env.stratum_counts() if mode == "route" else {}
+                    ),
+                },
+                progress=None,
+                project=args.swanlab_project,
+                offline=not args.swanlab_online,
+            )
+            run_logger.log_config(
+                {
+                    "run_spec": run_spec,
+                    "objective": objective_spec.to_dict(),
+                    "scenario": scenario.id,
+                    "constraint_names": list(train_env.constraint_names),
+                }
             )
 
             def save_checkpoint(training_state: dict) -> None:
@@ -728,8 +1070,17 @@ def main() -> int:
                     validation_seed,
                     resolved_device,
                 )
-                scored_validation_records = validation_records[
-                    args.validation_warmup_periods :
+                scored_validation_records = [
+                    record
+                    for context_id in dict.fromkeys(
+                        record.get("_validation_context", 0)
+                        for record in validation_records
+                    )
+                    for record in [
+                        item
+                        for item in validation_records
+                        if item.get("_validation_context", 0) == context_id
+                    ][args.validation_warmup_periods :]
                 ]
                 validation_utility = _mean_evaluation_utility(
                     validation_env,
@@ -768,6 +1119,20 @@ def main() -> int:
                         )
                         + "\n"
                     )
+                run_logger.log_validation(
+                    completed_update,
+                    {
+                        "mean_utility": validation_utility,
+                        "mean_violations": validation_mean_violations,
+                        "violation_slot_fraction": validation_violation_fraction,
+                    },
+                    contexts=len(
+                        dict.fromkeys(
+                            record.get("_validation_context", 0)
+                            for record in validation_records
+                        )
+                    ),
+                )
                 if validation_key > best_validation_key:
                     best_validation_utility = validation_utility
                     best_validation_update = completed_update
@@ -813,7 +1178,16 @@ def main() -> int:
                     updates=args.updates,
                     rollout_steps=args.rollout_steps,
                     rollout_periods=(
-                        args.rollout_periods if args.rollout_periods > 0 else None
+                        (
+                            args.rollout_periods
+                            * (
+                                args.rollout_contexts
+                                if mode == "route" and args.rollout_periods > 0
+                                else 1
+                            )
+                        )
+                        if args.rollout_periods > 0
+                        else None
                     ),
                     seed=seed,
                     config=config,
@@ -825,10 +1199,12 @@ def main() -> int:
                     resume_state=resume_state,
                     initial_policy_state_dict=initial_policy_state,
                     on_checkpoint=save_checkpoint,
+                    run_logger=run_logger,
                 )
             train_wall_time_s = (
                 previous_train_wall_time_s + time.perf_counter() - train_started
             )
+            run_logger.finish()
             final_policy_payload = {
                 "policy_state_dict": {
                     key: value.detach().cpu()
@@ -901,6 +1277,7 @@ def main() -> int:
                 seed=seed + 10_000,
                 arrival_trace=eval_trace,
                 mapping_samples=args.eval_mapping_samples,
+                **scoring_kwargs,
             )
             eval_bar = tqdm(
                 total=args.eval_slots,

@@ -222,7 +222,7 @@ def test_deployment_only_environment_evaluates_internal_interval(scenario):
     assert math.isfinite(reward)
 
 
-def test_incremental_reward_has_separate_constraint_cost(scenario):
+def test_normalized_reward_has_separate_constraint_cost(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=15)
     observation, _ = env.reset(seed=15)
     observation, deployment_infos = _complete_deployment(env, observation)
@@ -230,48 +230,48 @@ def test_incremental_reward_has_separate_constraint_cost(scenario):
     _, reward, _, _, routing_info = env.step(_blank_routing_action(env))
     components = routing_info["reward_components"]
     expected = (
-        scenario.reward.cost_weight * components["cost_delta"]
-        + scenario.reward.latency_weight * components["latency_delta"]
-        + scenario.reward.goodput_weight * components["goodput_delta"]
-        + scenario.reward.quality_weight * components["quality_delta"]
+        scenario.reward.goodput_weight * components["goodput_normalized"]
+        + scenario.reward.quality_weight * components["quality_normalized"]
+        - scenario.reward.cost_weight * components["cost_normalized"]
+        - scenario.reward.latency_weight * components["latency_normalized"]
     )
     assert reward == pytest.approx(expected)
-    assert components["cost_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
-    assert components["latency_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
-    assert components["goodput_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
-    assert components["quality_delta"] == pytest.approx(env.REWARD_TIE_BONUS)
+    assert -1.0 <= reward <= 1.0
     assert set(components) == {
         "utility",
-        "cost_delta",
-        "latency_delta",
-        "goodput_delta",
-        "quality_delta",
+        "cost_normalized",
+        "latency_normalized",
+        "goodput_normalized",
+        "quality_normalized",
     }
     assert routing_info["constraint_cost"] >= 0.0
 
 
-def test_incremental_reward_uses_raw_previous_period_differences(scenario):
+def test_normalized_reward_uses_fixed_metric_scales(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=22)
-    previous = {"cost": 10.0, "latency": 8.0, "goodput": 4.0, "quality": 0.7}
-    utility, components, current = env._incremental_utility(
-        cost=8.0,
-        mean_latency=7.0,
-        goodput=5.5,
-        quality=0.8,
-        previous=previous,
-    )
-    assert components["cost_delta"] == pytest.approx(2.0)
-    assert components["latency_delta"] == pytest.approx(1.0)
-    assert components["goodput_delta"] == pytest.approx(1.5)
-    assert components["quality_delta"] == pytest.approx(0.1)
-    expected = 0.25 * (2.0 + 1.0 + 1.5 + 0.1)
-    assert utility == pytest.approx(expected)
-    assert current == {
-        "cost": 8.0,
-        "latency": 7.0,
-        "goodput": 5.5,
-        "quality": 0.8,
+    arrival_rates = {
+        (app.id, ingress): rate
+        for app in scenario.applications.values()
+        for ingress, rate in app.ingress_rates.items()
     }
+    app_latency = {
+        app.id: 0.5 * env._app_latency_reference(app.id)
+        for app in scenario.applications.values()
+    }
+    utility, components = env._normalized_utility(
+        cost=0.5 * (env.cost_min + env.cost_max),
+        mean_latency=0.5 * env.latency_reference,
+        attainment=0.8,
+        quality=0.6,
+        app_latency=app_latency,
+        arrival_rates=arrival_rates,
+    )
+    assert components["cost_normalized"] == pytest.approx(0.5)
+    assert components["latency_normalized"] == pytest.approx(0.5)
+    assert components["goodput_normalized"] == pytest.approx(0.8)
+    assert components["quality_normalized"] == pytest.approx(0.6)
+    expected = 0.25 * (0.8 + 0.6 - 0.5 - 0.5)
+    assert utility == pytest.approx(expected)
 
 
 def test_feature_vector_excludes_horizon_progress_and_duplicate_phase(scenario):

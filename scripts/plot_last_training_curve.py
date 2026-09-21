@@ -35,16 +35,38 @@ def main() -> None:
     parser.add_argument("history", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--window", type=int, default=10)
+    parser.add_argument(
+        "--validation",
+        type=Path,
+        default=None,
+        help="optional validation_history.jsonl to overlay on the utility panel",
+    )
     args = parser.parse_args()
 
     records = json.loads(args.history.read_text(encoding="utf-8"))
     frame = pd.DataFrame(records).sort_values("update").reset_index(drop=True)
     update = frame["update"].to_numpy(dtype=float) + 1.0
     frame["utility_ma"] = frame["mean_utility"].rolling(args.window, min_periods=1).mean()
+    if "mean_learning_utility" in frame:
+        frame["learning_utility_ma"] = frame["mean_learning_utility"].rolling(
+            args.window, min_periods=1
+        ).mean()
     frame["deploy_per_period"] = frame["deployment_steps"] / frame["routing_steps"]
     frame["deploy_ma"] = frame["deploy_per_period"].rolling(args.window, min_periods=1).mean()
     frame["collection_ma"] = frame["collection_time_s"].rolling(args.window, min_periods=1).mean()
     frame["optimization_ma"] = frame["optimization_time_s"].rolling(args.window, min_periods=1).mean()
+
+    validation_path = args.validation
+    if validation_path is None:
+        candidate = args.history.with_name("validation_history.jsonl")
+        validation_path = candidate if candidate.exists() else None
+    validation = []
+    if validation_path is not None and validation_path.exists():
+        validation = [
+            json.loads(line)
+            for line in validation_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
 
     _style()
     blue = "#0B5CAD"
@@ -58,6 +80,39 @@ def main() -> None:
     ax = axes[0, 0]
     ax.plot(update, frame["mean_utility"], color=blue, alpha=0.22, linewidth=0.8, label="Per update")
     ax.plot(update, frame["utility_ma"], color=blue, linewidth=1.7, label=f"{args.window}-update moving mean")
+    if "mean_learning_utility" in frame:
+        ax.plot(
+            update,
+            frame["mean_learning_utility"],
+            color=teal,
+            alpha=0.28,
+            linewidth=0.8,
+            label="Relative composition utility",
+        )
+        ax.plot(
+            update,
+            frame["learning_utility_ma"],
+            color=teal,
+            linestyle="--",
+            linewidth=1.35,
+            label=f"Relative {args.window}-update mean",
+        )
+    if validation:
+        validation_update = np.asarray(
+            [float(item["update"]) + 1.0 for item in validation]
+        )
+        validation_utility = np.asarray(
+            [float(item["mean_utility"]) for item in validation]
+        )
+        ax.plot(
+            validation_update,
+            validation_utility,
+            color="#7C3AED",
+            marker="o",
+            markersize=3.5,
+            linewidth=1.35,
+            label="Deterministic validation",
+        )
     best_raw = int(frame["mean_utility"].idxmax())
     best_ma = int(frame["utility_ma"].idxmax())
     ax.scatter(update[best_raw], frame.loc[best_raw, "mean_utility"], s=20, color=red, zorder=5)
@@ -122,6 +177,7 @@ def main() -> None:
         "update",
         "mean_utility",
         "utility_ma",
+        *(["mean_learning_utility", "learning_utility_ma"] if "mean_learning_utility" in frame else []),
         "deployment_steps",
         "routing_steps",
         "deploy_per_period",
