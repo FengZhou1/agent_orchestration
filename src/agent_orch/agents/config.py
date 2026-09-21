@@ -58,6 +58,9 @@ class PPOConfig:
     training_phase: Literal["joint", "deployment", "composition"] = "joint"
     composition_group_relative_advantages: bool = False
     composition_group_relative_mode: Literal["center", "standardize"] = "center"
+    composition_fixed_concentration: float | None = None
+    target_kl: float | None = None
+    factorized_credit: bool = False
 
     def for_constraint_count(self, count: int) -> "PPOConfig":
         """Resize every constraint vector to ``count`` entries.

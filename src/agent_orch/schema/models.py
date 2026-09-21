@@ -220,6 +220,7 @@ class SlotMetrics:
     slo_attainment: float
     violations: int
     app_latency_s: dict[str, float] = field(default_factory=dict)
+    app_quality: dict[str, float] = field(default_factory=dict)
     llm_utilization: dict[str, float] = field(default_factory=dict)
     tool_utilization: dict[str, float] = field(default_factory=dict)
     link_utilization: dict[str, float] = field(default_factory=dict)

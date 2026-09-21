@@ -23,6 +23,7 @@ class WorkflowResult:
     quality: float
     total_arrival_rps: float
     flow_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
+    app_quality: dict[str, float] = field(default_factory=dict)
 
 
 class WorkflowEvaluator:
@@ -52,6 +53,7 @@ class WorkflowEvaluator:
         self._path_delay_cache = {}
         self._first_token_delay_cache = {}
         app_latency: dict[str, float] = {}
+        app_quality: dict[str, float] = {}
         flow_metrics: dict[str, dict[str, float]] = {}
         goodput = 0.0
         total_arrival = 0.0
@@ -65,6 +67,7 @@ class WorkflowEvaluator:
             )
             total_arrival += app_rate
             latency_numerator = 0.0
+            app_quality_numerator = 0.0
             for ingress, base_rate in app.ingress_rates.items():
                 ingress_rate = (arrival_rates or {}).get((app.id, ingress), base_rate)
                 for model in self.scenario.models:
@@ -72,6 +75,9 @@ class WorkflowEvaluator:
                     if model_share <= 0.0:
                         continue
                     quality_numerator += ingress_rate * model_share * app.quality[model]
+                    app_quality_numerator += (
+                        ingress_rate * model_share * app.quality[model]
+                    )
                     for flow in app.pattern_flows:
                         probability = ingress_rate * model_share * flow.probability
                         e2e, ttft, tbt, slo_probability, stage_times = self._flow_summary(
@@ -96,6 +102,9 @@ class WorkflowEvaluator:
                             },
                         }
             app_latency[app.id] = latency_numerator / app_rate if app_rate > 0.0 else 0.0
+            app_quality[app.id] = (
+                app_quality_numerator / app_rate if app_rate > 0.0 else 0.0
+            )
             latency_numerator_system += latency_numerator
 
         mean_latency = (
@@ -109,6 +118,7 @@ class WorkflowEvaluator:
             quality,
             total_arrival,
             flow_metrics,
+            app_quality,
         )
 
     def _flow_latency(

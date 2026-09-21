@@ -13,6 +13,7 @@ from .config import PPOConfig
 from .distributions import (
     _evaluate_categorical,
     _evaluate_grouped_dirichlet,
+    _grouped_dirichlet_log_probs,
     _sample_categorical,
     _sample_grouped_dirichlet,
 )
@@ -96,6 +97,57 @@ class StructuredActorCritic(nn.Module):
             -1, len(self.layout.model_groups), -1
         ).reshape(hidden.shape[0], self.layout.model_action_size)
 
+    def group_log_probs(
+        self, observation: dict[str, Any], action: dict[str, Any]
+    ) -> torch.Tensor:
+        """Per-group log-density of a composition action, shape ``(groups,)``.
+
+        Used by factorised credit assignment, which gives each (application,
+        ingress) group its own application's reward instead of one scalar shared
+        by all of them.
+        """
+
+        obs = _observation_to_tensors(observation, "cpu", batched=False)
+        _, composition_hidden, _ = self._encoded_phases(obs)
+        raw = self._composition_logits(composition_hidden).squeeze(0)
+        model = torch.as_tensor(
+            np.asarray(action["model"], dtype=np.float32), dtype=torch.float32
+        )
+        return _grouped_dirichlet_log_probs(
+            raw,
+            torch.as_tensor(np.asarray(observation["model_mask"])).reshape(-1),
+            model,
+            len(self.layout.model_groups),
+            len(self.layout.models),
+            concentration_min=self.config.composition_concentration_min,
+            concentration_total=self.config.composition_fixed_concentration,
+        )
+
+    def group_log_probs_from_tensors(
+        self, observation: dict[str, torch.Tensor], action: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Per-group log-densities for a stacked batch, shape ``(batch, groups)``."""
+
+        _, composition_hidden, _ = self._encoded_phases(observation)
+        raw = self._composition_logits(composition_hidden)
+        model = action["model"]
+        mask = observation["model_mask"]
+        groups = len(self.layout.model_groups)
+        width = len(self.layout.models)
+        rows = [
+            _grouped_dirichlet_log_probs(
+                raw[index],
+                mask[index].reshape(-1),
+                model[index],
+                groups,
+                width,
+                concentration_min=self.config.composition_concentration_min,
+                concentration_total=self.config.composition_fixed_concentration,
+            )
+            for index in range(raw.shape[0])
+        ]
+        return torch.stack(rows)
+
     def value(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
         deployment_hidden, composition_hidden, phases = self._encoded_phases(
             observation
@@ -147,6 +199,7 @@ class StructuredActorCritic(nn.Module):
                 len(self.layout.models),
                 deterministic,
                 concentration_min=self.config.composition_concentration_min,
+                concentration_total=self.config.composition_fixed_concentration,
             )
             action["model"] = model.cpu().numpy().astype(np.float32)
             log_prob = model_logp
@@ -186,6 +239,7 @@ class StructuredActorCritic(nn.Module):
                 len(self.layout.model_groups),
                 len(self.layout.models),
                 concentration_min=self.config.composition_concentration_min,
+                concentration_total=self.config.composition_fixed_concentration,
             )
             log_probs[index] = model_logp
             entropies[index] = model_entropy

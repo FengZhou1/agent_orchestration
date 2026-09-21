@@ -99,6 +99,7 @@ class Simulator:
             slo_attainment=attainment,
             violations=violations,
             app_latency_s=workflow.app_latency_s,
+            app_quality=workflow.app_quality,
             llm_utilization=analytical.llm_utilization,
             tool_utilization={f"{h}@{n}": value for (h, n), value in analytical.tool_utilization.items()},
             link_utilization=self.backend.network.utilization(analytical.link_load_mbps),

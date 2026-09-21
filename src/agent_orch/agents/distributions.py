@@ -61,6 +61,20 @@ def _concentrations(raw: torch.Tensor, minimum: float = 0.1) -> torch.Tensor:
     )
 
 
+def _fixed_concentrations(raw: torch.Tensor, total: float) -> torch.Tensor:
+    """Concentrations with a pinned total, so the mean is ``softmax(raw)``.
+
+    The free parameterisation lets the head scale every concentration, which
+    changes the action's spread without changing its mean.  The composition is
+    scored at its mean, so that extra degree of freedom is a nuisance: the policy
+    can raise the sampled reward by sharpening or spreading the action instead of
+    improving the composition.  Pinning the total removes it and makes the
+    gradient act on the mean alone.
+    """
+
+    return float(total) * torch.softmax(raw, dim=-1)
+
+
 def _sample_categorical(
     raw: torch.Tensor,
     mask: torch.Tensor,
@@ -93,6 +107,7 @@ def _sample_grouped_dirichlet(
     width: int,
     deterministic: bool,
     concentration_min: float = 0.1,
+    concentration_total: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     raw = raw.reshape(groups, width)
     mask = mask.reshape(groups, width).bool()
@@ -107,7 +122,9 @@ def _sample_grouped_dirichlet(
             action[group, indices[0]] = 1.0
             continue
         distribution = Dirichlet(
-            _concentrations(raw[group, indices], concentration_min)
+            _fixed_concentrations(raw[group, indices], concentration_total)
+            if concentration_total is not None
+            else _concentrations(raw[group, indices], concentration_min)
         )
         sample = distribution.mean if deterministic else distribution.sample()
         action[group, indices] = sample
@@ -123,6 +140,7 @@ def _evaluate_grouped_dirichlet(
     groups: int,
     width: int,
     concentration_min: float = 0.1,
+    concentration_total: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     raw = raw.reshape(groups, width)
     mask = mask.reshape(groups, width).bool()
@@ -134,13 +152,51 @@ def _evaluate_grouped_dirichlet(
         if len(indices) <= 1:
             continue
         distribution = Dirichlet(
-            _concentrations(raw[group, indices], concentration_min)
+            _fixed_concentrations(raw[group, indices], concentration_total)
+            if concentration_total is not None
+            else _concentrations(raw[group, indices], concentration_min)
         )
         sample = torch.clamp(action[group, indices], min=1e-8)
         sample = sample / sample.sum()
         log_prob = log_prob + distribution.log_prob(sample)
         entropy = entropy + distribution.entropy()
     return log_prob, entropy
+
+
+def _grouped_dirichlet_log_probs(
+    raw: torch.Tensor,
+    mask: torch.Tensor,
+    action: torch.Tensor,
+    groups: int,
+    width: int,
+    concentration_min: float = 0.1,
+    concentration_total: float | None = None,
+) -> torch.Tensor:
+    """Per-group Dirichlet log-density of an action, shape ``(groups,)``.
+
+    The summed log-probability is all a single scalar advantage needs, but
+    crediting each group with its own application's reward requires the group's
+    own log-probability.  A group with fewer than two active models has nothing to
+    decide and contributes zero.
+    """
+
+    raw = raw.reshape(groups, width)
+    mask = mask.reshape(groups, width).bool()
+    action = action.reshape(groups, width)
+    out = raw.new_zeros(groups)
+    for group in range(groups):
+        indices = torch.where(mask[group])[0]
+        if len(indices) <= 1:
+            continue
+        distribution = Dirichlet(
+            _fixed_concentrations(raw[group, indices], concentration_total)
+            if concentration_total is not None
+            else _concentrations(raw[group, indices], concentration_min)
+        )
+        sample = torch.clamp(action[group, indices], min=1e-8)
+        sample = sample / sample.sum()
+        out[group] = distribution.log_prob(sample)
+    return out
 
 
 def _normalize_grouped_advantages(
@@ -189,6 +245,8 @@ def _normalize_grouped_advantages(
 
 __all__ = [
     "_concentrations",
+    "_fixed_concentrations",
+    "_grouped_dirichlet_log_probs",
     "_evaluate_categorical",
     "_evaluate_grouped_dirichlet",
     "_masked_mean",

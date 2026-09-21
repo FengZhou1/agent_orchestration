@@ -161,12 +161,26 @@ def collect_rollout(
                 if active_phase
                 else 0.0
             )
+        group_log_prob = None
+        app_utility = None
+        if config.factorized_credit and is_composition:
+            # Credit each (application, ingress) group with its own application's
+            # reward, so the gradient is not one scalar shared by all of them.
+            with torch.no_grad():
+                group_log_prob = (
+                    policy.group_log_probs(observation, action).cpu().numpy().copy()
+                )
+            raw_app_utility = info.get("app_utility") or {}
+            if raw_app_utility:
+                app_utility = dict(raw_app_utility)
         records.append(
             {
                 "observation": observation,
                 "next_observation": next_observation,
                 "action": action,
                 "log_prob": log_prob,
+                "group_log_prob": group_log_prob,
+                "app_utility": app_utility,
                 "value": value,
                 "reward": reward,
                 "external_reward": reward,

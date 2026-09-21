@@ -363,6 +363,37 @@ def main() -> int:
     parser.add_argument("--update-epochs", type=int, default=10)
     parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument(
+        "--factorized-credit",
+        action="store_true",
+        help=(
+            "credit each (application, ingress) composition group with its own "
+            "application's utility instead of one scalar shared by all of them. "
+            "The objective is a sum over applications and the cost term is "
+            "action-independent, so the decomposition is unbiased for the "
+            "policy gradient while giving each sample ~20 rewards instead of one"
+        ),
+    )
+    parser.add_argument(
+        "--composition-fixed-concentration",
+        type=float,
+        default=None,
+        help=(
+            "pin the Dirichlet's total concentration so the action's mean is "
+            "softmax(logits) and its spread is constant. The composition is "
+            "scored at its mean, so a free concentration is a nuisance knob that "
+            "lets the policy raise the sampled reward without improving the mean"
+        ),
+    )
+    parser.add_argument(
+        "--target-kl",
+        type=float,
+        default=None,
+        help=(
+            "stop reusing a rollout once the policy's mean KL from the sampling "
+            "policy exceeds this value (PPO's standard safeguard)"
+        ),
+    )
+    parser.add_argument(
         "--lagrangian-learning-rate",
         type=float,
         default=None,
@@ -791,6 +822,14 @@ def main() -> int:
                         "composition_entropy_coefficient": args.composition_entropy_coefficient,
                         "composition_gamma": args.composition_gamma,
                         "constrained": False if args.unconstrained else None,
+                        "composition_fixed_concentration": (
+                            args.composition_fixed_concentration
+                        ),
+                        "target_kl": args.target_kl,
+                "factorized_credit": args.factorized_credit,
+                        "factorized_credit": (
+                            True if args.factorized_credit else None
+                        ),
                         "lagrangian_learning_rates": (
                             (args.lagrangian_learning_rate,) * 2
                             if args.lagrangian_learning_rate is not None
@@ -838,6 +877,8 @@ def main() -> int:
                 "unconstrained": args.unconstrained,
                 "lagrangian_learning_rate": args.lagrangian_learning_rate,
                 "max_lagrange_multiplier": args.max_lagrange_multiplier,
+                "composition_fixed_concentration": args.composition_fixed_concentration,
+                "target_kl": args.target_kl,
                 "shared_composition_head": args.shared_composition_head,
                 "train_mapping_samples": args.train_mapping_samples,
                 "eval_mapping_samples": args.eval_mapping_samples,

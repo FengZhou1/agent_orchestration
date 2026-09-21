@@ -213,6 +213,13 @@ def optimize_ppo(
     optimizer_steps_per_update = config.update_epochs * math.ceil(
         len(records) / config.minibatch_size
     )
+    group_old_all = None
+    group_adv_all = None
+    group_active_all = None
+    if config.factorized_credit:
+        group_old_all, group_adv_all, group_active_all = _factorized_group_targets(
+            policy, records, device
+        )
     if on_phase is not None:
         on_phase(update, "optimizing")
     optimization_started = time.perf_counter()
@@ -247,9 +254,31 @@ def optimize_ppo(
             )
             policy_deployment_mask = deployment_mask & policy_mask
             policy_composition_mask = composition_mask & policy_mask
-            actor_loss = -_masked_mean(
-                surrogate, policy_deployment_mask
-            ) - _masked_mean(surrogate, policy_composition_mask)
+            if group_old_all is not None:
+                # Composition groups are credited with their own application's
+                # reward, so the actor loss for them is a per-group surrogate
+                # rather than one scalar shared by every group.
+                g_old = group_old_all[batch_t]
+                g_adv = group_adv_all[batch_t]
+                g_active = group_active_all[batch_t] & composition_mask.unsqueeze(1)
+                g_new = policy.group_log_probs_from_tensors(obs_batch, action_batch)
+                g_ratio = torch.exp(g_new - g_old)
+                g_clipped = torch.clamp(
+                    g_ratio, 1.0 - config.clip_ratio, 1.0 + config.clip_ratio
+                )
+                g_surrogate = torch.min(g_ratio * g_adv, g_clipped * g_adv)
+                g_count = g_active.sum().clamp_min(1)
+                composition_actor_loss = -(
+                    g_surrogate * g_active.float()
+                ).sum() / g_count
+            else:
+                composition_actor_loss = -_masked_mean(
+                    surrogate, policy_composition_mask
+                )
+            actor_loss = (
+                -_masked_mean(surrogate, policy_deployment_mask)
+                + composition_actor_loss
+            )
             value_loss = _masked_mse(
                 predicted_values, returns_tensor[batch_t], deployment_mask
             ) + _masked_mse(
@@ -306,11 +335,76 @@ def optimize_ppo(
                 on_optimization_step(
                     update, optimization_step, optimizer_steps_per_update
                 )
+        # PPO's standard safeguard: stop reusing a rollout once the policy has
+        # moved away from the one that generated it.  Without it a small rollout
+        # is recycled for every epoch and the policy keeps travelling after the
+        # data has stopped supporting the direction -- the observed pattern is an
+        # early peak followed by a slow decline.
+        if config.target_kl is not None:
+            with torch.no_grad():
+                _new_logp, _, _ = policy.evaluate_actions(
+                    observations_tensor, actions_tensor
+                )
+                approx_kl = float((old_log_probs - _new_logp).mean())
+            batch.last_approx_kl = approx_kl
+            if approx_kl > config.target_kl:
+                break
 
     batch.optimization_time_s = time.perf_counter() - optimization_started
     batch.rnd_losses = rnd_losses
     batch.icm_losses = icm_losses
     return losses, last_entropy
+
+
+def _factorized_group_targets(
+    policy, records: list[dict], device: str
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Per-group old log-probs, advantages and activity masks, aligned to records.
+
+    Each composition group is credited with its own application's utility, minus
+    the mean of that utility over the episode and the application.  Subtracting
+    that mean removes the level the deployment fixes and leaves the effect of the
+    composition decision, which is what the group's policy should be graded on.
+    Rows that are not composition transitions, or groups with fewer than two
+    active models, stay masked out.
+    """
+
+    groups = len(policy.layout.model_groups)
+    size = len(records)
+    old_logp = torch.zeros(size, groups, device=device)
+    advantages = torch.zeros(size, groups, device=device)
+    active = torch.zeros(size, groups, dtype=torch.bool, device=device)
+
+    composition_rows = [
+        index
+        for index, record in enumerate(records)
+        if record.get("group_log_prob") is not None
+    ]
+    if not composition_rows:
+        return old_logp, advantages, active
+
+    buckets: dict[tuple, list[float]] = {}
+    for index in composition_rows:
+        record = records[index]
+        for group, (app_id, _ingress) in enumerate(policy.layout.model_groups):
+            buckets.setdefault((record["episode"], app_id), []).append(
+                float((record["app_utility"] or {}).get(app_id, 0.0))
+            )
+    baselines = {key: sum(values) / len(values) for key, values in buckets.items()}
+
+    for index in composition_rows:
+        record = records[index]
+        old_logp[index] = torch.as_tensor(
+            record["group_log_prob"], dtype=torch.float32, device=device
+        )
+        for group, (app_id, _ingress) in enumerate(policy.layout.model_groups):
+            value = float((record["app_utility"] or {}).get(app_id, 0.0))
+            advantages[index, group] = value - baselines[(record["episode"], app_id)]
+        mask = np.asarray(record["observation"]["model_mask"]).reshape(groups, -1)
+        active[index] = torch.as_tensor(
+            mask.sum(axis=1) >= 2, dtype=torch.bool, device=device
+        )
+    return old_logp, advantages, active
 
 
 def build_update_record(
@@ -406,6 +500,7 @@ def build_update_record(
         "collection_time_s": float(batch.collection_time_s),
         "optimization_time_s": float(batch.optimization_time_s),
         "exploration_weight": float(batch.exploration_weight),
+        "last_approx_kl": float(getattr(batch, "last_approx_kl", 0.0)),
         "mean_intrinsic_reward": float(np.mean(batch.intrinsic_normalized))
         if deployment_indices
         else 0.0,

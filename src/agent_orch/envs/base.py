@@ -300,6 +300,7 @@ class BaseOrchestrationEnv(gym.Env):
             "metrics": metrics,
             "reward_components": dict(value.components),
             "objective_diagnostics": dict(value.diagnostics),
+            "app_utility": dict(value.app_utility),
             "utility": float(value.utility),
             "learning_utility": float(
                 value.utility - self._composition_baseline_utility

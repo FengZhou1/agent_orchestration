@@ -28,6 +28,7 @@ class ObjectiveValue:
     components: dict[str, float]
     constraints: tuple[float, ...]
     diagnostics: dict[str, float] = field(default_factory=dict)
+    app_utility: dict[str, float] = field(default_factory=dict)
 
 
 class ObjectiveEvaluator:
@@ -73,6 +74,7 @@ class ObjectiveEvaluator:
             attainment=metrics.slo_attainment,
             quality=metrics.quality,
             app_latency=metrics.app_latency_s,
+            app_quality=metrics.app_quality,
             arrival_rates=arrival_rates,
             llm_utilization=metrics.llm_utilization,
             tool_utilization=metrics.tool_utilization,
@@ -88,6 +90,7 @@ class ObjectiveEvaluator:
         quality: float,
         app_latency: Mapping[str, float],
         arrival_rates: ArrivalRates,
+        app_quality: Mapping[str, float] | None = None,
         llm_utilization: Mapping[str, float] | None = None,
         tool_utilization: Mapping[str, float] | None = None,
         violation_labels: Sequence[str] = (),
@@ -140,7 +143,55 @@ class ObjectiveEvaluator:
             components=components,
             constraints=tuple(float(value) for value in constraints),
             diagnostics=diagnostics,
+            app_utility=self._app_utility(
+                app_latency=app_latency,
+                app_quality=app_quality or {},
+                arrival_rates=arrival_rates,
+            ),
         )
+
+    def _app_utility(
+        self,
+        *,
+        app_latency: Mapping[str, float],
+        app_quality: Mapping[str, float],
+        arrival_rates: ArrivalRates,
+    ) -> dict[str, float]:
+        """Split the objective across applications.
+
+        The objective is already a sum over applications in quality and in
+        latency, and the cost term does not depend on the composition at all, so
+        this decomposition sums to ``utility + cost_weight * cost_normalized`` --
+        an action-independent offset.  That makes it an unbiased per-application
+        reward, which is what gives the composition policy credit for the group
+        it actually decided instead of one scalar for all twenty.
+        """
+
+        if not app_quality:
+            return {}
+        references = self.references
+        total_rate = sum(max(0.0, float(rate)) for rate in arrival_rates.values())
+        if total_rate <= 0.0:
+            return {}
+        spec = self.spec
+        contributions: dict[str, float] = {}
+        for app in self.scenario.applications.values():
+            weight = sum(
+                max(0.0, float(arrival_rates.get((app.id, ingress), 0.0)))
+                for ingress in app.ingress_rates
+            )
+            if weight <= 0.0:
+                continue
+            share = weight / total_rate
+            quality = float(app_quality.get(app.id, 0.0))
+            ratio = app_latency.get(app.id, 0.0) / max(
+                references.app_latency_reference(app.id), 1.0e-12
+            )
+            contributions[app.id] = share * (
+                spec.quality_weight * quality
+                - spec.latency_weight * self._saturate(ratio)
+            )
+        return contributions
 
     def _latency_term(
         self,
