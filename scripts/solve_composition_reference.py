@@ -216,6 +216,15 @@ def main() -> int:
         help="periods discarded before averaging the protocol score",
     )
     parser.add_argument("--mapping-samples", type=int, default=128)
+    parser.add_argument(
+        "--arrival-pattern",
+        default="stationary",
+        choices=["stationary", "mix"],
+        help="mix draws each (application, ingress) rate independently",
+    )
+    parser.add_argument("--mix-seed", type=int, default=0)
+    parser.add_argument("--mix-block", type=int, default=1)
+    parser.add_argument("--mix-sigma", type=float, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", default=None)
     parser.add_argument(
@@ -304,8 +313,28 @@ def main() -> int:
     # candidates are scored through the same environment the gate rolls out.  A
     # second scoring path disagrees with this one on individual deployments, which
     # makes the reference lose to plain heuristics for no reason the search can fix.
-    trace = ArrivalTrace.stationary_poisson_intensity(
-        scenario, max(1, args.protocol_periods), rate_scale=arrival_scale
+    # A "mix" load keeps each (application, ingress) group at its own randomly drawn
+    # rate instead of scaling them together, which is the only way the composition
+    # optimum can depend on the load -- and therefore the only way a policy that
+    # conditions on the load has anything to learn.  Held constant across the
+    # protocol's slots, so the (2, 1) protocol stays equivalent to the long one.
+    if args.arrival_pattern == "mix":
+        trace = ArrivalTrace.randomized_mix_intensity(
+            scenario,
+            max(1, args.protocol_periods),
+            base_scale=arrival_scale,
+            seed=args.mix_seed,
+            block=max(1, args.mix_block),
+            per_group_sigma=args.mix_sigma if args.mix_sigma is not None else 0.6,
+        )
+    else:
+        trace = ArrivalTrace.stationary_poisson_intensity(
+            scenario, max(1, args.protocol_periods), rate_scale=arrival_scale
+        )
+    load_label = (
+        f"mix (seed {args.mix_seed}, block {args.mix_block})"
+        if args.arrival_pattern == "mix"
+        else "stationary"
     )
     positions = {entry.index: position for position, entry in enumerate(selected.entries)}
     print(f"scoring path    : composition environment, periods={args.protocol_periods} "
@@ -315,6 +344,7 @@ def main() -> int:
     print(f"split           : {args.split} -> {len(targets)} deployments")
     print(f"objective       : {args.objective_profile} {objective_payload['constraint_names']}")
     print(f"arrival scale   : {arrival_scale:g} ({arrival_source})")
+    print(f"arrival pattern : {load_label}")
     print(f"budget          : {args.budget} evaluations, sweeps={args.sweeps}")
     print("solving:")
 
@@ -401,6 +431,10 @@ def main() -> int:
         "objective": objective_payload,
         "arrival_scale": arrival_scale,
         "arrival_scale_source": arrival_source,
+        "arrival_pattern": args.arrival_pattern,
+        "mix_seed": args.mix_seed if args.arrival_pattern == "mix" else None,
+        "mix_block": args.mix_block if args.arrival_pattern == "mix" else None,
+        "mix_sigma": args.mix_sigma if args.arrival_pattern == "mix" else None,
         "split": args.split,
         "split_test_fraction": args.test_fraction,
         "split_seed": args.split_seed,
