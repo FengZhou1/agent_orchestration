@@ -376,9 +376,36 @@ python scripts/plot_last_training_curve.py `
 
 ## 10. 场景、数据与标定
 
-### 到达过程
+### 时间模型（2026-09-22 起，语义已锁）
 
-统一采用**平稳强度**过程：分析型仿真直接把场景配置的平均到达率作为排队模型的稳态强度，`--arrival-scale` 对全部强度统一缩放，**不把一秒内的离散请求计数反推为稳态到达率**。Main 场景基准总到达率 0.004 request/s。四档负载见 `data/processed/load_levels.json`：
+**决策单元就是时隙**：时隙是唯一时钟，也是唯一决策单元。不存在单独的编排周期符号——`orchestration_period_s` 已从代码中移除，场景文件里遗留的该键由加载器丢弃（因此冻结的 SLO 校准不受影响）。由此推出三条：
+
+1. **成本按时隙计价**，用 `slot_seconds`。部署库的字段是 `cost_per_slot`（库 schema v2，**旧库需要重建**）。
+2. **目标为累积量** $J=\mathbb{E}[\sum_t u(t)]$：env 在每个 episode 内累计效用/成本/时延，更新记录里带 `episode_cumulative_*`。单周期绝对值在恒定 λ 下必然退化成静态优化。
+3. **episode = 一条时间轴**：所有模式的 episode 都是 `--train-slots` 个时隙；`--rollout-periods` 只表示一次 update 收集多少决策步。组成与部署共用一条轨迹与系统折扣（`composition_gamma` 默认 `None`）。
+
+> ⚠ **特征宽度已变**（状态新增"下一时隙 λ"、"剩余冻结"、"轨迹内进度"），**所有 2026-09-21 及更早的 checkpoint 都无法加载**。新实验必须用新目录。
+
+### 到达过程 λ(t)
+
+分析型仿真把场景的平均到达率作为排队模型的稳态强度，`--arrival-scale` 统一缩放，**不把一秒内的离散请求计数反推为稳态到达率**。Main 场景基准总到达率 0.004 request/s。
+
+到达强度**逐时隙可变**，默认是周期性高斯突发（`--arrival-pattern bursty`，周期 60 时隙、σ=8、低位 0.4×、带 5% 抖动）。**这一步是必需的而非可选**：恒定强度下每时隙效用只取决于部署本身，最优就是"永远用同一套部署"，部署子问题退化成静态优化、RL 无从下手。训练/验证/评估分别取**同一过程的独立实现**（`realization=0/1/2`），所以验证测的是"换一条轨迹还能不能适应"，而不是在同一个静态点上重复抽样。
+
+`configs/benchmarks/stress_arrival_burst.yaml` 补齐了协议里列过但从未生成的"到达突发"压力场景；它由 `scripts/add_arrival_burst_scenario.py` 从**已校准的** main 场景派生（直接重跑场景生成器会抹掉冻结的 SLO 块，因为生成器产出的永远是校准前的文件）。
+
+先量化"时变到底带不带得来可学的东西"：
+
+```powershell
+python scripts/quantify_reactivity_headroom.py `
+  --scenario configs/benchmarks/main_abilene.yaml `
+  --composition-policy results/stage_a/pretrain/<run>/policy_pretrained.pt `
+  --load-levels 0.4,0.7,1.0 --periods 14
+```
+
+它给出"最好固定部署"与"按 λ 反应的最优（完全预见、无切换成本，上界）"的差距；**差距≈0 就说明这个负载分布下部署策略没有可学的东西**。
+
+四档负载见 `data/processed/load_levels.json`：
 
 | 档位 | target_load | rate_scale | 总到达率 (req/s) |
 |---|---|---|---|
