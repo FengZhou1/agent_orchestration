@@ -501,6 +501,25 @@ def build_update_record(
         "optimization_time_s": float(batch.optimization_time_s),
         "exploration_weight": float(batch.exploration_weight),
         "last_approx_kl": float(getattr(batch, "last_approx_kl", 0.0)),
+        # Same accounting as the training objective: the cumulative quantities
+        # over the timeline, which is what a time-varying load reward is about.
+        "episode_cumulative_utility": float(composition_records[-1]["episode_utility_sum"])
+        if composition_records
+        else 0.0,
+        "episode_cumulative_cost": float(composition_records[-1]["episode_cost_sum"])
+        if composition_records
+        else 0.0,
+        "episode_cumulative_latency": float(
+            composition_records[-1]["episode_latency_sum"]
+        )
+        if composition_records
+        else 0.0,
+        "episode_length": float(composition_records[-1]["episode_slot"])
+        if composition_records
+        else 0.0,
+        "trace_offset": float(composition_records[-1]["trace_offset"])
+        if composition_records
+        else 0.0,
         "mean_intrinsic_reward": float(np.mean(batch.intrinsic_normalized))
         if deployment_indices
         else 0.0,

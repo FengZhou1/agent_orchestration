@@ -132,10 +132,14 @@ def test_library_cost_bounds_are_tighter_than_theoretical(scenario, library):
     spec = ObjectiveSpec.legacy()
     theoretical = ReferenceScales.from_scenario(scenario, spec, None)
     bounded = ReferenceScales.from_scenario(scenario, spec, library)
-    assert bounded.cost_source == "library+switch-on"
+    assert bounded.cost_source == "library-operating-cost"
+    # The switch-on surcharge is a one-off transient and must stay out of the
+    # range: including it compresses every real cost difference toward zero.
+    largest_steady = max(entry.cost_per_slot for entry in library.entries)
+    assert bounded.cost_max == pytest.approx(largest_steady)
     assert theoretical.cost_source == "theoretical"
     assert bounded.cost_max < theoretical.cost_max
-    steady = [entry.cost_per_period for entry in library.entries]
+    steady = [entry.cost_per_slot for entry in library.entries]
     assert bounded.cost_min == pytest.approx(min(steady))
 
 

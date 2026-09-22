@@ -24,7 +24,8 @@ def test_checked_in_benchmark_scenarios_match_protocol():
     assert len(main.tools) == 6
     assert len(scale.tools) == 8
     assert main.simulation.slot_seconds == 1.0
-    assert main.simulation.orchestration_period_s == 60.0
+    # The slot is the only clock; the retired cycle field is dropped on load.
+    assert not hasattr(main.simulation, "orchestration_period_s")
     assert main.simulation.overload_delay_s == 600.0
     assert main.metadata["units"]["link_load"] == "Mbit/s"
     assert main.metadata["workload_class_count"] == 20

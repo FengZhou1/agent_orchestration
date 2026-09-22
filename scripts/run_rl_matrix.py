@@ -129,9 +129,40 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _arrival_trace(scenario, slots: int, rate_scale: float):
-    return ArrivalTrace.stationary_poisson_intensity(
-        scenario, slots, rate_scale=rate_scale
+def _arrival_trace(scenario, slots: int, rate_scale: float, args=None, realization: int = 0):
+    """Build the arrival trace.
+
+    A stationary intensity leaves the deployment with one constant optimum, so a
+    deployment policy has nothing to react to; the bursty pattern alternates a low
+    and a high level and is what makes the deployment decision time-varying.
+    """
+
+    pattern = getattr(args, "arrival_pattern", "bursty") if args is not None else "bursty"
+    if pattern == "stationary":
+        return ArrivalTrace.stationary_poisson_intensity(
+            scenario, slots, rate_scale=rate_scale
+        )
+    # A scenario may carry its own burst definition (the arrival-burst stress
+    # variant does); explicit CLI values win over it.
+    scenario_burst = dict(scenario.metadata.get("arrival_burst", {}) or {})
+    low_fraction = float(
+        getattr(args, "burst_low_fraction", None)
+        if getattr(args, "burst_low_fraction", None) is not None
+        else scenario_burst.get("low_fraction", 0.4)
+    )
+    # ``realization`` makes training, validation and evaluation independent
+    # realisations of the same bursty process, so validation measures adaptation
+    # to a different trace instead of repeating one fixed operating point.
+    return ArrivalTrace.gaussian_burst_intensity(
+        scenario,
+        slots,
+        base_scale=rate_scale * low_fraction,
+        burst_scale=rate_scale * (1.0 - low_fraction),
+        period=int(getattr(args, "burst_period", None) or scenario_burst.get("period_slots", 60)),
+        sigma=float(getattr(args, "burst_sigma", None) or scenario_burst.get("sigma_slots", 8.0)),
+        phase=float(getattr(args, "burst_phase", None) or scenario_burst.get("phase", 0.25)),
+        seed=int(getattr(args, "seed", 0)) * 101 + realization,
+        jitter=float(getattr(args, "burst_jitter", None) or scenario_burst.get("jitter", 0.05)),
     )
 
 
@@ -315,14 +346,18 @@ def _resolve_training_library(args, scenario):
 
 
 def _variant_config(variant: str) -> tuple[PPOConfig, bool]:
+    # Potential shaping is on by default: with it off every deployment sub-step
+    # carries zero immediate reward, so all ~105 of them share one advantage and
+    # the policy cannot tell which decision helped. The "potential" variant stays
+    # as an explicit name for the same setting.
     if variant == "rnd":
-        return PPOConfig(constrained=True, exploration_mode="rnd"), False
+        return PPOConfig(constrained=True, exploration_mode="rnd"), True
     if variant == "no-rnd":
-        return PPOConfig(constrained=True, exploration_mode="none"), False
+        return PPOConfig(constrained=True, exploration_mode="none"), True
     if variant == "unconstrained-rnd":
-        return PPOConfig(constrained=False, exploration_mode="rnd"), False
+        return PPOConfig(constrained=False, exploration_mode="rnd"), True
     if variant == "icm":
-        return PPOConfig(constrained=True, exploration_mode="icm"), False
+        return PPOConfig(constrained=True, exploration_mode="icm"), True
     if variant == "potential":
         return PPOConfig(constrained=True, exploration_mode="none"), True
     raise ValueError(f"Unknown RL variant: {variant}")
@@ -362,6 +397,27 @@ def main() -> int:
     )
     parser.add_argument("--update-epochs", type=int, default=10)
     parser.add_argument("--minibatch-size", type=int, default=256)
+    parser.add_argument(
+        "--arrival-pattern",
+        default="bursty",
+        choices=["stationary", "bursty"],
+        help=(
+            "stationary keeps one constant optimum for the deployment; bursty "
+            "alternates a low and a high intensity, which is what makes a "
+            "deployment policy worth training"
+        ),
+    )
+    parser.add_argument("--burst-period", type=int, default=None, help="default: scenario metadata, else 60")
+    parser.add_argument("--burst-sigma", type=float, default=None, help="default: scenario metadata, else 8.0")
+    parser.add_argument("--burst-phase", type=float, default=None, help="default: scenario metadata, else 0.25")
+    parser.add_argument("--burst-jitter", type=float, default=None, help="default: scenario metadata, else 0.05")
+    parser.add_argument("--burst-low-fraction", type=float, default=None, help="default: scenario metadata, else 0.4")
+    parser.add_argument(
+        "--deployment-periods",
+        type=int,
+        default=1,
+        help="T^dep: the deployment may only change every N orchestration periods",
+    )
     parser.add_argument(
         "--composition-group-features",
         action="store_true",
@@ -617,7 +673,7 @@ def main() -> int:
     parser.add_argument(
         "--potential-cost-weight",
         type=float,
-        default=0.0,
+        default=0.05,
         help="cost share of the deployment potential shaping term (0 disables it)",
     )
     parser.add_argument(
@@ -669,6 +725,7 @@ def main() -> int:
     # otherwise checkpoint selection optimises something the run does not report.
     scoring_kwargs: dict[str, object] = {
         "objective": objective_spec,
+        "deployment_periods": args.deployment_periods,
     }
     library_kwargs: dict[str, object] = {}
 
@@ -768,6 +825,13 @@ def main() -> int:
         "eval_slots": args.eval_slots,
         "arrival_process": "stationary_poisson_intensity",
         "arrival_scale": args.arrival_scale,
+                "arrival_pattern": args.arrival_pattern,
+                "burst_period": args.burst_period,
+                "burst_sigma": args.burst_sigma,
+                "burst_phase": args.burst_phase,
+                "burst_jitter": args.burst_jitter,
+                "burst_low_fraction": args.burst_low_fraction,
+                "deployment_periods": args.deployment_periods,
         "device": hardware,
         "status_interval_steps": args.status_interval_steps,
         "resume_enabled": args.resume,
@@ -837,8 +901,8 @@ def main() -> int:
                             args.composition_fixed_concentration
                         ),
                         "target_kl": args.target_kl,
-                "factorized_credit": args.factorized_credit,
-                "composition_group_features": args.composition_group_features,
+                        "factorized_credit": args.factorized_credit,
+                        "composition_group_features": args.composition_group_features,
                         "factorized_credit": (
                             True if args.factorized_credit else None
                         ),
@@ -930,7 +994,7 @@ def main() -> int:
                 continue
             env_class = ENVIRONMENTS[mode]
             train_trace = _arrival_trace(
-                scenario, args.train_slots, args.arrival_scale
+                scenario, args.train_slots, args.arrival_scale, args, realization=0
             )
             composition_kwargs: dict[str, object] = {}
             if mode == "route":
@@ -945,11 +1009,13 @@ def main() -> int:
                     )
             train_env = env_class(
                 scenario,
-                max_slots=(
-                    args.rollout_periods
-                    if mode == "route" and args.rollout_periods > 0
-                    else args.train_slots
-                ),
+                # One episode is one timeline of ``--train-slots`` slots for every
+                # mode.  Route training used to cap the episode at the rollout
+                # length, which made an episode a container for drawing a batch of
+                # contexts rather than a stretch of time; the deployment context is
+                # now a property of the episode (stratified sampler) alongside the
+                # trace realisation, not a replacement for the time axis.
+                max_slots=args.train_slots,
                 potential_shaping=potential_shaping,
                 seed=seed,
                 arrival_trace=train_trace,
@@ -957,6 +1023,8 @@ def main() -> int:
                 objective=objective_spec,
                 deployment_library_path=args.deployment_library,
                 potential_cost_weight=args.potential_cost_weight,
+                deployment_periods=args.deployment_periods,
+                trace_offset_span=len(train_trace.rates),
                 **composition_kwargs,
             )
             print(f"Starting training run {run_id}", flush=True)
@@ -1025,7 +1093,7 @@ def main() -> int:
                 args.validation_warmup_periods + args.validation_periods
             )
             validation_trace = _arrival_trace(
-                scenario, validation_total_periods, args.arrival_scale
+                scenario, validation_total_periods, args.arrival_scale, args, realization=1
             )
             validation_env = env_class(
                 scenario,
@@ -1297,17 +1365,10 @@ def main() -> int:
                     train_env,
                     updates=args.updates,
                     rollout_steps=args.rollout_steps,
+                    # Steps collected per update; independent of the episode
+                    # length now that an episode spans the whole timeline.
                     rollout_periods=(
-                        (
-                            args.rollout_periods
-                            * (
-                                args.rollout_contexts
-                                if mode == "route" and args.rollout_periods > 0
-                                else 1
-                            )
-                        )
-                        if args.rollout_periods > 0
-                        else None
+                        args.rollout_periods if args.rollout_periods > 0 else None
                     ),
                     seed=seed,
                     config=config,
@@ -1389,6 +1450,8 @@ def main() -> int:
                 scenario,
                 args.eval_slots,
                 args.arrival_scale,
+                args,
+                realization=2,
             )
             eval_env = env_class(
                 scenario,

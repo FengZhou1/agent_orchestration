@@ -29,9 +29,9 @@ class DeploymentLibraryBuilder:
         L4_placement:<tier>          full model set, 1 replica per service, rotated
                                      placement in cheap/balanced/expensive order
 
-    ``cost_per_period`` counts steady-state serving cost only: active candidates and
+    ``cost_per_slot`` counts steady-state serving cost only: active candidates and
     service replicas priced at ``running_cost_per_slot`` over
-    ``simulation.orchestration_period_s``. ``load_cost`` and ``start_cost`` are
+    ``simulation.slot_seconds``. ``load_cost`` and ``start_cost`` are
     switching costs and are deliberately excluded.
     """
 
@@ -86,7 +86,7 @@ class DeploymentLibraryBuilder:
                 n_llm=entry.n_llm,
                 n_tool_replicas=entry.n_tool_replicas,
                 total_gpu=entry.total_gpu,
-                cost_per_period=entry.cost_per_period,
+                cost_per_slot=entry.cost_per_slot,
                 signature=entry.signature,
             )
             for position, entry in enumerate(entries)
@@ -116,8 +116,8 @@ class DeploymentLibraryBuilder:
             "extreme_skipped": list(self._extreme_skipped),
             "shortfall_reason": shortfall,
             "cost_definition": (
-                "sum(active running_cost_per_slot) * orchestration_period_s"
-                " + sum(replicas * tool running_cost_per_slot) * orchestration_period_s"
+                "sum(active running_cost_per_slot) * slot_seconds"
+                " + sum(replicas * tool running_cost_per_slot) * slot_seconds"
             ),
         }
         return DeploymentLibrary(
@@ -367,7 +367,7 @@ class DeploymentLibraryBuilder:
             n_llm=n_llm,
             n_tool_replicas=n_tool_replicas,
             total_gpu=self._total_gpu(deployment),
-            cost_per_period=self._cost_per_period(deployment),
+            cost_per_slot=self._cost_per_slot(deployment),
             signature=deployment_signature(
                 deployment.llm_active, deployment.tool_replicas
             ),
@@ -382,16 +382,16 @@ class DeploymentLibraryBuilder:
             total += int(config.gpu_count)
         return total
 
-    def _cost_per_period(self, deployment: DeploymentDecision) -> float:
-        period = self.scenario.simulation.orchestration_period_s
+    def _cost_per_slot(self, deployment: DeploymentDecision) -> float:
+        slot = self.scenario.simulation.slot_seconds
         cost = 0.0
         for candidate_id, active in deployment.llm_active.items():
             if not active:
                 continue
             config = self.scenario.llm_configs[self.scenario.candidates[candidate_id].config]
-            cost += config.running_cost_per_slot * period
+            cost += config.running_cost_per_slot * slot
         for (tool_id, _server_id), replicas in deployment.tool_replicas.items():
-            cost += replicas * self.scenario.tools[tool_id].running_cost_per_slot * period
+            cost += replicas * self.scenario.tools[tool_id].running_cost_per_slot * slot
         return cost
 
     def _candidate_gpu_total(self) -> int:
@@ -507,7 +507,7 @@ COVERAGE_COLUMNS = (
     "n_llm",
     "n_tool_replicas",
     "total_gpu",
-    "cost_per_period",
+    "cost_per_slot",
 )
 
 

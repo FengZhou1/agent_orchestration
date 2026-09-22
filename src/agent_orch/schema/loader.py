@@ -96,7 +96,12 @@ class ScenarioLoader:
                 length_class=str(item.get("length_class", "unspecified")),
             )
 
-        simulation = SimulationSpec(**dict(raw.get("simulation", {})))
+        simulation_payload = dict(raw.get("simulation", {}))
+        # ``orchestration_period_s`` belonged to the retired cycle model. Scenario
+        # files still carry it; the slot is now the only clock, so it is dropped
+        # rather than honoured.
+        simulation_payload.pop("orchestration_period_s", None)
+        simulation = SimulationSpec(**simulation_payload)
         reward = RewardSpec(**raw.get("reward", {}))
         scenario = Scenario(
             id=raw["id"],
@@ -118,8 +123,7 @@ class ScenarioLoader:
     def validate(scenario: Scenario) -> None:
         if scenario.simulation.slot_seconds <= 0.0:
             raise ValueError("slot_seconds must be positive")
-        if scenario.simulation.orchestration_period_s <= 0:
-            raise ValueError("orchestration_period_s must be positive")
+
         for link in scenario.links:
             if link.source not in scenario.servers or link.target not in scenario.servers:
                 raise ValueError(f"Link {link.source}->{link.target} references an unknown server")

@@ -186,11 +186,20 @@ def collect_rollout(
                 "external_reward": reward,
                 "utility": utility,
                 "learning_utility": learning_utility,
+                "episode_utility_sum": float(info.get("episode_utility_sum", 0.0)),
+                "episode_cost_sum": float(info.get("episode_cost_sum", 0.0)),
+                "episode_latency_sum": float(info.get("episode_latency_sum", 0.0)),
+                "episode_slot": int(info.get("episode_slot", 0)),
+                "trace_offset": int(info.get("trace_offset", 0)),
                 "constraint_vector": constraint_vector,
                 "terminal": bool(terminated or truncated),
                 "discount": float(
                     config.composition_gamma
-                    if is_composition and config.training_phase == "composition"
+                    if (
+                        is_composition
+                        and config.training_phase == "composition"
+                        and config.composition_gamma is not None
+                    )
                     else info.get("discount", config.gamma)
                 ),
                 "phase": phase,

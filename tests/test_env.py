@@ -274,15 +274,24 @@ def test_normalized_reward_uses_fixed_metric_scales(scenario):
     assert utility == pytest.approx(expected)
 
 
-def test_feature_vector_excludes_horizon_progress_and_duplicate_phase(scenario):
-    env = AgentOrchestrationEnv(scenario, max_slots=2, seed=31)
+def test_feature_vector_exposes_horizon_progress(scenario):
+    """Progress along the timeline is state.
+
+    With a time-varying arrival intensity the problem is finite-horizon, so how
+    much of it is left matters. An earlier version asserted the opposite, which
+    was right only while the timeline was flat.
+    """
+
+    env = AgentOrchestrationEnv(scenario, max_slots=1_000, seed=31)
     observation, _ = env.reset(seed=31)
     features = observation["features"].copy()
-    env._period_index = 1_000
-    env.phase = env.COMPOSITION
+    env._period_index = 500
     changed = env._observation()
-    np.testing.assert_allclose(changed["features"], features)
-    assert changed["action_type"] == env.COMPOSITION
+    # The last feature is the horizon progress; only the phase label may also
+    # change, and here it does not.
+    assert changed["features"][-1] == pytest.approx(0.5)
+    assert not np.allclose(changed["features"], features)
+    assert changed["action_type"] == observation["action_type"]
 
 
 def test_sequential_deployment_builds_a_feasible_capacity_plan(scenario):

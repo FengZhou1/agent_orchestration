@@ -776,6 +776,27 @@ def stress_variants(main: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if index % 4 != 0
     ]
     variants["stress_gpu_unavailable.yaml"] = gpu
+
+    # The protocol lists an arrival-burst stress case alongside the other three.
+    # It is expressed on the scenario so the burst travels with the scenario's
+    # metadata (the trace generator reads it); the intensity itself lives in the
+    # arrival process, not in the resource parameters.
+    burst = deepcopy(main)
+    burst["id"] += "-arrival-burst"
+    burst["metadata"]["role"] = "stress-arrival"
+    burst["metadata"]["arrival_burst"] = {
+        "pattern": "gaussian_burst",
+        "period_slots": 60,
+        "sigma_slots": 8.0,
+        "phase": 0.25,
+        "low_fraction": 0.4,
+        "jitter": 0.05,
+        "note": (
+            "periodic Gaussian bursts on top of the load-level baseline rate; "
+            "consumed by ArrivalTrace.gaussian_burst_intensity"
+        ),
+    }
+    variants["stress_arrival_burst.yaml"] = burst
     return variants
 
 

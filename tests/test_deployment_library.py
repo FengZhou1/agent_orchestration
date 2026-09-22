@@ -37,7 +37,7 @@ def test_library_entries_are_feasible_and_distinct(library, scenario, planner):
         assert entry.n_llm == sum(1 for value in entry.llm_active.values() if value)
         assert entry.n_tool_replicas == sum(entry.tool_replicas.values())
         assert entry.n_models == len(entry.active_models(scenario))
-        assert entry.cost_per_period > 0.0
+        assert entry.cost_per_slot > 0.0
         for (tool_id, _server_id), replicas in entry.tool_replicas.items():
             assert 0 <= replicas <= scenario.simulation.max_tool_replicas_per_server
             assert tool_id in scenario.tools
@@ -109,14 +109,14 @@ def test_save_and_load_round_trip(tmp_path, library, scenario):
         assert reloaded.llm_active == original.llm_active
         assert reloaded.tool_replicas == original.tool_replicas
         assert reloaded.signature == original.signature
-        assert reloaded.cost_per_period == pytest.approx(original.cost_per_period)
+        assert reloaded.cost_per_slot == pytest.approx(original.cost_per_slot)
         assert reloaded.active_models(scenario) == original.active_models(scenario)
         for key in reloaded.tool_replicas:
             assert isinstance(key, tuple) and len(key) == 2
     assert restored.active_model_sets() == library.active_model_sets()
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert any("|" in key for key in payload["entries"][0]["tool_replicas"])
     payload["schema_version"] = 99
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -219,11 +219,11 @@ def test_coverage_rows_and_csv(tmp_path, library, scenario):
         "n_llm",
         "n_tool_replicas",
         "total_gpu",
-        "cost_per_period",
+        "cost_per_slot",
     }
     for row in rows:
         assert set(row) == expected_fields
-        assert row["cost_per_period"] > 0.0
+        assert row["cost_per_slot"] > 0.0
         assert row["total_gpu"] >= 0
         assert row["active_models"]
     assert library.coverage_rows() == rows
@@ -234,7 +234,7 @@ def test_coverage_rows_and_csv(tmp_path, library, scenario):
         written = list(csv.DictReader(handle))
     assert len(written) == len(rows)
     assert list(written[0]) == list(rows[0])
-    assert float(written[0]["cost_per_period"]) == pytest.approx(rows[0]["cost_per_period"])
+    assert float(written[0]["cost_per_slot"]) == pytest.approx(rows[0]["cost_per_slot"])
 
 
 def test_default_path_uses_the_scenario_id(scenario):

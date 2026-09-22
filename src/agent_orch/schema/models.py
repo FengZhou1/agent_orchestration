@@ -156,8 +156,11 @@ class SimulationSpec:
     slot_seconds: float = 1.0
     prefill_chunk_tokens: int = 512
     overload_delay_s: float = 60.0
-    orchestration_period_s: float = 60.0
     max_tool_replicas_per_server: int = 4
+    # The slot is the decision step and the only clock: arrival intensity may vary
+    # per slot, cost accrues per slot, and deployment is re-decided per slot (or
+    # held by T^dep). There is no separate orchestration period.
+
 
 
 @dataclass(frozen=True)

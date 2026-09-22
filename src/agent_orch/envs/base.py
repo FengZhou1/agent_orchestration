@@ -76,12 +76,20 @@ class BaseOrchestrationEnv(gym.Env):
         deployment_library: DeploymentLibrary | None = None,
         deployment_library_path: str | Path | None = None,
         potential_cost_weight: float = 0.0,
+        deployment_periods: int = 1,
+        trace_offset_span: int | None = None,
     ):
         super().__init__()
         self.scenario = scenario
         self.max_periods = max(1, int(max_slots))
         self.potential_shaping = potential_shaping
         self.potential_cost_weight = float(potential_cost_weight)
+        # ``T^dep``: the deployment may only change every ``deployment_periods``
+        # orchestration periods.  One means it can change every period, which is
+        # the historical behaviour.
+        self.deployment_periods = max(1, int(deployment_periods))
+        self.trace_offset_span = None if trace_offset_span is None else max(0, int(trace_offset_span))
+        self.trace_offset = 0
         self.layout = StructuredActionLayout.build(scenario)
         self.planner = CapacityPlanner(scenario)
         self.simulator = Simulator(scenario, max_mapping_samples=mapping_samples)
@@ -198,20 +206,39 @@ class BaseOrchestrationEnv(gym.Env):
     def _deployment_steady_cost(self, deployment: DeploymentDecision) -> float:
         """Steady running cost of a deployment, excluding switch-on surcharges."""
 
-        period_seconds = self.scenario.simulation.orchestration_period_s
+        slot_seconds = self.scenario.simulation.slot_seconds
         llm_cost = sum(
             self.scenario.llm_configs[self.scenario.candidates[candidate_id].config].running_cost_per_slot
-            * period_seconds
+            * slot_seconds
             for candidate_id, active in deployment.llm_active.items()
             if active
         )
         service_cost = sum(
             replicas
             * self.scenario.tools[tool_id].running_cost_per_slot
-            * period_seconds
+            * slot_seconds
             for (tool_id, _), replicas in deployment.tool_replicas.items()
         )
         return max(float(llm_cost + service_cost), 1.0e-12)
+
+    def _draw_trace_offset(self, seed: int | None) -> int:
+        """Pick where in the arrival trace this episode starts.
+
+        With a stationary trace the offset is irrelevant.  With a time-varying
+        one it is essential: every episode would otherwise replay the same first
+        few slots, so the policy would never see the rest of the cycle and could
+        not learn to react to the load at all.
+        """
+
+        span = self.trace_offset_span
+        if span is None:
+            trace = self.simulator.arrival_trace
+            span = len(trace.rates) if trace is not None else 0
+        span = int(span) if span else 0
+        if span <= 1:
+            return 0
+        rng = np.random.default_rng(abs(int(self._seed if seed is None else seed)) + 7919)
+        return int(rng.integers(0, span))
 
     # ------------------------------------------------------------------ gym api
 
@@ -219,7 +246,12 @@ class BaseOrchestrationEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self._seed = seed
-        self.simulator.reset(self._seed)
+        self.trace_offset = self._draw_trace_offset(seed)
+        self.simulator.reset(self._seed, slot=self.trace_offset)
+        self._episode_utility_sum = 0.0
+        self._episode_cost_sum = 0.0
+        self._episode_latency_sum = 0.0
+        self._episode_slots = 0
         self.current_deployment = self.planner.initial_deployment()
         self._base_deployment = self.current_deployment.copy()
         self.last_routing = GreedyPolicy(self.scenario, self._seed).routing(
@@ -290,6 +322,13 @@ class BaseOrchestrationEnv(gym.Env):
         self._last_slot_components = dict(value.components)
         self._last_constraint_vector = constraint_vector
         self._last_objective = value
+        # Cumulative accounting over the episode. The paper's objective is the
+        # time sum J = E[sum_t u(t)], and a bursty trace only distinguishes a
+        # reactive policy from a fixed one through the accumulated total.
+        self._episode_utility_sum += float(value.utility)
+        self._episode_cost_sum += float(metrics.cost)
+        self._episode_latency_sum += float(metrics.mean_latency_s)
+        self._episode_slots += 1
         self._planning_model_share = dict(routing.model_share)
         self._period_index += 1
         terminated = self._period_index >= self.max_periods
@@ -311,6 +350,11 @@ class BaseOrchestrationEnv(gym.Env):
             "constraint_vector": constraint_vector.tolist(),
             "constraint_steps": 1,
             "deployment_steps": self._deployment_actions_in_period,
+            "episode_slot": self._episode_slots,
+            "episode_utility_sum": self._episode_utility_sum,
+            "episode_cost_sum": self._episode_cost_sum,
+            "episode_latency_sum": self._episode_latency_sum,
+            "trace_offset": self.trace_offset,
         }
         reward = float(value.utility)
         if not terminated:
@@ -392,8 +436,27 @@ class BaseOrchestrationEnv(gym.Env):
 
     # -------------------------------------------------- deployment target cycle
 
+    def deployment_is_frozen(self) -> bool:
+        """Whether ``t`` is outside ``T^dep`` for the period about to start."""
+
+        return self.deployment_periods > 1 and (self._period_index % self.deployment_periods) != 0
+
     def _begin_deployment_cycle(self) -> None:
         self._base_deployment = self.current_deployment.copy()
+        if self.deployment_is_frozen():
+            self._capacity_plan = self.planner.plan(
+                self.simulator.current_arrival_rates(),
+                self._planning_model_share,
+                self._period_index,
+            )
+            self._deployment_targets = []
+            self._deployment_target_index = 0
+            self._current_demand = None
+            self._deployment_actions_in_period = 0
+            self._period_initial_potential = self._deployment_potential()
+            self._last_potential = self._period_initial_potential
+            self.phase = self.COMPOSITION
+            return
         arrival_rates = self.simulator.current_arrival_rates()
         self._capacity_plan = self.planner.plan(
             arrival_rates, self._planning_model_share, self._period_index
@@ -546,6 +609,29 @@ class BaseOrchestrationEnv(gym.Env):
         features.append(
             self._deployment_target_index / max(1, len(self._deployment_targets))
         )
+        # Time-varying information. The intensity in force next slot is known to
+        # the controller (it is a schedule, not a surprise), and a deployment
+        # decision is only worth making differently if what is coming differs from
+        # what is here. The remaining freeze is what tells the policy whether this
+        # is a slot in which it may act at all.
+        trace = self.simulator.arrival_trace
+        if trace is not None:
+            next_total = sum(
+                trace.at(self.simulator.slot + 1, self.scenario).values()
+            )
+        else:
+            next_total = sum(self.simulator.current_arrival_rates().values())
+        features.append(min(2.0, float(next_total) / self.arrival_scale))
+        if self.deployment_periods > 1:
+            remaining = (-self._period_index) % self.deployment_periods
+            features.append(remaining / self.deployment_periods)
+        else:
+            features.append(0.0)
+        # Progress through the episode. This is a finite-horizon problem with a
+        # time-varying intensity, so where the controller is on the timeline is
+        # part of the state; excluding it was a choice made when the timeline was
+        # flat.
+        features.append(self._period_index / max(1, self.max_periods))
         return np.clip(np.asarray(features, dtype=np.float32), -10.0, 10.0)
 
     def _observation(self):

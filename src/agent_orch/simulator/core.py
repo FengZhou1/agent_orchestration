@@ -42,15 +42,17 @@ class Simulator:
             },
         )
 
-    def reset(self, seed: int = 0) -> dict[str, Any]:
-        """Return to slot zero.
+    def reset(self, seed: int = 0, slot: int = 0) -> dict[str, Any]:
+        """Return to ``slot``.
 
         The steady-state evaluation is deterministic given the scenario, the
         arrival trace and the decision tuple, so ``seed`` only marks the run in
-        bookkeeping; it does not perturb any simulated quantity.
+        bookkeeping; it does not perturb any simulated quantity.  ``slot`` is the
+        trace position the episode starts from, which is what lets successive
+        episodes sample different phases of a time-varying arrival trace.
         """
 
-        self.slot = 0
+        self.slot = max(0, int(slot))
         self.previous_deployment = self._empty_deployment()
         self.last_metrics = None
         return self.observation()
@@ -250,22 +252,22 @@ class Simulator:
         link_load_mbps: dict[tuple[str, str], float],
     ) -> float:
         cost = 0.0
-        period_seconds = self.scenario.simulation.orchestration_period_s
+        slot_seconds = self.scenario.simulation.slot_seconds
         for candidate_id, active in deployment.llm_active.items():
             if not active:
                 continue
             candidate = self.scenario.candidates[candidate_id]
             config = self.scenario.llm_configs[candidate.config]
-            cost += config.running_cost_per_slot * period_seconds
+            cost += config.running_cost_per_slot * slot_seconds
             if not self.previous_deployment.llm_active.get(candidate_id, 0):
                 cost += config.load_cost
         for pool, replicas in deployment.tool_replicas.items():
             tool_id, _ = pool
             tool = self.scenario.tools[tool_id]
-            cost += replicas * tool.running_cost_per_slot * period_seconds
+            cost += replicas * tool.running_cost_per_slot * slot_seconds
             started = max(0, replicas - self.previous_deployment.tool_replicas.get(pool, 0))
             cost += started * tool.start_cost
-        cost += self.backend.network.traffic_cost(link_load_mbps) * period_seconds
+        cost += self.backend.network.traffic_cost(link_load_mbps) * slot_seconds
         return cost
 
 

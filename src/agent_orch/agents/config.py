@@ -17,7 +17,10 @@ _CONSTRAINT_VECTOR_FIELDS = (
 @dataclass(frozen=True)
 class PPOConfig:
     gamma: float = 0.99
-    composition_gamma: float = 0.0
+    # ``None`` means composition transitions use the system discount, because
+    # composition and deployment share one trajectory now.  A numeric value keeps
+    # the one-step bandit form as an explicit ablation.
+    composition_gamma: float | None = None
     gae_lambda: float = 0.95
     deployment_gae_lambda: float = 1.0
     clip_ratio: float = 0.2

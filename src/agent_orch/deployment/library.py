@@ -11,7 +11,7 @@ from typing import Any, Sequence
 from agent_orch.schema.models import DeploymentDecision, Scenario
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TOOL_KEY_SEPARATOR = "|"
 
 
@@ -74,7 +74,7 @@ class DeploymentEntry:
     n_llm: int
     n_tool_replicas: int
     total_gpu: int
-    cost_per_period: float
+    cost_per_slot: float
     signature: str
 
     def to_deployment(self) -> DeploymentDecision:
@@ -109,7 +109,7 @@ class DeploymentEntry:
             "n_llm": self.n_llm,
             "n_tool_replicas": self.n_tool_replicas,
             "total_gpu": self.total_gpu,
-            "cost_per_period": self.cost_per_period,
+            "cost_per_slot": self.cost_per_slot,
             "signature": self.signature,
         }
 
@@ -137,7 +137,7 @@ class DeploymentEntry:
             n_llm=int(payload["n_llm"]),
             n_tool_replicas=int(payload["n_tool_replicas"]),
             total_gpu=int(payload["total_gpu"]),
-            cost_per_period=float(payload["cost_per_period"]),
+            cost_per_slot=float(payload["cost_per_slot"]),
             signature=signature,
         )
 
@@ -233,7 +233,7 @@ class DeploymentLibrary:
                     "n_llm": entry.n_llm,
                     "n_tool_replicas": entry.n_tool_replicas,
                     "total_gpu": entry.total_gpu,
-                    "cost_per_period": entry.cost_per_period,
+                    "cost_per_slot": entry.cost_per_slot,
                 }
             )
         return rows

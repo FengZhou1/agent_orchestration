@@ -52,7 +52,17 @@ def _build_group_features(env: Any) -> torch.Tensor:
         rate = float(app.ingress_rates.get(ingress, 0.0))
         row = [
             *[float(app.quality.get(model, 0.0)) for model in models],
-            min(2.0, rate / max(scenario.simulation.orchestration_period_s, 1.0e-9)),
+            min(
+                2.0,
+                rate
+                / max(
+                    sum(
+                        sum(app.ingress_rates.values())
+                        for app in scenario.applications.values()
+                    ),
+                    1.0e-9,
+                ),
+            ),
             float(slo.type == "lat"),
             float(slo.type == "ddl"),
             float(slo.type == "cmp"),

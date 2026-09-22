@@ -61,22 +61,22 @@ def arrival_weighted_latency_reference(scenario: Scenario) -> float:
 
 
 def _theoretical_cost_bounds(scenario: Scenario) -> tuple[float, float]:
-    period_seconds = scenario.simulation.orchestration_period_s
+    slot_seconds = scenario.simulation.slot_seconds
     minimum_llm = min(
-        scenario.llm_configs[candidate.config].running_cost_per_slot * period_seconds
+        scenario.llm_configs[candidate.config].running_cost_per_slot * slot_seconds
         for candidate in scenario.candidates.values()
     )
     minimum_services = sum(
-        tool.running_cost_per_slot * period_seconds for tool in scenario.tools.values()
+        tool.running_cost_per_slot * slot_seconds for tool in scenario.tools.values()
     )
     maximum = sum(
-        scenario.llm_configs[candidate.config].running_cost_per_slot * period_seconds
-        + scenario.llm_configs[candidate.config].load_cost
+        scenario.llm_configs[candidate.config].running_cost_per_slot * slot_seconds
         for candidate in scenario.candidates.values()
     )
     maximum += sum(
         scenario.simulation.max_tool_replicas_per_server
-        * (tool.running_cost_per_slot * period_seconds + tool.start_cost)
+        * tool.running_cost_per_slot
+        * slot_seconds
         for tool in scenario.tools.values()
         for _ in scenario.servers
     )
@@ -87,32 +87,25 @@ def _theoretical_cost_bounds(scenario: Scenario) -> tuple[float, float]:
 def _library_cost_bounds(
     scenario: Scenario, library: "DeploymentLibrary"
 ) -> tuple[float, float]:
-    """Steady-cost range over feasible deployments, widened by switch-on cost.
+    """Operating-cost range over feasible deployments, per slot.
 
-    ``DeploymentEntry.cost_per_period`` counts running cost only, while the
-    simulator charges ``load_cost`` when a candidate switches on and
-    ``start_cost`` per newly started replica.  The upper bound adds the largest
-    switch-on surcharge reachable inside the library so a legitimately
-    expensive deployment is not pinned at the top of the normalised range.
+    Deliberately excludes the switch-on charges (``load_cost`` for an LLM
+    candidate, ``start_cost`` for a replica).  Those are one-off transients that
+    a freshly changed deployment pays in a single slot, and they are an order of
+    magnitude larger than a slot's operating cost -- ``load_cost`` is roughly one
+    minute of running cost.  Folding them into the range lets an event that most
+    slots never see dominate the scale, which compresses every real cost
+    difference toward zero: measured, the cost term's influence fell from 30.4%
+    to 1.0% when the range was widened that way.  A slot that does pay a
+    switch-on charge simply clips at the top of the range, and
+    ``cost_clip_high`` in the objective diagnostics counts how often that happens.
     """
 
-    steady = [float(entry.cost_per_period) for entry in library.entries]
+    steady = [float(entry.cost_per_slot) for entry in library.entries]
     if not steady:
         return _theoretical_cost_bounds(scenario)
-    surcharge = 0.0
-    for entry in library.entries:
-        llm_switch = sum(
-            scenario.llm_configs[scenario.candidates[cid].config].load_cost
-            for cid, active in entry.llm_active.items()
-            if active
-        )
-        tool_switch = sum(
-            scenario.tools[tool_id].start_cost * int(replicas)
-            for (tool_id, _server), replicas in entry.tool_replicas.items()
-        )
-        surcharge = max(surcharge, float(llm_switch + tool_switch))
     minimum = float(min(steady))
-    maximum = float(max(steady)) + surcharge
+    maximum = float(max(steady))
     return minimum, float(max(maximum, minimum + 1.0e-9))
 
 
@@ -142,7 +135,7 @@ class ReferenceScales:
         spec = spec or ObjectiveSpec.legacy()
         if spec.cost_bounds == "library" and library is not None and len(library) > 0:
             cost_min, cost_max = _library_cost_bounds(scenario, library)
-            source = "library+switch-on"
+            source = "library-operating-cost"
         else:
             cost_min, cost_max = _theoretical_cost_bounds(scenario)
             source = "theoretical"
