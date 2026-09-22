@@ -91,9 +91,9 @@ def _load_resumable(
     """Entries already solved by a compatible earlier run.
 
     Compatibility is the identity of the *problem*: schema version, scenario,
-    objective profile and arrival scale.  A difference in budget, mapping samples or
-    split still resumes (the solved entries stay valid) but is reported, because the
-    file then mixes searches of different strength.
+    objective profile, arrival scale and deployment library.  A difference in budget,
+    mapping samples or split still resumes (the solved entries stay valid) but is
+    reported, because the file then mixes searches of different strength.
     """
 
     if not resume or not output.exists():
@@ -106,6 +106,10 @@ def _load_resumable(
         mismatches.append("scenario_id")
     if dict(payload.get("objective", {})) != objective:
         mismatches.append("objective")
+    # Entries are keyed by library index, so a rebuilt library makes every solved
+    # entry a composition for a deployment that may no longer sit at that index.
+    if str(payload.get("library_json_sha256", "")) != str(current.get("library_json_sha256", "")):
+        mismatches.append("library_json_sha256")
     if payload.get("arrival_scale") is None or abs(
         float(payload["arrival_scale"]) - float(arrival_scale)
     ) > 1.0e-12:
@@ -272,6 +276,7 @@ def main() -> int:
             "split": args.split,
             "protocol_periods": args.protocol_periods,
             "protocol_warmup": args.protocol_warmup,
+            "library_json_sha256": file_sha256(library_path),
         },
         resume=args.resume,
     )
@@ -337,6 +342,9 @@ def main() -> int:
                 "split_seed": args.split_seed,
                 "library": _portable_path(library_path),
                 "library_scenario_hash": library.scenario_hash,
+                # Entries are keyed by library index, so every consumer needs the
+                # library's own digest to prove the index mapping still holds.
+                "library_json_sha256": file_sha256(library_path),
                 "entries": {key: solved[key] for key in sorted(solved, key=int)},
             },
             ensure_ascii=False,

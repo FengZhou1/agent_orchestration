@@ -16,6 +16,36 @@ def file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+class StaleArtifactError(RuntimeError):
+    """An artifact derived from a different input than the one now in use."""
+
+
+def assert_same_library(payload: dict, library_path: str | Path) -> str:
+    """Require ``payload`` to have been derived from the library at ``library_path``.
+
+    Composition references are keyed by *library index*, so once the library is
+    rebuilt the index-to-deployment mapping is no longer known to hold.  Scoring or
+    distilling from a stale reference silently measures a composition belonging to
+    some other deployment and reports it as the solver's own optimum, which is how a
+    two-day-old test reference passed every other resume check while pointing at the
+    wrong deployments.  Returns the shared digest.
+    """
+
+    current = file_sha256(library_path)
+    recorded = payload.get("library_json_sha256")
+    if recorded is None:
+        raise StaleArtifactError(
+            f"artifact records no deployment-library hash, so it cannot be shown to "
+            f"match {library_path} ({current[:16]}); regenerate it"
+        )
+    if str(recorded) != current:
+        raise StaleArtifactError(
+            f"artifact was derived from deployment library {str(recorded)[:16]}, but "
+            f"{library_path} is {current[:16]}; regenerate it"
+        )
+    return current
+
+
 @dataclass(frozen=True)
 class DatasetManifest:
     artifact_type: str

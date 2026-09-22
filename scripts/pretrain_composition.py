@@ -34,6 +34,7 @@ if __package__ in (None, ""):
 from agent_orch.agents import PPOConfig, StructuredActorCritic
 from agent_orch.agents.distributions import _concentrations
 from agent_orch.agents.rollout import _observation_to_tensors
+from agent_orch.data.provenance import StaleArtifactError, assert_same_library
 from agent_orch.deployment import DeploymentLibrary
 from agent_orch.envs import CompositionLibraryEnv
 from agent_orch.objective import ObjectiveSpec
@@ -114,6 +115,14 @@ def main() -> int:
         args.deployment_library or DeploymentLibrary.default_path(scenario.id)
     )
     payload = json.loads(Path(args.reference).read_text(encoding="utf-8"))
+    # The reference is keyed by library index; a reference solved against a rebuilt
+    # library would distil shares belonging to a different deployment.
+    try:
+        assert_same_library(
+            payload, args.deployment_library or DeploymentLibrary.default_path(scenario.id)
+        )
+    except StaleArtifactError as error:
+        raise SystemExit(f"{args.reference}: {error}") from error
     entries = {int(key): value for key, value in payload["entries"].items()}
     arrival_scale = float(payload["arrival_scale"])
 

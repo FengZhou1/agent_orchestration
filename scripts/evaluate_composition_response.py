@@ -38,6 +38,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent_orch.agents import PPOConfig, StructuredActorCritic
+from agent_orch.data.provenance import StaleArtifactError, assert_same_library
 from agent_orch.deployment import DeploymentLibrary
 from agent_orch.envs import CompositionLibraryEnv
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec, ReferenceScales
@@ -155,6 +156,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("--solver-budget", type=int, default=32)
+    parser.add_argument(
+        "--allow-stale-reference",
+        action="store_true",
+        help="score a reference whose recorded deployment-library hash differs (unsafe)",
+    )
     parser.add_argument("--output", default="results/stage_a/gate")
     args = parser.parse_args()
 
@@ -177,6 +183,11 @@ def main() -> int:
     references = ReferenceScales.from_scenario(scenario, spec, library)
     evaluator = ObjectiveEvaluator(scenario, spec, references)
     payload = json.loads(Path(args.reference).read_text(encoding="utf-8"))
+    if not args.allow_stale_reference:
+        try:
+            assert_same_library(payload, args.deployment_library or DeploymentLibrary.default_path(scenario.id))
+        except StaleArtifactError as error:
+            raise SystemExit(f"{args.reference}: {error}") from error
     reference_entries = {int(key): value for key, value in payload["entries"].items()}
     arrival_scale = float(payload["arrival_scale"])
     # The reference is the optimum of *its own* scoring protocol, so the policy has
@@ -261,17 +272,16 @@ def main() -> int:
                 periods,
                 args.warmup,
             )
-            # Solved and stored under the reference protocol; prefer the stored
-            # value so the like-for-like comparison uses the solver's own scale.
-            reference_cold = (
-                float(reference["utility"])
-                if reference.get("utility") is not None
-                else _protocol_utility(
-                    _fixed_env(env, position, scenario, trace, args, spec),
-                    _constant_action(env, share),
-                    reference_protocol_periods,
-                    reference_protocol_warmup,
-                )
+            # Always recompute from the stored composition rather than trusting
+            # the stored utility.  The utility scale depends on the objective's
+            # normalisation references, so a stored value from an earlier premise
+            # is not comparable with a policy scored now: it silently mixes two
+            # scales and makes both rho and the captured lift meaningless.
+            reference_cold = _protocol_utility(
+                _fixed_env(env, position, scenario, trace, args, spec),
+                _constant_action(env, share),
+                reference_protocol_periods,
+                reference_protocol_warmup,
             )
 
         best_heuristic = max(heuristic_utilities.values()) if heuristic_utilities else float("nan")
@@ -394,6 +404,7 @@ def main() -> int:
         "reference": str(args.reference),
         "split": args.split,
         "reference_protocol_periods": reference_protocol_periods,
+        "reference_utility_recomputed": True,
         "reference_protocol_warmup": reference_protocol_warmup,
         "n_deployments": len(rows),
         "objective": spec.to_dict(),
