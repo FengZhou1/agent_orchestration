@@ -423,12 +423,20 @@ def main() -> int:
     mean_uniform_cold = (
         float(np.mean(uniform_cold_values[solver_comparable])) if solver_comparable.any() else float("nan")
     )
-    achievable_lift = mean_reference_cold - mean_uniform_cold
-    captured_lift = mean_policy_cold - mean_uniform_cold
+    # The locked objective is cumulative: J = sum of the per-slot utilities over the
+    # episode, not their mean.  Every arm is scored over the same number of slots, so
+    # the two rank identically and the ratio is invariant -- but the criterion is
+    # stated and computed on the sum, which is what the objective actually says.
+    scored_slots = max(0, reference_protocol_periods - reference_protocol_warmup)
+    cumulative_policy = mean_policy_cold * scored_slots
+    cumulative_reference = mean_reference_cold * scored_slots
+    cumulative_uniform = mean_uniform_cold * scored_slots
+    achievable_lift = cumulative_reference - cumulative_uniform
+    captured_lift = cumulative_policy - cumulative_uniform
     lift_capture = (
         captured_lift / achievable_lift if abs(achievable_lift) > 1.0e-12 else float("nan")
     )
-    gap = mean_policy_cold - mean_reference_cold
+    gap = cumulative_policy - cumulative_reference
 
     # Heuristic comparison: steady protocol, the one training optimises.
     steady_comparable = np.isfinite(policy_values) & np.isfinite(best_values) & np.isfinite(uniform_values)
@@ -450,23 +458,31 @@ def main() -> int:
     per_stratum: dict[str, dict[str, float]] = {}
     for row in rows:
         bucket = per_stratum.setdefault(
-            row["stratum"], {"n": 0, "policy": 0.0, "best_heuristic": 0.0, "reference": 0.0}
+            row["stratum"],
+            {"n": 0, "policy": 0.0, "best_heuristic": 0.0, "reference": 0.0, "uniform": 0.0},
         )
         bucket["n"] += 1
         bucket["policy"] += float(row["policy"])
         bucket["best_heuristic"] += float(row["best_heuristic"])
         bucket["reference"] += float(row["reference"])
+        bucket["uniform"] += float(row.get("h_uniform", float("nan")))
     for bucket in per_stratum.values():
         count = max(1, int(bucket["n"]))
-        for key in ("policy", "best_heuristic", "reference"):
+        for key in ("policy", "best_heuristic", "reference", "uniform"):
             bucket[key] /= count
+        # The tolerance belongs to the protocol the stratum comparison is made in:
+        # a shortfall of "10% of the achievable lift" has to mean 10% of the lift in
+        # this stratum and this protocol, not of a lift measured under another one.
+        bucket["tolerance"] = args.stratum_tolerance_ratio * abs(
+            bucket["reference"] - bucket["uniform"]
+        )
 
-    stratum_tolerance = args.stratum_tolerance_ratio * abs(achievable_lift)
     stratum_shortfalls = [
         (name, bucket["policy"] - bucket["best_heuristic"])
         for name, bucket in per_stratum.items()
-        if bucket["policy"] < bucket["best_heuristic"] - stratum_tolerance - 1.0e-12
+        if bucket["policy"] < bucket["best_heuristic"] - bucket["tolerance"] - 1.0e-12
     ]
+    stratum_tolerance = args.stratum_tolerance_ratio * abs(achievable_lift)
     heuristic_failures = [
         (name, int(np.sum(policy_values < np.array([row[f"h_{name}"] for row in rows]) - 1e-12)))
         for name in HEURISTIC_NAMES
@@ -507,17 +523,22 @@ def main() -> int:
         "mean_policy_cold": mean_policy_cold,
         "mean_reference_cold": mean_reference_cold,
         "mean_uniform_cold": mean_uniform_cold,
+        # The criterion is stated and computed on the cumulative objective
+        # J = sum of per-slot utilities (the locked definition).  The per-slot means
+        # are kept as descriptive statistics; with every arm scored over the same
+        # number of slots the two rank identically, so no verdict depends on which
+        # one is quoted.
+        "criterion": "cumulative over the episode's scored slots",
+        "scored_slots_per_deployment": scored_slots,
         "achievable_lift": achievable_lift,
         "captured_lift": captured_lift,
         "lift_capture": lift_capture,
-        # The locked objective is cumulative (J = sum over the episode's slots), so
-        # report the sum alongside the per-slot mean the criterion is built on.  All
-        # arms are scored over the same window, so the two rank identically; the sum
-        # is what the paper's objective actually says.
-        "scored_slots_per_deployment": max(0, reference_protocol_periods - reference_protocol_warmup),
-        "cumulative_policy": mean_policy_cold * max(0, reference_protocol_periods - reference_protocol_warmup),
-        "cumulative_reference": mean_reference_cold * max(0, reference_protocol_periods - reference_protocol_warmup),
-        "cumulative_uniform": mean_uniform_cold * max(0, reference_protocol_periods - reference_protocol_warmup),
+        "cumulative_policy": cumulative_policy,
+        "cumulative_reference": cumulative_reference,
+        "cumulative_uniform": cumulative_uniform,
+        "mean_policy_per_slot": mean_policy_cold,
+        "mean_reference_per_slot": mean_reference_cold,
+        "mean_uniform_per_slot": mean_uniform_cold,
         "mean_gap_to_reference": gap,
         "heuristic_wins": wins,
         "heuristic_losses": losses,
@@ -568,32 +589,25 @@ def main() -> int:
         f"| lift captured over uniform | {lift_capture:.1%} | >= {args.min_lift_capture:.0%} | "
         f"{'PASS' if gate_lift else 'FAIL'} |",
         f"| strata not below best heuristic | {len(per_stratum) - len(stratum_shortfalls)}"
-        f"/{len(per_stratum)} | all (tol {args.stratum_tolerance_ratio:.0%} of lift = "
-        f"{stratum_tolerance:+.4f}) | "
+        f"/{len(per_stratum)} | all (tol {args.stratum_tolerance_ratio:.0%} of each "
+        f"stratum's own lift) | "
         f"{'PASS' if gate_strata else 'FAIL'} |",
         "",
         "## Levels",
         "",
-        f"Solver comparison (reference protocol: {reference_protocol_periods} periods, "
+        f"Criterion: cumulative objective J = sum of per-slot utilities over the "
+        f"{scored_slots} scored slots of each episode "
+        f"(reference protocol: {reference_protocol_periods} periods, "
         f"warmup {reference_protocol_warmup}; like-for-like):",
         "",
-        "| level | value |",
-        "|---|---|",
-        f"| policy | {mean_policy_cold:+.5f} |",
-        f"| solver reference | {mean_reference_cold:+.5f} |",
-        f"| uniform composition | {mean_uniform_cold:+.5f} |",
-        f"| achievable lift over uniform | {achievable_lift:+.5f} |",
-        f"| captured lift | {captured_lift:+.5f} |",
-        f"| mean gap to solver | {gap:+.5f} |",
-        "",
-        f"Cumulative objective over the {max(0, reference_protocol_periods - reference_protocol_warmup)} "
-        "scored slots (the locked objective is the sum, not the mean):",
-        "",
-        "| level | cumulative |",
-        "|---|---|",
-        f"| policy | {mean_policy_cold * max(0, reference_protocol_periods - reference_protocol_warmup):+.5f} |",
-        f"| solver reference | {mean_reference_cold * max(0, reference_protocol_periods - reference_protocol_warmup):+.5f} |",
-        f"| uniform composition | {mean_uniform_cold * max(0, reference_protocol_periods - reference_protocol_warmup):+.5f} |",
+        "| level | J (cumulative) | per slot |",
+        "|---|---|---|",
+        f"| policy | {cumulative_policy:+.5f} | {mean_policy_cold:+.5f} |",
+        f"| solver reference | {cumulative_reference:+.5f} | {mean_reference_cold:+.5f} |",
+        f"| uniform composition | {cumulative_uniform:+.5f} | {mean_uniform_cold:+.5f} |",
+        f"| achievable lift over uniform | {achievable_lift:+.5f} | |",
+        f"| captured lift | {captured_lift:+.5f} | |",
+        f"| gap to solver | {gap:+.5f} | |",
         "",
         "Heuristic comparison (steady protocol, what training optimises):",
         "",
