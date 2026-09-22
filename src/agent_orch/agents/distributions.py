@@ -49,15 +49,20 @@ def _concentrations(raw: torch.Tensor, minimum: float = 0.1) -> torch.Tensor:
     would mean that raising the floor to cut sampling noise also shrinks the
     range of mean compositions the head can express, so the two goals would
     fight; scaling keeps the reachable simplex roughly fixed while the action
-    noise falls as ``1 / sqrt(minimum)``.  At the default floor of 1.0 the bound
-    is 100, exactly as before.
+    noise falls as ``1 / sqrt(minimum)``.
+
+    The bound is 1000 rather than 100.  At 100, a group with four active models
+    tops out at ``100/103 = 0.9709`` on one model, and the solver's optima ask for
+    more than that in 425 of the 600 test groups.  Projecting the reference onto
+    that smaller simplex costs 0.00388 utility, 8.0% of the entire lift over
+    uniform -- reachable value given up to an arithmetic constant.
     """
 
     minimum = max(float(minimum), 1.0e-3)
     return torch.clamp(
         torch.nn.functional.softplus(raw) + minimum,
         minimum,
-        max(100.0, 50.0 * minimum),
+        max(1000.0, 500.0 * minimum),
     )
 
 
