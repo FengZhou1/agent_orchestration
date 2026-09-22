@@ -198,3 +198,24 @@ Stage A 门禁反复给不出可用的结论，查到两个**独立的**缺陷�
 ⚠ 边界要说清楚：这里变的是负载**强度**（λ 整体缩放），不是负载**构成**（应用/入口占比、
 pattern flow 概率）。如果构成随时间变，最佳部署可能改变——Stage B 要想有内容，
 必须让负载在**构成**上时变，而不只是强度。
+
+### 第 15 时隙跳变的排查记录（未定位，但已排除若干可能）
+
+`deployment index 2`（L5_extreme），24 时隙，固定组成，常量到达：
+
+```
+slot  0     : -0.01628   (含一次性 load_cost)
+slot  1..14 :  0.23365   精确相等
+slot 15..23 :  0.29503   精确相等（uniform 同期仅 0.19862 → 0.19887）
+```
+
+已排除：
+- **不是负载**：`stationary_poisson_intensity` 逐时隙强度完全相同，且 6 时隙与 8 时隙轨迹的前 6 个值逐位相等。
+- **不是一次性成本**：`load_cost`/`start_cost` 只在候选从 0 变 1 时收一次（slot 0），`simulator/core.py::_cost`。
+- **不是映射重采样**：`WorkflowEvaluator` 的 mapping 以 `app|ingress|model|flow` 的哈希为种子且带缓存，不随时间重抽。
+- **不是部署冻结边界**：`deployment_periods` 默认 1，探针也没传该参数，`deployment_is_frozen()` 恒为假。
+
+下一步建议从这里入手：跳变是"精确相等→精确相等"的整数阈值式跳变，且幅度随组成的质量集中度放大
+（uniform 几乎不动），像某个按资源计的整数或队列稳定性判据在第 15 时隙越界。可先在
+`performance/llm*.py` 与 `simulator/core.py` 里找带 15/16 语义的常量或计数器，或直接在跳变前后
+dump `SlotMetrics.diagnostics` 与 `llm_utilization`/`tool_utilization` 对比。
