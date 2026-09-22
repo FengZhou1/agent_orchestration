@@ -142,6 +142,24 @@ def _arrival_trace(scenario, slots: int, rate_scale: float, args=None, realizati
         return ArrivalTrace.stationary_poisson_intensity(
             scenario, slots, rate_scale=rate_scale
         )
+    if pattern == "mix":
+        # Every (application, ingress) group drawn independently, so the *mix*
+        # moves and not just the total.  With the total alone the composition
+        # optimum barely moves, and a policy trained on it is load-blind: it emits
+        # identical shares at 0.4x and 2.0x.  Values are constant within a block of
+        # slots, the granularity a deployment decision can act at.
+        return ArrivalTrace.randomized_mix_intensity(
+            scenario,
+            slots,
+            base_scale=rate_scale,
+            seed=int(getattr(args, "mix_seed", 0) or 0) + realization,
+            block=max(1, int(getattr(args, "mix_block", 4) or 4)),
+            per_group_sigma=float(
+                getattr(args, "mix_sigma", None)
+                if getattr(args, "mix_sigma", None) is not None
+                else 0.6
+            ),
+        )
     # A scenario may carry its own burst definition (the arrival-burst stress
     # variant does); explicit CLI values win over it.
     scenario_burst = dict(scenario.metadata.get("arrival_burst", {}) or {})
@@ -400,12 +418,28 @@ def main() -> int:
     parser.add_argument(
         "--arrival-pattern",
         default="bursty",
-        choices=["stationary", "bursty"],
+        choices=["stationary", "bursty", "mix"],
         help=(
-            "stationary keeps one constant optimum for the deployment; bursty "
-            "alternates a low and a high intensity, which is what makes a "
-            "deployment policy worth training"
+            "stationary keeps one constant optimum; bursty alternates a low and a "
+            "high intensity; mix draws every (application, ingress) group "
+            "independently so the load *composition* moves, which is what gives a "
+            "composition policy something to condition on"
         ),
+    )
+    parser.add_argument(
+        "--mix-seed",
+        type=int,
+        default=0,
+        help="seed of the mix realisation; train / validation / holdout families use disjoint seeds",
+    )
+    parser.add_argument(
+        "--mix-block",
+        type=int,
+        default=4,
+        help="slots a mix vector is held for; align with --deployment-periods",
+    )
+    parser.add_argument(
+        "--mix-sigma", type=float, default=None, help="per-group lognormal sigma (default 0.6)"
     )
     parser.add_argument("--burst-period", type=int, default=None, help="default: scenario metadata, else 60")
     parser.add_argument("--burst-sigma", type=float, default=None, help="default: scenario metadata, else 8.0")
@@ -831,6 +865,9 @@ def main() -> int:
                 "burst_phase": args.burst_phase,
                 "burst_jitter": args.burst_jitter,
                 "burst_low_fraction": args.burst_low_fraction,
+                "mix_seed": args.mix_seed,
+                "mix_block": args.mix_block,
+                "mix_sigma": args.mix_sigma,
                 "deployment_periods": args.deployment_periods,
         "device": hardware,
         "status_interval_steps": args.status_interval_steps,
