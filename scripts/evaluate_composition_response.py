@@ -158,6 +158,14 @@ def main() -> int:
     )
     parser.add_argument("--solver-budget", type=int, default=32)
     parser.add_argument(
+        "--arrival-pattern",
+        default="stationary",
+        choices=["stationary", "mix"],
+        help="must match the reference's pattern, or the reference is not its optimum",
+    )
+    parser.add_argument("--mix-seed", type=int, default=101, help="held-out mix seed")
+    parser.add_argument("--mix-block", type=int, default=2)
+    parser.add_argument(
         "--allow-stale-reference",
         action="store_true",
         help="score a reference whose recorded deployment-library hash differs (unsafe)",
@@ -184,6 +192,19 @@ def main() -> int:
     references = ReferenceScales.from_scenario(scenario, spec, library)
     evaluator = ObjectiveEvaluator(scenario, spec, references)
     payload = json.loads(Path(args.reference).read_text(encoding="utf-8"))
+    recorded_pattern = str(payload.get("arrival_pattern", "stationary"))
+    if recorded_pattern != args.arrival_pattern:
+        raise SystemExit(
+            f"{args.reference} was solved under arrival pattern {recorded_pattern!r} but the "
+            f"gate is scoring under {args.arrival_pattern!r}; the reference is not the optimum "
+            "of this load"
+        )
+    if args.arrival_pattern == "mix" and payload.get("mix_seed") is not None:
+        if int(payload["mix_seed"]) != int(args.mix_seed):
+            raise SystemExit(
+                f"{args.reference} was solved on mix seed {payload['mix_seed']} but the gate is "
+                f"scoring mix seed {args.mix_seed}; the reference is not the optimum of this load"
+            )
     if not args.allow_stale_reference:
         try:
             assert_same_library(payload, args.deployment_library or DeploymentLibrary.default_path(scenario.id))
@@ -202,9 +223,22 @@ def main() -> int:
     policy_state = state.get("policy_state_dict", state)
 
     periods = args.periods + args.warmup
-    trace = ArrivalTrace.stationary_poisson_intensity(
-        scenario, periods, rate_scale=arrival_scale
-    )
+    # The tool, composition and policy are all scored on the load the reference was
+    # solved for.  A "mix" load draws each group independently so the load
+    # *composition* moves; the seed here must be a held-out one, never a training
+    # seed, or the gate measures recall rather than generalisation.
+    if args.arrival_pattern == "mix":
+        trace = ArrivalTrace.randomized_mix_intensity(
+            scenario,
+            periods,
+            base_scale=arrival_scale,
+            seed=args.mix_seed,
+            block=max(1, args.mix_block),
+        )
+    else:
+        trace = ArrivalTrace.stationary_poisson_intensity(
+            scenario, periods, rate_scale=arrival_scale
+        )
     env = CompositionLibraryEnv(
         scenario,
         max_slots=periods,
@@ -410,6 +444,8 @@ def main() -> int:
         "n_deployments": len(rows),
         "objective": spec.to_dict(),
         "arrival_scale": arrival_scale,
+        "arrival_pattern": args.arrival_pattern,
+        "mix_seed": args.mix_seed if args.arrival_pattern == "mix" else None,
         "rho": rho,
         "mean_policy": mean_policy,
         "mean_reference": mean_reference,
