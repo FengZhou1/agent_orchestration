@@ -37,7 +37,7 @@ if __package__ in (None, ""):
 
 from agent_orch.agents import PPOConfig, StructuredActorCritic
 from agent_orch.deployment import DeploymentLibrary
-from agent_orch.envs import CompositionLibraryEnv
+from agent_orch.envs.scoring import build_composition_env
 from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload import ArrivalTrace
@@ -58,17 +58,21 @@ def _evaluate(
     )
     utilities: list[float] = []
     for position in range(len(library.entries)):
-        env = CompositionLibraryEnv(
+        # The whole library goes in and the deployment is pinned, exactly as during
+        # training and in the gate.  Handing the policy a one-entry subset would
+        # change the deployment-count features it observes and make it act on a
+        # context it never saw.
+        env = build_composition_env(
             scenario,
-            max_slots=periods,
-            seed=seed,
-            arrival_trace=trace,
+            policy["objective_spec"],
+            trace,
+            library,
+            position=position,
+            periods=periods,
             mapping_samples=mapping_samples,
-            objective=policy["objective_spec"],
-            deployment_library=library.subset([library.entries[position].index]),
-            use_uniform_baseline=False,
+            seed=seed,
         )
-        observation, _ = env.reset(seed=seed, options={"fixed_deployment_index": 0})
+        observation, _ = env.reset(seed=seed)
         for slot in range(periods):
             action, _, _ = policy["policy"].act(observation, deterministic=True, device="cpu")
             observation, _, terminated, truncated, info = env.step(action)
@@ -129,17 +133,18 @@ def main() -> int:
     total_weight = sum(weights)
     weights = [value / total_weight for value in weights]
 
-    probe_env = CompositionLibraryEnv(
+    # Only built to give the actor its observation and action shapes.
+    probe_env = build_composition_env(
         scenario,
-        max_slots=1,
-        seed=args.seed,
-        arrival_trace=ArrivalTrace.stationary_poisson_intensity(
+        spec,
+        ArrivalTrace.stationary_poisson_intensity(
             scenario, 1, rate_scale=args.arrival_scale
         ),
+        library,
+        position=0,
+        periods=1,
         mapping_samples=8,
-        objective=spec,
-        deployment_library=library,
-        use_uniform_baseline=False,
+        seed=args.seed,
     )
     payload = torch_load(Path(args.composition_policy))
     actor = StructuredActorCritic(probe_env, PPOConfig())
