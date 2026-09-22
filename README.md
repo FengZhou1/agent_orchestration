@@ -325,9 +325,11 @@ Stage B 需要三件事：reset 从部署库分层抽初始部署（当前恒为
 
 9. **画图必须在 `conda activate agent-orch` 之后运行**（见 §2）。
 
-10. **`configs/generated/` 被部分脚本引用但不存在**；`scripts/aggregate_llm_steady_state_validation.py` 期望的输入/输出目录也不存在。
+10. **`configs/generated/` 现在存在**（只有一份说明；生成脚本自己会建父目录）。`scripts/aggregate_llm_steady_state_validation.py` 的输入是远端跑出来的 LLMServingSim 校验结果，本地没有；该脚本现在**列清缺哪些目录并以非零码退出**，不再写出空报告。
 
-11. **`docs/formula_contract.md` 与 `docs/experiment_protocol.md` 仍描述旧的准入等待项与旧的部署目录**，与当前实现不一致；以代码与 `docs/architecture.md` 为准。
+11. **准入等待项没有不一致**（此前的说法已核实为过时）：正文式 `\eqref{eq:compact-llm-ttft}`、`docs/experiment_protocol.md` 与实现三者一致，都是 `TTFT = 首次准入等待 + prefill`（代码里是 `ttft_s = macro_wait + prefill`，见 `performance/analytical.py`）；`docs/formula_contract.md` 完全不提这一项，因此不构成冲突。
+
+12. **`data/raw/burstgpt_v2/`（193 MB）决定为不使用**：它没有被任何代码、配置或文档引用，也不在 `data/raw/` 之外的任何清单里；保留在磁盘上但不纳入实验，理由是到达过程已定为参数化混合负载族（见 `docs/stage_a_ppo_plan_2026-09-23.md`），BurstGPT 的真实轨迹与当前的时间轴语义（任意负载族、可复现种子）不兼容。若将来要做 trace-driven 对照，再单独引入。
 
 ---
 

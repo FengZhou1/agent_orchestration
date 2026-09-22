@@ -48,6 +48,20 @@ def markdown_table(frame: pd.DataFrame) -> str:
 
 
 def main() -> int:
+    # The inputs are the LLMServingSim cross-validation runs, which are produced on
+    # the remote box (see docs/llmservingsim_queue_validation.md) and are not in the
+    # repository.  Fail with the list rather than silently writing an empty report.
+    missing = [str(directory) for directory in INPUTS if not directory.exists()]
+    if missing:
+        print("no validation runs to aggregate; expected these directories:")
+        for directory in missing:
+            print(f"  {directory}")
+        print(
+            "\nRun the validation jobs first (see docs/llmservingsim_queue_validation.md); "
+            "an empty report is not written."
+        )
+        return 1
+
     OUTPUT.mkdir(parents=True, exist_ok=True)
     observations = load_unique("observations.csv")
     predictions = load_unique("predictions.csv")
