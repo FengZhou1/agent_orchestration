@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from agent_orch.objective import ObjectiveEvaluator
 from agent_orch.performance.analytical import evaluate_llm_instance
@@ -128,6 +128,8 @@ class CompositionSolver:
         seed: int = 0,
         protocol_periods: int = 1,
         protocol_warmup: int = 0,
+        scorer: Callable[[DeploymentDecision, Mapping[tuple[str, str, str], float]], float]
+        | None = None,
     ) -> None:
         self.scenario = scenario
         self.evaluator = evaluator
@@ -135,6 +137,11 @@ class CompositionSolver:
         self.seed = int(seed)
         self.protocol_periods = max(1, int(protocol_periods))
         self.protocol_warmup = max(0, int(protocol_warmup))
+        # When a scorer is supplied the search optimises that function instead of
+        # the raw simulator rollout.  A reference has to be the argmax of the
+        # metric it will be compared against; scoring it on a second path makes
+        # the two disagree on individual deployments and voids the comparison.
+        self.scorer = scorer
         self.simulator = Simulator(scenario, max_mapping_samples=self.mapping_samples)
         self.router = PhysicalRouter(scenario)
         self.groups: tuple[tuple[str, str], ...] = tuple(
@@ -178,6 +185,8 @@ class CompositionSolver:
         """
 
         self._evaluations += 1
+        if self.scorer is not None:
+            return float(self.scorer(deployment, model_share))
         rates = self._effective_arrival_rates(arrival_rates)
         self.simulator.set_arrival_trace(
             ArrivalTrace({slot: dict(rates) for slot in range(self.protocol_periods)})

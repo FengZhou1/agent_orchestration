@@ -41,6 +41,7 @@ from agent_orch.agents import PPOConfig, StructuredActorCritic
 from agent_orch.data.provenance import StaleArtifactError, assert_same_library
 from agent_orch.deployment import DeploymentLibrary
 from agent_orch.envs import CompositionLibraryEnv
+from agent_orch.envs.scoring import build_composition_env
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec, ReferenceScales
 from agent_orch.routing.composition import CompositionSolver
 from agent_orch.schema.loader import ScenarioLoader
@@ -629,21 +630,20 @@ def _dirichlet_ceiling(
 def _fixed_env(env, position: int, scenario, trace, args, spec):
     """A fresh environment pinned to one deployment position.
 
-    The library goes in through ``deployment_library`` so the base environment
-    builds the objective's normalisation scales from it.  Passing it as
-    ``library`` instead would leave the cost bounds theoretical and put this
-    environment's utility on a different scale than the solver's.
+    Built through the same factory the inner solver scores with, so a reference
+    solved elsewhere cannot end up optimised against a different metric than the
+    one reported here.
     """
 
-    return CompositionLibraryEnv(
+    return build_composition_env(
         scenario,
-        max_slots=args.periods + args.warmup,
-        seed=0,
-        arrival_trace=trace,
+        spec,
+        trace,
+        env.deployment_library,
+        position=position,
+        periods=args.periods + args.warmup,
         mapping_samples=args.mapping_samples,
-        objective=spec,
-        deployment_library=env.deployment_library,
-        fixed_deployment_index=position,
+        seed=0,
     )
 
 

@@ -20,13 +20,17 @@ from typing import Any
 
 from agent_orch.data import file_sha256
 from agent_orch.deployment import DeploymentLibrary
+from agent_orch.envs.scoring import CompositionEnvScorer
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec, ReferenceScales
 from agent_orch.routing import CompositionSolution, CompositionSolver
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.workload import ArrivalTrace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 1
+# 2: candidates are scored through the composition environment rather than a raw
+# simulator rollout, so a v1 entry is not the argmax of the gate's metric.
+SCHEMA_VERSION = 2
 DEFAULT_LOAD_LEVEL = "high"
 
 
@@ -289,6 +293,16 @@ def main() -> int:
         protocol_periods=args.protocol_periods,
         protocol_warmup=args.protocol_warmup,
     )
+    # The reference must be the argmax of the metric it will be compared against, so
+    # candidates are scored through the same environment the gate rolls out.  A
+    # second scoring path disagrees with this one on individual deployments, which
+    # makes the reference lose to plain heuristics for no reason the search can fix.
+    trace = ArrivalTrace.stationary_poisson_intensity(
+        scenario, max(1, args.protocol_periods), rate_scale=arrival_scale
+    )
+    positions = {entry.index: position for position, entry in enumerate(selected.entries)}
+    print(f"scoring path    : composition environment, periods={args.protocol_periods} "
+          f"warmup={args.protocol_warmup}")
     print(f"scenario        : {scenario.id} ({_portable_path(scenario_path)})")
     print(f"library         : {_portable_path(library_path)} ({len(library)} entries)")
     print(f"split           : {args.split} -> {len(targets)} deployments")
@@ -306,6 +320,18 @@ def main() -> int:
                 print(f"  {_breakdown_line(entry.index, solved[key], None, resumed=True)}")
             continue
         began = time.perf_counter()
+        solver.scorer = CompositionEnvScorer(
+            scenario,
+            evaluator,
+            spec,
+            trace,
+            selected,
+            position=positions[entry.index],
+            periods=args.protocol_periods,
+            warmup=args.protocol_warmup,
+            mapping_samples=args.mapping_samples,
+            seed=args.seed,
+        )
         solution = solver.solve(
             entry.to_deployment(),
             arrival_rates,
