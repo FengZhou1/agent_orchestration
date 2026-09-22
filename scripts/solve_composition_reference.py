@@ -30,7 +30,10 @@ from agent_orch.workload import ArrivalTrace
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # 2: candidates are scored through the composition environment rather than a raw
 # simulator rollout, so a v1 entry is not the argmax of the gate's metric.
-SCHEMA_VERSION = 2
+# 3: the environment kept the episode inside its arrival trace.  Before that it
+# overshot by a random offset and ran 33-40% of every episode at the unscaled base
+# rate, so a v2 entry is the optimum of a lower-load tail, not of this metric.
+SCHEMA_VERSION = 3
 DEFAULT_LOAD_LEVEL = "high"
 
 

@@ -139,6 +139,78 @@ class ArrivalTrace:
         return ArrivalTrace(rates)
 
     @staticmethod
+    def randomized_mix_intensity(
+        scenario: Scenario,
+        slots: int,
+        *,
+        base_scale: float,
+        seed: int,
+        block: int = 1,
+        per_group_sigma: float = 0.6,
+        group_range: tuple[float, float] = (0.3, 2.5),
+        total_range: tuple[float, float] = (0.6, 1.6),
+    ) -> "ArrivalTrace":
+        """Arrival intensity whose *mix* varies, not just its total.
+
+        Scaling every group by one factor only moves the operating point along a
+        single direction, and the composition optimum along that direction barely
+        moves: the policy trained that way is load-blind and emits the same shares
+        at 0.4x and 2.0x.  Learning to condition on the load needs the *mix* to
+        vary, so each ``(application, ingress)`` group is drawn independently.
+
+        Draws are lognormal around the group's own calibrated rate, then clipped to
+        ``group_range`` of it, so no group takes an absurd share.  The total is
+        pulled back into ``total_range`` only when it leaves that band: rescaling
+        every draw to a fixed total would restore proportional scaling and destroy
+        exactly the variation this exists to create.
+
+        Values are constant within a block of ``block`` slots, which is the
+        granularity a deployment decision can act at (align it with ``T^dep``).
+        ``seed`` makes the draw reproducible, so train / validation / holdout
+        families are disjoint seed ranges over the same generator.
+        """
+
+        if slots <= 0:
+            raise ValueError("slots must be positive")
+        if block <= 0:
+            raise ValueError("block must be positive")
+        if per_group_sigma < 0.0:
+            raise ValueError("per_group_sigma must be non-negative")
+        low, high = group_range
+        if not 0.0 < low <= high:
+            raise ValueError("group_range must be positive and ordered")
+        total_low, total_high = total_range
+        if not 0.0 < total_low <= total_high:
+            raise ValueError("total_range must be positive and ordered")
+
+        base = {
+            (app.id, ingress): float(rate) * float(base_scale)
+            for app in scenario.applications.values()
+            for ingress, rate in app.ingress_rates.items()
+        }
+        keys = sorted(base)
+        target_total = math.fsum(base.values())
+        rng = np.random.default_rng(int(seed))
+        rates: dict[int, dict[tuple[str, str], float]] = {}
+        for start in range(0, slots, block):
+            draws = rng.lognormal(mean=0.0, sigma=per_group_sigma, size=len(keys))
+            scaled = {
+                key: min(max(base[key] * float(draw), low * base[key]), high * base[key])
+                for key, draw in zip(keys, draws)
+            }
+            total = math.fsum(scaled.values())
+            if total > 0.0:
+                if total > total_high * target_total:
+                    factor = total_high * target_total / total
+                    scaled = {key: value * factor for key, value in scaled.items()}
+                elif total < total_low * target_total:
+                    factor = total_low * target_total / total
+                    scaled = {key: value * factor for key, value in scaled.items()}
+            for slot in range(start, min(start + block, slots)):
+                rates[slot] = dict(scaled)
+        return ArrivalTrace(rates)
+
+    @staticmethod
     def total_intensity(trace: "ArrivalTrace", slot: int, scenario: Scenario) -> float:
         """Total arrival intensity of one slot, for state construction."""
 

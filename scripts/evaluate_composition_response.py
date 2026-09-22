@@ -420,6 +420,14 @@ def main() -> int:
         "achievable_lift": achievable_lift,
         "captured_lift": captured_lift,
         "lift_capture": lift_capture,
+        # The locked objective is cumulative (J = sum over the episode's slots), so
+        # report the sum alongside the per-slot mean the criterion is built on.  All
+        # arms are scored over the same window, so the two rank identically; the sum
+        # is what the paper's objective actually says.
+        "scored_slots_per_deployment": max(0, reference_protocol_periods - reference_protocol_warmup),
+        "cumulative_policy": mean_policy_cold * max(0, reference_protocol_periods - reference_protocol_warmup),
+        "cumulative_reference": mean_reference_cold * max(0, reference_protocol_periods - reference_protocol_warmup),
+        "cumulative_uniform": mean_uniform_cold * max(0, reference_protocol_periods - reference_protocol_warmup),
         "mean_gap_to_reference": gap,
         "heuristic_wins": wins,
         "heuristic_losses": losses,
@@ -479,6 +487,15 @@ def main() -> int:
         f"| achievable lift over uniform | {achievable_lift:+.5f} |",
         f"| captured lift | {captured_lift:+.5f} |",
         f"| mean gap to solver | {gap:+.5f} |",
+        "",
+        f"Cumulative objective over the {max(0, reference_protocol_periods - reference_protocol_warmup)} "
+        "scored slots (the locked objective is the sum, not the mean):",
+        "",
+        "| level | cumulative |",
+        "|---|---|",
+        f"| policy | {mean_policy_cold * max(0, reference_protocol_periods - reference_protocol_warmup):+.5f} |",
+        f"| solver reference | {mean_reference_cold * max(0, reference_protocol_periods - reference_protocol_warmup):+.5f} |",
+        f"| uniform composition | {mean_uniform_cold * max(0, reference_protocol_periods - reference_protocol_warmup):+.5f} |",
         "",
         "Heuristic comparison (steady protocol, what training optimises):",
         "",
