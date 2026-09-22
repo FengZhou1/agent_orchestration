@@ -408,6 +408,13 @@ def main() -> int:
                 # Entries are keyed by library index, so every consumer needs the
                 # library's own digest to prove the index mapping still holds.
                 "library_json_sha256": file_sha256(library_path),
+                # The load identity belongs here, not only in the sidecar manifest:
+                # a consumer that validates against the payload cannot otherwise tell
+                # which load these entries are optimal for.
+                "arrival_pattern": args.arrival_pattern,
+                "mix_seed": args.mix_seed if args.arrival_pattern == "mix" else None,
+                "mix_block": args.mix_block if args.arrival_pattern == "mix" else None,
+                "mix_sigma": args.mix_sigma if args.arrival_pattern == "mix" else None,
                 "entries": {key: solved[key] for key in sorted(solved, key=int)},
             },
             ensure_ascii=False,

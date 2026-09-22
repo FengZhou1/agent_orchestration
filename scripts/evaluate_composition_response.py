@@ -38,7 +38,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent_orch.agents import PPOConfig, StructuredActorCritic
-from agent_orch.data.provenance import StaleArtifactError, assert_same_library
+from agent_orch.data.provenance import (
+    StaleArtifactError,
+    assert_same_library,
+    file_sha256,
+)
 from agent_orch.deployment import DeploymentLibrary
 from agent_orch.envs import CompositionLibraryEnv
 from agent_orch.envs.scoring import build_composition_env
@@ -170,6 +174,11 @@ def main() -> int:
         action="store_true",
         help="score a reference whose recorded deployment-library hash differs (unsafe)",
     )
+    parser.add_argument(
+        "--row-cache",
+        default=None,
+        help="JSON file of policy-independent row values, reused across policies",
+    )
     parser.add_argument("--output", default="results/stage_a/gate")
     args = parser.parse_args()
 
@@ -204,6 +213,12 @@ def main() -> int:
             raise SystemExit(
                 f"{args.reference} was solved on mix seed {payload['mix_seed']} but the gate is "
                 f"scoring mix seed {args.mix_seed}; the reference is not the optimum of this load"
+            )
+        recorded_block = int(payload.get("mix_block") or 1)
+        if recorded_block != int(args.mix_block):
+            raise SystemExit(
+                f"{args.reference} was solved with mix block {recorded_block} but the gate is "
+                f"scoring block {args.mix_block}; the scored slots see a different load vector"
             )
     if not args.allow_stale_reference:
         try:
@@ -261,6 +276,13 @@ def main() -> int:
     if args.limit > 0:
         selected = selected[: args.limit]
 
+    row_cache: dict[str, dict] = {}
+    if args.row_cache:
+        cache_path = Path(args.row_cache)
+        if cache_path.exists():
+            row_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            print(f"row cache       : {len(row_cache)} cells from {args.row_cache}")
+
     rows: list[dict[str, object]] = []
     for position in selected:
         entry = split_library.entries[position]
@@ -280,6 +302,31 @@ def main() -> int:
             reference_protocol_periods,
             reference_protocol_warmup,
         )
+
+        # Heuristics, the uniform composition and the reference do not depend on the
+        # policy, and they are ~90% of a gate run.  Reuse them across policies so a
+        # multi-seed, multi-load verdict is affordable.
+        cache_key = _row_cache_key(entry.index, spec, args, periods, reference_protocol_periods)
+        cached = row_cache.get(cache_key)
+        if cached is not None:
+            rows.append(
+                {
+                    "position": position,
+                    "source_index": entry.index,
+                    "stratum": entry.stratum,
+                    "n_models": entry.n_models,
+                    "policy": policy_utility,
+                    "policy_cold": policy_cold,
+                    "best_heuristic": cached["best_heuristic"],
+                    "best_heuristic_name": cached["best_heuristic_name"],
+                    "reference": cached["reference"],
+                    "reference_cold": cached["reference_cold"],
+                    **{f"h_{name}": value for name, value in cached["h"].items()},
+                    **{f"hc_{name}": value for name, value in cached["hc"].items()},
+                }
+            )
+            print(f"  [cached] {entry.index:>4} {entry.stratum:<28} policy={policy_utility:+.5f}")
+            continue
 
         heuristic_utilities: dict[str, float] = {}
         heuristic_cold: dict[str, float] = {}
@@ -320,6 +367,17 @@ def main() -> int:
             )
 
         best_heuristic = max(heuristic_utilities.values()) if heuristic_utilities else float("nan")
+        best_heuristic_name = (
+            max(heuristic_utilities, key=heuristic_utilities.get) if heuristic_utilities else ""
+        )
+        row_cache[cache_key] = {
+            "best_heuristic": best_heuristic,
+            "best_heuristic_name": best_heuristic_name,
+            "reference": reference_utility,
+            "reference_cold": reference_cold,
+            "h": heuristic_utilities,
+            "hc": heuristic_cold,
+        }
         rows.append(
             {
                 "position": position,
@@ -329,11 +387,7 @@ def main() -> int:
                 "policy": policy_utility,
                 "policy_cold": policy_cold,
                 "best_heuristic": best_heuristic,
-                "best_heuristic_name": (
-                    max(heuristic_utilities, key=heuristic_utilities.get)
-                    if heuristic_utilities
-                    else ""
-                ),
+                "best_heuristic_name": best_heuristic_name,
                 "reference": reference_utility,
                 "reference_cold": reference_cold,
                 **{f"h_{name}": value for name, value in heuristic_utilities.items()},
@@ -481,6 +535,14 @@ def main() -> int:
         "per_stratum": per_stratum,
     }
 
+    if args.row_cache:
+        cache_path = Path(args.row_cache)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(row_cache, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        print(f"row cache wrote : {len(row_cache)} cells to {args.row_cache}")
+
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "gate_report.json").write_text(
@@ -619,6 +681,32 @@ def _protocol_utility(
     if not utilities:
         return float("nan")
     return float(np.mean(utilities))
+
+
+def _row_cache_key(index: int, spec, args, steady_periods: int, reference_periods: int) -> str:
+    """Identity of a scoring cell, excluding the policy.
+
+    Everything in a row except the policy columns is a property of the deployment,
+    the load and the protocol, so two gates over the same cells can share them.  The
+    reference file enters as a content digest, so a re-solved reference invalidates
+    the entries it changes.
+    """
+
+    return "|".join(
+        str(value)
+        for value in (
+            json.dumps(spec.to_dict(), sort_keys=True),
+            index,
+            args.arrival_pattern,
+            args.mix_seed if args.arrival_pattern == "mix" else None,
+            args.mix_block,
+            args.mapping_samples,
+            steady_periods,
+            args.warmup,
+            reference_periods,
+            file_sha256(args.reference)[:16],
+        )
+    )
 
 
 def _dirichlet_ceiling(
