@@ -294,6 +294,51 @@ def test_feature_vector_exposes_horizon_progress(scenario):
     assert changed["action_type"] == observation["action_type"]
 
 
+def test_episode_never_runs_past_the_end_of_its_arrival_trace(scenario):
+    """The trace has to cover the whole episode.
+
+    ``ArrivalTrace.at`` answers a slot it does not hold with the scenario's
+    *unscaled* base rate, so an episode that overshoots silently drops its load by
+    the arrival scale for the tail.  That was happening for 33-40% of every
+    episode, because the offset was drawn from ``[0, len(trace))`` while the
+    episode then ran for ``max_slots`` steps from there.
+    """
+
+    from agent_orch.workload import ArrivalTrace
+
+    slots, scale = 24, 4.0
+    trace = ArrivalTrace.stationary_poisson_intensity(scenario, slots, rate_scale=scale)
+    env = AgentOrchestrationEnv(scenario, max_slots=slots, seed=0, arrival_trace=trace)
+    env.reset(seed=0)
+    assert env.trace_offset == 0
+
+    for seed in range(8):
+        offset = env._draw_trace_offset(seed)
+        assert 0 <= offset <= slots - slots
+
+    # A longer timeline randomises the window but still keeps the episode inside it.
+    long_trace = ArrivalTrace.stationary_poisson_intensity(
+        scenario, slots + 40, rate_scale=scale
+    )
+    long_env = AgentOrchestrationEnv(
+        scenario, max_slots=slots, seed=0, arrival_trace=long_trace
+    )
+    offsets = {long_env._draw_trace_offset(seed) for seed in range(16)}
+    assert offsets and max(offsets) <= 40
+    assert len(offsets) > 1, "a longer timeline should vary where the episode starts"
+
+    # A trace too short to hold the episode must fail loudly rather than run at the
+    # wrong load.
+    short_trace = ArrivalTrace.stationary_poisson_intensity(
+        scenario, slots - 1, rate_scale=scale
+    )
+    short_env = AgentOrchestrationEnv(
+        scenario, max_slots=slots, seed=0, arrival_trace=short_trace
+    )
+    with pytest.raises(ValueError, match="fall back to the unscaled base rate"):
+        short_env.reset(seed=0)
+
+
 def test_sequential_deployment_builds_a_feasible_capacity_plan(scenario):
     env = AgentOrchestrationEnv(scenario, max_slots=2, seed=16)
     observation, _ = env.reset(seed=16)

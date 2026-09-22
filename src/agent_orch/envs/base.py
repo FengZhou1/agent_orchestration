@@ -224,21 +224,38 @@ class BaseOrchestrationEnv(gym.Env):
     def _draw_trace_offset(self, seed: int | None) -> int:
         """Pick where in the arrival trace this episode starts.
 
-        With a stationary trace the offset is irrelevant.  With a time-varying
-        one it is essential: every episode would otherwise replay the same first
-        few slots, so the policy would never see the rest of the cycle and could
-        not learn to react to the load at all.
+        The episode is a window of ``max_periods`` steps *inside* the trace, so the
+        offset is drawn from ``[0, len(trace) - max_periods]``.  Starting any later
+        runs the episode past the end of the trace, and :meth:`ArrivalTrace.at`
+        answers a slot it does not hold with the scenario's *unscaled* base rate --
+        so the load silently drops by the arrival scale for the tail of the
+        episode.  That was happening for 33-40% of every episode (offset 243 of a
+        600-slot trace), which is what made the per-slot utility look
+        non-stationary and made the 6-slot and 8-slot scoring protocols disagree.
+
+        With a stationary trace the offset is irrelevant.  With a time-varying one
+        it is essential: every episode would otherwise replay the same first few
+        slots, so the policy would never see the rest of the cycle and could not
+        learn to react to the load at all.
         """
 
+        trace = self.simulator.arrival_trace
         span = self.trace_offset_span
         if span is None:
-            trace = self.simulator.arrival_trace
             span = len(trace.rates) if trace is not None else 0
         span = int(span) if span else 0
-        if span <= 1:
+        if trace is not None and span < self.max_periods:
+            raise ValueError(
+                f"arrival trace covers {span} slots but the episode runs "
+                f"{self.max_periods}; slots past the end fall back to the unscaled "
+                "base rate, so the load would change silently mid-episode. Pass a "
+                "trace at least as long as the episode."
+            )
+        usable = span - self.max_periods
+        if usable <= 0:
             return 0
         rng = np.random.default_rng(abs(int(self._seed if seed is None else seed)) + 7919)
-        return int(rng.integers(0, span))
+        return int(rng.integers(0, usable + 1))
 
     # ------------------------------------------------------------------ gym api
 
