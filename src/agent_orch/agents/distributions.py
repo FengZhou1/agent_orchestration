@@ -51,18 +51,25 @@ def _concentrations(raw: torch.Tensor, minimum: float = 0.1) -> torch.Tensor:
     fight; scaling keeps the reachable simplex roughly fixed while the action
     noise falls as ``1 / sqrt(minimum)``.
 
-    The bound is 1000 rather than 100.  At 100, a group with four active models
-    tops out at ``100/103 = 0.9709`` on one model, and the solver's optima ask for
-    more than that in 425 of the 600 test groups.  Projecting the reference onto
-    that smaller simplex costs 0.00388 utility, 8.0% of the entire lift over
-    uniform -- reachable value given up to an arithmetic constant.
+    The bound is 1e6 rather than 100.  At 100 a group with four active models
+    tops out at ``100/103 = 0.9709`` on one model, and the solver's optima are
+    nearly one-hot: 590 of the 600 test groups ask for more than that.  Projecting
+    the reference onto the smaller simplex cost 0.00256 utility (3.5% of the whole
+    lift over uniform) at a bound of 1000 and 0.00388 (8.0%) at 100; at 1e6 the
+    ceiling is within 5e-6 of one for up to eight models and the projected
+    reference scores exactly what the reference scores.
+
+    This does not by itself make the *trained* head saturate -- measured: raising
+    the bound from 100 to 1000 moved the gate from 76.9% to 77.4%, i.e. not at all,
+    because the head never drives ``raw`` to the magnitude needed.  The bound is a
+    statement about what is reachable, not about what is found.
     """
 
     minimum = max(float(minimum), 1.0e-3)
     return torch.clamp(
         torch.nn.functional.softplus(raw) + minimum,
         minimum,
-        max(1000.0, 500.0 * minimum),
+        max(1.0e6, 5.0e5 * minimum),
     )
 
 

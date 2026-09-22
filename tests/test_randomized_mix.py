@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload import ArrivalTrace
@@ -102,3 +103,37 @@ def test_rejects_degenerate_parameters(scenario):
         ArrivalTrace.randomized_mix_intensity(
             scenario, 4, base_scale=1.0, seed=0, total_range=(0.0, 1.0)
         )
+
+
+def test_concentration_bound_reaches_the_one_hot_optima():
+    """The reachable simplex must contain the solver's optima (A3.3 acceptance).
+
+    The solver's optima are nearly one-hot, and a Dirichlet mean cannot put more
+    than ``cap / (cap + (k-1) * floor)`` on one model.  At the old bound of 100 that
+    ceiling was 0.9709 at four models, so 590 of the 600 teacher groups were
+    unreachable and projecting the reference onto the reachable set cost 0.00256
+    utility -- 3.5% of the whole lift over uniform.  The bound has to leave the
+    ceiling indistinguishable from one for any group size the scenario can produce.
+    """
+
+    from agent_orch.agents.distributions import _concentrations
+
+    floor = 1.0
+
+    def ceiling(models: int, raw_value: float) -> float:
+        raw = torch.zeros(models)
+        raw[0] = raw_value
+        concentrations = _concentrations(raw, floor)
+        return float(concentrations.max()) / float(concentrations.sum())
+
+    # The clamp must not be the limit: driven to it, the ceiling is one.
+    for models in (2, 4, 8):
+        assert ceiling(models, 1.0e6) > 1.0 - 1.0e-3
+
+    # ``softplus`` is linear for large inputs, so the concentration is on the same
+    # scale as ``raw`` -- a concentration of 1000 needs raw ~= 1000, not 6.9.  That
+    # is why the practical ceiling is governed by how large the head's output grows,
+    # not by the clamp, and why raising the clamp from 100 to 1000 moved the gate
+    # from 76.9% to 77.4% and no further.
+    assert 0.99 < ceiling(4, 1.0e3) < 1.0
+    assert ceiling(4, 10.0) < 0.9

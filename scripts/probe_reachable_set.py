@@ -66,7 +66,12 @@ def main() -> int:
         "--reference", default="data/processed/composition_reference_agent-abilene-20_v5_test.json"
     )
     parser.add_argument("--floor", type=float, default=1.0)
-    parser.add_argument("--cap", type=float, default=1000.0)
+    parser.add_argument(
+        "--cap",
+        type=float,
+        default=1.0e6,
+        help="must match distributions._concentrations, or this measures a stale head",
+    )
     parser.add_argument("--periods", type=int, default=2)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--mapping-samples", type=int, default=128)
