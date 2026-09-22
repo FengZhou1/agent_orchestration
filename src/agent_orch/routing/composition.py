@@ -120,6 +120,10 @@ class CompositionSolver:
         "quality_uniform_mix",
     )
 
+    # How far toward the uniform split the line search probes.  1.0 is excluded: it
+    # is the incumbent, already evaluated.
+    BLEND_TEMPERATURES: tuple[float, ...] = (0.75, 0.5, 0.25)
+
     def __init__(
         self,
         scenario: Scenario,
@@ -294,6 +298,25 @@ class CompositionSolver:
             raise RuntimeError("The composition solver evaluated no canonical candidate")
 
         current = dict(best_share)
+        # The canonical candidates are vertices, and the per-group moves below are
+        # vertices too, so the search as a whole cannot leave the vertex set.  The
+        # optimum generally is not one: on agent-abilene-20 deployment 2, blending
+        # the whole composition 25% toward uniform beats the best vertex by 0.0054
+        # (+0.19207 vs +0.18668) -- a tenth of the whole lift over uniform.  One
+        # cheap line search over that direction puts blends back in reach.
+        for temperature in self.BLEND_TEMPERATURES:
+            if self._spent(start) >= budget:
+                break
+            trial = self._blend(best_share, groups, active, temperature)
+            if trial == current:
+                continue
+            utility = self.evaluate_share(deployment, trial, arrival_rates)
+            if utility > best_utility + IMPROVEMENT_EPSILON:
+                best_utility = utility
+                best_share = trial
+                best_source = "greedy-blend"
+                current = trial
+
         for _ in range(max(0, int(sweeps))):
             improved = False
             for app_id, ingress in groups:
@@ -324,6 +347,29 @@ class CompositionSolver:
             candidate_utilities=candidate_utilities,
             source=best_source,
         )
+
+    @staticmethod
+    def _blend(
+        share: ModelShare,
+        groups: tuple[tuple[str, str], ...],
+        active: tuple[str, ...],
+        temperature: float,
+    ) -> ModelShare:
+        """``share`` pulled ``1 - temperature`` of the way toward the uniform split.
+
+        ``temperature == 1`` returns the incumbent (so it is never re-evaluated),
+        and ``0`` is the uniform composition itself.
+        """
+
+        uniform = 1.0 / len(active) if active else 0.0
+        blended: ModelShare = {}
+        for app_id, ingress in groups:
+            for model in active:
+                weight = float(share.get((app_id, ingress, model), 0.0))
+                blended[(app_id, ingress, model)] = (
+                    temperature * weight + (1.0 - temperature) * uniform
+                )
+        return blended
 
     def _group_options(
         self,

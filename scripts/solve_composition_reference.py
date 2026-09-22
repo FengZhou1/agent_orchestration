@@ -33,7 +33,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # 3: the environment kept the episode inside its arrival trace.  Before that it
 # overshot by a random offset and ran 33-40% of every episode at the unscaled base
 # rate, so a v2 entry is the optimum of a lower-load tail, not of this metric.
-SCHEMA_VERSION = 3
+# 4: the search can leave the vertex set (a whole-composition line search toward
+# uniform).  Vertices are not the optimum -- blending 25% toward uniform beats the
+# best vertex by 0.0054 on deployment 2 -- so a v3 entry is a local optimum of a
+# restricted move set, not the argmax of this metric.
+SCHEMA_VERSION = 4
 DEFAULT_LOAD_LEVEL = "high"
 
 
