@@ -294,7 +294,6 @@ def main() -> int:
         action_mode=(
             args.sequential_action_mode if args.sequential_composition else None
         ),
-        reward_mode="cumulative",
     )
     policy = StructuredActorCritic(env, PPOConfig())
     policy.load_state_dict(policy_state)
@@ -830,10 +829,7 @@ def _fixed_env(env, position: int, scenario, trace, args, spec):
     if getattr(args, "sequential_composition", False):
         # The policy was trained one group per step, so it has to be scored in the
         # environment whose observations it saw.  Constant actions are unaffected.
-        kwargs = {
-            "action_mode": getattr(args, "sequential_action_mode", "share"),
-            "reward_mode": "cumulative",
-        }
+        kwargs = {"action_mode": getattr(args, "sequential_action_mode", "share")}
     return build_composition_env(
         scenario,
         spec,

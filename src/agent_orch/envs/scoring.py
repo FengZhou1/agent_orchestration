@@ -39,7 +39,6 @@ def build_composition_env(
     seed: int = 0,
     use_uniform_baseline: bool = False,
     action_mode: str | None = None,
-    reward_mode: str = "cumulative",
 ) -> CompositionLibraryEnv:
     """An environment pinned to one library deployment, for scoring compositions.
 
@@ -52,7 +51,7 @@ def build_composition_env(
     # (application, ingress) group.  A policy trained there has to be scored there:
     # its observations carry the acted group and the working composition.
     env_class = CompositionLibraryEnv if action_mode is None else CompositionSequentialEnv
-    extra = {} if action_mode is None else {"action_mode": action_mode, "reward_mode": reward_mode}
+    extra = {} if action_mode is None else {"action_mode": action_mode}
     return env_class(
         scenario,
         max_slots=max(1, int(periods)),

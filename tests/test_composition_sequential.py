@@ -76,7 +76,7 @@ def test_intermediate_steps_report_no_constraint_and_no_utility(scenario, librar
     assert info["utility"] == 0.0 if "utility" in info else True
     assert info["constraint_steps"] == 0
     assert info["discount"] == 1.0
-    assert set(info["reward_components"]) >= {"utility", "delta_step", "delta_round"}
+    assert set(info["reward_components"]) >= {"utility", "delta_round"}
 
 
 def test_hard_choice_mode_puts_the_group_on_one_model(scenario, library):
@@ -95,39 +95,53 @@ def test_hard_choice_mode_puts_the_group_on_one_model(scenario, library):
         assert active and max(active) == pytest.approx(1.0)
 
 
-def test_differenced_rewards_are_reported_and_selectable(scenario, library):
-    """Both difference baselines are computed; the mode selects what is returned."""
+def test_reward_is_the_same_slot_in_the_previous_round(scenario, library):
+    """The baseline is the previous *round*, not the previous slot.
 
-    for mode in ("cumulative", "delta_step", "delta_round"):
-        env = _env(scenario, library, reward_mode=mode)
-        env.reset(seed=0)
-        seen = None
-        for _ in range(env.n_groups * 2):
+    The reward is how much better this slot did than the same slot in the previous
+    training round (the reference chapter's baseline).  A cell the previous round
+    never visited contributes zero rather than a spurious improvement.
+    """
+
+    env = _env(scenario, library)
+    env.reset(seed=0)
+    groups = env.n_groups
+    rewards: list[float] = []
+    components: list[dict] = []
+    for slot in range(3):
+        for _ in range(groups):
             action = {
                 "deploy": 0,
                 "model": np.zeros(env.layout.model_action_size, dtype=np.float32),
             }
             _, reward, _, _, info = env.step(action)
-            if info.get("period_complete"):
-                seen = (reward, dict(info["reward_components"]))
-        assert seen is not None
-        reward, components = seen
-        assert {"delta_step", "delta_round", "cumulative"} <= set(components)
-        if mode == "cumulative":
-            assert reward == pytest.approx(components["cumulative"])
-        elif mode == "delta_step":
-            assert reward == pytest.approx(components["delta_step"])
-        else:
-            assert reward == pytest.approx(components["delta_round"])
-    # The first slot of an episode has no previous slot inside it to difference
-    # against, so both difference forms are exactly zero there rather than a
-    # spurious signal.
-    env = _env(scenario, library, reward_mode="delta_step")
-    env.reset(seed=0)
-    for _ in range(env.n_groups):
-        action = {"deploy": 0, "model": np.zeros(env.layout.model_action_size, dtype=np.float32)}
-        _, reward, _, _, info = env.step(action)
-    assert reward == pytest.approx(0.0)
+        rewards.append(reward)
+        components.append(dict(info["reward_components"]))
+        observation, _ = env.reset(seed=0)
+    # Every slot of the first round has no baseline yet, so every difference is zero.
+    assert rewards == pytest.approx([0.0, 0.0, 0.0])
+    assert all(set(entry) >= {"delta_round", "utility"} for entry in components)
+
+    # Second round: the same (context, slot) now has a baseline, so a slot whose
+    # utility differs from the previous round's shows a non-zero difference, and the
+    # difference is exactly utility_now - utility_then.
+    first_round = [entry["utility"] for entry in components]
+    deltas = []
+    for slot in range(3):
+        for _ in range(groups):
+            action = {
+                "deploy": 0,
+                "model": np.zeros(env.layout.model_action_size, dtype=np.float32),
+            }
+            _, reward, _, _, info = env.step(action)
+        deltas.append(reward)
+        assert reward == pytest.approx(
+            float(info["reward_components"]["delta_round"])
+        )
+        observation, _ = env.reset(seed=0)
+    assert deltas == pytest.approx(
+        [now - then for now, then in zip([entry["utility"] for entry in components], first_round)]
+    )
 
 
 def test_log_prob_covers_only_the_acted_group(scenario, library):

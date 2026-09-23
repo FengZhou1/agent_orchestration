@@ -37,7 +37,6 @@ import numpy as np
 from .composition_env import CompositionLibraryEnv
 
 ActionMode = Literal["share", "model"]
-RewardMode = Literal["cumulative", "delta_step", "delta_round"]
 
 
 class CompositionSequentialEnv(CompositionLibraryEnv):
@@ -47,27 +46,23 @@ class CompositionSequentialEnv(CompositionLibraryEnv):
         self,
         *args: Any,
         action_mode: ActionMode = "share",
-        reward_mode: RewardMode = "cumulative",
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         if action_mode not in ("share", "model"):
             raise ValueError("action_mode must be 'share' or 'model'")
-        if reward_mode not in ("cumulative", "delta_step", "delta_round"):
-            raise ValueError(
-                "reward_mode must be 'cumulative', 'delta_step' or 'delta_round'"
-            )
         self.action_mode: ActionMode = action_mode
-        self.reward_mode: RewardMode = reward_mode
         self.n_groups = len(self.layout.model_groups)
         self._sub_step = 0
         self._working_share = np.zeros(
             (self.n_groups, len(self.layout.models)), dtype=np.float64
         )
-        self._last_slot_utility: float | None = None
-        # Previous round's utility at the same (context, slot), keyed by the context
-        # and the slot index: the chapter's baseline is the same slot in the previous
-        # training round, not the previous slot.
+        # Previous round's utility at the same (context, slot).  This is the only
+        # baseline: the reward is how much better this slot did than the same slot in
+        # the previous training round, which is the reference chapter's definition and
+        # not a temporal difference inside the episode.  A cell with no baseline yet
+        # (the first round to visit it) contributes zero -- the chapter initialises its
+        # baseline from earlier rounds in the same way.
         self._round_baseline: dict[tuple[int, int, int], float] = {}
 
     # ------------------------------------------------------------------ helpers
@@ -130,7 +125,7 @@ class CompositionSequentialEnv(CompositionLibraryEnv):
             "constraint_cost": 0.0,
             "constraint_vector": [0.0] * self.constraint_count,
             "constraint_steps": 0,
-            "reward_components": {"utility": 0.0, "delta_step": 0.0, "delta_round": 0.0},
+            "reward_components": {"utility": 0.0, "delta_round": 0.0},
             "episode_slot": self._episode_slots,
             "episode_utility_sum": self._episode_utility_sum,
             "trace_offset": self.trace_offset,
@@ -139,27 +134,16 @@ class CompositionSequentialEnv(CompositionLibraryEnv):
     def _differenced_reward(
         self, utility: float, slot_index: int, info: dict[str, Any]
     ) -> float:
-        """The slot's reward under the configured mode; both variants are reported."""
+        """This slot's utility minus the same slot's utility in the previous round."""
 
-        delta_step = (
-            0.0
-            if self._last_slot_utility is None
-            else utility - self._last_slot_utility
-        )
         key = (self._fixed_deployment_index, self.trace_offset, slot_index)
         baseline = self._round_baseline.get(key)
-        delta_round = 0.0 if baseline is None else utility - baseline
+        delta = 0.0 if baseline is None else utility - baseline
         self._round_baseline[key] = utility
-        self._last_slot_utility = utility
         components = info.setdefault("reward_components", {})
-        components["delta_step"] = delta_step
-        components["delta_round"] = delta_round
-        components["cumulative"] = utility
-        if self.reward_mode == "delta_step":
-            return delta_step
-        if self.reward_mode == "delta_round":
-            return delta_round
-        return utility
+        components["delta_round"] = delta
+        components["utility"] = utility
+        return delta
 
     # ------------------------------------------------------------------ gym api
 
@@ -167,7 +151,6 @@ class CompositionSequentialEnv(CompositionLibraryEnv):
         observation, info = super().reset(seed=seed, options=options)
         self._sub_step = 0
         self._working_share = self._uniform_rows()
-        self._last_slot_utility = None
         info["model_group"] = self._sub_step
         info["model_sub_steps"] = self.n_groups
         return observation, info

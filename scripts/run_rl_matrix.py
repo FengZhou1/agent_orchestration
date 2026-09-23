@@ -451,7 +451,8 @@ def main() -> int:
         action="store_true",
         help=(
             "decide the composition one (application, ingress) group per step, with "
-            "the external reward only at the slot-completing sub-step (reference "
+            "the external reward only at the slot-completing sub-step and the reward "
+            "being this slot minus the same slot in the previous round (reference "
             "chapter 4's decision structure)"
         ),
     )
@@ -461,15 +462,7 @@ def main() -> int:
         choices=["share", "model"],
         help="'share' keeps the group's shares continuous; 'model' picks one model",
     )
-    parser.add_argument(
-        "--sequential-reward-mode",
-        default="delta_step",
-        choices=["cumulative", "delta_step", "delta_round"],
-        help=(
-            "delta_step: this slot minus the previous slot; delta_round: this slot "
-            "minus the same slot in the previous round; cumulative: the slot utility"
-        ),
-    )
+
     parser.add_argument("--burst-period", type=int, default=None, help="default: scenario metadata, else 60")
     parser.add_argument("--burst-sigma", type=float, default=None, help="default: scenario metadata, else 8.0")
     parser.add_argument("--burst-phase", type=float, default=None, help="default: scenario metadata, else 0.25")
@@ -899,7 +892,6 @@ def main() -> int:
                 "mix_sigma": args.mix_sigma,
                 "sequential_composition": args.sequential_composition,
                 "sequential_action_mode": args.sequential_action_mode,
-                "sequential_reward_mode": args.sequential_reward_mode,
                 "deployment_periods": args.deployment_periods,
         "device": hardware,
         "status_interval_steps": args.status_interval_steps,
@@ -1076,7 +1068,6 @@ def main() -> int:
                 composition_kwargs["sampler_mode"] = args.library_sampler
                 if args.sequential_composition:
                     composition_kwargs["action_mode"] = args.sequential_action_mode
-                    composition_kwargs["reward_mode"] = args.sequential_reward_mode
                 if args.baseline_periods is not None:
                     composition_kwargs["baseline_periods"] = args.baseline_periods
                 if args.baseline_warmup is not None:
