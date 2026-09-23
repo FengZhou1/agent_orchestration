@@ -98,6 +98,29 @@ def _parse_float_list(values) -> list[str]:
     return [chunk for chunk in str(values).split(",") if chunk.strip()]
 
 
+def _rollout_slots(env, action_fn, periods: int, warmup: int) -> list[float]:
+    """Post-warmup slot utilities of one episode, counted in *slots*.
+
+    A sequential step decides one (application, ingress) group, so the loop counts
+    completed slots rather than steps; for the whole-vector environment the two are
+    the same thing.
+    """
+
+    observation, _ = env.reset(seed=env._seed)  # noqa: SLF001 - env owns its seed
+    utilities: list[float] = []
+    slot = 0
+    while slot < max(1, periods):
+        action = action_fn(observation)
+        observation, _, terminated, truncated, info = env.step(action)
+        if info.get("period_complete"):
+            if slot >= warmup:
+                utilities.append(float(info["utility"]))
+            slot += 1
+        if terminated or truncated:
+            break
+    return utilities
+
+
 def _steady_utility(
     env,
     action_fn,
@@ -106,15 +129,7 @@ def _steady_utility(
 ) -> float:
     """Mean objective over the post-warmup periods of one episode."""
 
-    observation, _ = env.reset(seed=env._seed)  # noqa: SLF001 - env owns its seed
-    utilities: list[float] = []
-    for period in range(periods):
-        action = action_fn(observation)
-        observation, _, terminated, truncated, info = env.step(action)
-        if period >= warmup and info.get("period_complete"):
-            utilities.append(float(info["utility"]))
-        if terminated or truncated:
-            break
+    utilities = _rollout_slots(env, action_fn, periods, warmup)
     if not utilities:
         return float("nan")
     return float(np.mean(utilities))
@@ -168,6 +183,17 @@ def main() -> int:
         help="must match the reference's pattern, or the reference is not its optimum",
     )
     parser.add_argument("--mix-seed", type=int, default=101, help="held-out mix seed")
+    parser.add_argument(
+        "--sequential-composition",
+        action="store_true",
+        help="the policy was trained one (application, ingress) group per step",
+    )
+    parser.add_argument(
+        "--sequential-action-mode",
+        default="share",
+        choices=["share", "model"],
+        help="must match the policy's training action mode",
+    )
     parser.add_argument("--mix-block", type=int, default=2)
     parser.add_argument(
         "--allow-stale-reference",
@@ -254,14 +280,21 @@ def main() -> int:
         trace = ArrivalTrace.stationary_poisson_intensity(
             scenario, periods, rate_scale=arrival_scale
         )
-    env = CompositionLibraryEnv(
+    # The policy is built from this environment, so its observation width has to be
+    # the one the policy was trained with.
+    env = build_composition_env(
         scenario,
-        max_slots=periods,
-        seed=0,
-        arrival_trace=trace,
+        spec,
+        trace,
+        split_library,
+        position=0,
+        periods=periods,
         mapping_samples=args.mapping_samples,
-        objective=spec,
-        library=split_library,
+        seed=0,
+        action_mode=(
+            args.sequential_action_mode if args.sequential_composition else None
+        ),
+        reward_mode="cumulative",
     )
     policy = StructuredActorCritic(env, PPOConfig())
     policy.load_state_dict(policy_state)
@@ -685,11 +718,14 @@ def _protocol_utility(
 
     observation, _ = env.reset(seed=env._seed)  # noqa: SLF001 - env owns its seed
     utilities: list[float] = []
-    for period in range(max(1, periods)):
+    slot = 0
+    while slot < max(1, periods):
         action = action_fn(observation) if steady_action is None else steady_action(observation)
         observation, _, terminated, truncated, info = env.step(action)
-        if period >= warmup and info.get("period_complete"):
-            utilities.append(float(info["utility"]))
+        if info.get("period_complete"):
+            if slot >= warmup:
+                utilities.append(float(info["utility"]))
+            slot += 1
         if terminated or truncated:
             break
     if not utilities:
@@ -790,6 +826,14 @@ def _fixed_env(env, position: int, scenario, trace, args, spec):
     one reported here.
     """
 
+    kwargs = {}
+    if getattr(args, "sequential_composition", False):
+        # The policy was trained one group per step, so it has to be scored in the
+        # environment whose observations it saw.  Constant actions are unaffected.
+        kwargs = {
+            "action_mode": getattr(args, "sequential_action_mode", "share"),
+            "reward_mode": "cumulative",
+        }
     return build_composition_env(
         scenario,
         spec,
@@ -799,6 +843,7 @@ def _fixed_env(env, position: int, scenario, trace, args, spec):
         periods=args.periods + args.warmup,
         mapping_samples=args.mapping_samples,
         seed=0,
+        **kwargs,
     )
 
 

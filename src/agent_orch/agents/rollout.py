@@ -340,6 +340,9 @@ def _observation_to_tensors(
         "action_type": torch.as_tensor(observation["action_type"], dtype=torch.long, device=device),
         "deploy_mask": torch.as_tensor(observation["deploy_mask"], dtype=torch.bool, device=device),
         "model_mask": torch.as_tensor(observation["model_mask"], dtype=torch.bool, device=device),
+        "model_group": torch.as_tensor(
+            observation.get("model_group", 0), dtype=torch.long, device=device
+        ),
     }
     if batched:
         return result
@@ -372,6 +375,11 @@ def _stack_observations(
         ),
         "action_type": torch.as_tensor(
             [obs["action_type"] for obs in observations], dtype=torch.long, device=device
+        ),
+        "model_group": torch.as_tensor(
+            [obs.get("model_group", 0) for obs in observations],
+            dtype=torch.long,
+            device=device,
         ),
         "deploy_mask": torch.as_tensor(
             np.stack([obs["deploy_mask"] for obs in observations]),

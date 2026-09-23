@@ -1,5 +1,6 @@
 from .base import BaseOrchestrationEnv, resolve_deployment_library
 from .composition_env import CompositionLibraryEnv
+from .composition_sequential_env import CompositionSequentialEnv
 from .deployment_env import DeploymentOnlyEnv
 from .layout import StructuredActionLayout
 from .orchestration_env import AgentOrchestrationEnv
@@ -11,6 +12,7 @@ __all__ = [
     "AgentOrchestrationEnv",
     "BaseOrchestrationEnv",
     "CompositionLibraryEnv",
+    "CompositionSequentialEnv",
     "DeploymentOnlyEnv",
     "RoutingOnlyEnv",
     "StructuredActionLayout",

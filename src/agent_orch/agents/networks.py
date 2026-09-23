@@ -284,6 +284,13 @@ class StructuredActorCritic(nn.Module):
                 deterministic,
                 concentration_min=self.config.composition_concentration_min,
                 concentration_total=self.config.composition_fixed_concentration,
+                # Present only in the sequential environment: sample the one group
+                # this step decides and leave the other rows zero.
+                only_group=(
+                    int(observation["model_group"])
+                    if observation.get("model_group") is not None
+                    else None
+                ),
             )
             action["model"] = model.cpu().numpy().astype(np.float32)
             log_prob = model_logp
@@ -324,6 +331,11 @@ class StructuredActorCritic(nn.Module):
                 len(self.layout.models),
                 concentration_min=self.config.composition_concentration_min,
                 concentration_total=self.config.composition_fixed_concentration,
+                only_group=(
+                    int(observation["model_group"][index])
+                    if "model_group" in observation
+                    else None
+                ),
             )
             log_probs[index] = model_logp
             entropies[index] = model_entropy

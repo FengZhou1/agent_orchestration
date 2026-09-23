@@ -120,6 +120,7 @@ def _sample_grouped_dirichlet(
     deterministic: bool,
     concentration_min: float = 0.1,
     concentration_total: float | None = None,
+    only_group: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     raw = raw.reshape(groups, width)
     mask = mask.reshape(groups, width).bool()
@@ -127,6 +128,10 @@ def _sample_grouped_dirichlet(
     log_prob = raw.new_tensor(0.0)
     entropy = raw.new_tensor(0.0)
     for group in range(groups):
+        if only_group is not None and group != int(only_group):
+            # The sequential environment applies one group's row per step; the other
+            # rows are unused, so they must not enter the log-prob.
+            continue
         indices = torch.where(mask[group])[0]
         if len(indices) == 0:
             continue
@@ -153,13 +158,14 @@ def _evaluate_grouped_dirichlet(
     width: int,
     concentration_min: float = 0.1,
     concentration_total: float | None = None,
+    only_group: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     raw = raw.reshape(groups, width)
     mask = mask.reshape(groups, width).bool()
     action = action.reshape(groups, width)
     log_prob = raw.new_tensor(0.0)
     entropy = raw.new_tensor(0.0)
-    for group in range(groups):
+    for group in range(groups) if only_group is None else (int(only_group),):
         indices = torch.where(mask[group])[0]
         if len(indices) <= 1:
             continue

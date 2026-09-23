@@ -24,6 +24,7 @@ from ..objective import ObjectiveEvaluator, ObjectiveSpec
 from ..schema.models import Scenario
 from ..workload import ArrivalTrace
 from .composition_env import CompositionLibraryEnv
+from .composition_sequential_env import CompositionSequentialEnv
 
 
 def build_composition_env(
@@ -37,6 +38,8 @@ def build_composition_env(
     mapping_samples: int = 128,
     seed: int = 0,
     use_uniform_baseline: bool = False,
+    action_mode: str | None = None,
+    reward_mode: str = "cumulative",
 ) -> CompositionLibraryEnv:
     """An environment pinned to one library deployment, for scoring compositions.
 
@@ -45,7 +48,12 @@ def build_composition_env(
     it costs a full scratch rollout per reset.
     """
 
-    return CompositionLibraryEnv(
+    # ``action_mode`` selects the sequential environment, where one step decides one
+    # (application, ingress) group.  A policy trained there has to be scored there:
+    # its observations carry the acted group and the working composition.
+    env_class = CompositionLibraryEnv if action_mode is None else CompositionSequentialEnv
+    extra = {} if action_mode is None else {"action_mode": action_mode, "reward_mode": reward_mode}
+    return env_class(
         scenario,
         max_slots=max(1, int(periods)),
         seed=seed,
@@ -55,6 +63,7 @@ def build_composition_env(
         deployment_library=deployment_library,
         fixed_deployment_index=position,
         use_uniform_baseline=use_uniform_baseline,
+        **extra,
     )
 
 
