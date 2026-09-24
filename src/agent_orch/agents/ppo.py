@@ -280,9 +280,9 @@ def optimize_ppo(
                 + composition_actor_loss
             )
             value_loss = _masked_mse(
-                predicted_values, returns_tensor[batch_t], deployment_mask
+                predicted_values, returns_tensor[batch_t], policy_deployment_mask
             ) + _masked_mse(
-                predicted_values, returns_tensor[batch_t], composition_mask
+                predicted_values, returns_tensor[batch_t], policy_composition_mask
             )
             deployment_entropy = _masked_mean(entropy, deployment_mask)
             composition_entropy = _masked_mean(entropy, composition_mask)
@@ -426,10 +426,18 @@ def build_update_record(
     records = batch.records
     deployment_indices = batch.deployment_indices
     composition_records = batch.composition_records()
+    # A sequential model-selection slot has many composition transitions, but
+    # only its final transition contains the physical metrics and violations.
+    # Dual ascent must see one absolute constraint vector per physical slot,
+    # not that vector diluted by the preceding zero-valued substeps.
+    slot_records = [
+        record for record in composition_records
+        if record.get("period_complete", True)
+    ]
     constraint_limits = np.asarray(config.constraint_limits, dtype=np.float64)
     mean_constraints = (
-        np.mean(np.stack([r["constraint_vector"] for r in composition_records]), axis=0)
-        if composition_records
+        np.mean(np.stack([r["constraint_vector"] for r in slot_records]), axis=0)
+        if slot_records
         else np.zeros_like(constraint_limits)
     )
     next_lagrange = lagrange_multipliers.copy()
@@ -444,28 +452,28 @@ def build_update_record(
     record: dict[str, float] = {
         "update": float(update),
         "mean_reward": float(np.mean([r["reward"] for r in records])),
-        "mean_utility": float(np.mean([r["utility"] for r in composition_records]))
-        if composition_records
+        "mean_utility": float(np.mean([r["utility"] for r in slot_records]))
+        if slot_records
         else 0.0,
         "mean_learning_utility": float(
-            np.mean([r["learning_utility"] for r in composition_records])
+            np.mean([r["learning_utility"] for r in slot_records])
         )
-        if composition_records
+        if slot_records
         else 0.0,
         "mean_lagrangian_reward": float(
             np.mean([r["external_reward"] for r in records])
         ),
         "mean_period_return": float(
-            np.sum([r["reward"] for r in records]) / max(len(composition_records), 1)
+            np.sum([r["reward"] for r in records]) / max(len(slot_records), 1)
         ),
         "mean_external_period_return": float(
             np.sum([r["external_reward"] for r in records])
-            / max(len(composition_records), 1)
+            / max(len(slot_records), 1)
         ),
         "mean_composition_lagrangian_reward": float(
-            np.mean([r["external_reward"] for r in composition_records])
+            np.mean([r["external_reward"] for r in slot_records])
         )
-        if composition_records
+        if slot_records
         else 0.0,
         "mean_deployment_shaping_reward": float(
             np.mean(
@@ -486,7 +494,7 @@ def build_update_record(
                     if r["phase"] < AgentOrchestrationEnv.COMPOSITION
                 ]
             )
-            / max(len(composition_records), 1)
+            / max(len(slot_records), 1)
         ),
         "mean_constraint_cost": float(np.sum(mean_constraints)),
         "lagrange_multiplier": float(np.sum(lagrange_multipliers)),
@@ -503,22 +511,22 @@ def build_update_record(
         "last_approx_kl": float(getattr(batch, "last_approx_kl", 0.0)),
         # Same accounting as the training objective: the cumulative quantities
         # over the timeline, which is what a time-varying load reward is about.
-        "episode_cumulative_utility": float(composition_records[-1]["episode_utility_sum"])
-        if composition_records
+        "episode_cumulative_utility": float(slot_records[-1]["episode_utility_sum"])
+        if slot_records
         else 0.0,
-        "episode_cumulative_cost": float(composition_records[-1]["episode_cost_sum"])
-        if composition_records
+        "episode_cumulative_cost": float(slot_records[-1]["episode_cost_sum"])
+        if slot_records
         else 0.0,
         "episode_cumulative_latency": float(
-            composition_records[-1]["episode_latency_sum"]
+            slot_records[-1]["episode_latency_sum"]
         )
-        if composition_records
+        if slot_records
         else 0.0,
-        "episode_length": float(composition_records[-1]["episode_slot"])
-        if composition_records
+        "episode_length": float(slot_records[-1]["episode_slot"])
+        if slot_records
         else 0.0,
-        "trace_offset": float(composition_records[-1]["trace_offset"])
-        if composition_records
+        "trace_offset": float(slot_records[-1]["trace_offset"])
+        if slot_records
         else 0.0,
         "mean_intrinsic_reward": float(np.mean(batch.intrinsic_normalized))
         if deployment_indices

@@ -83,20 +83,22 @@ class StructuredActorCritic(nn.Module):
         self.config = config
         self.layout = env.layout
         feature_size = env.observation_space["features"].shape[0]
+        deployment_feature_size = env.observation_space["deployment_features"].shape[0] if "deployment_features" in env.observation_space.spaces else feature_size
+        routing_feature_size = env.observation_space["routing_features"].shape[0] if "routing_features" in env.observation_space.spaces else feature_size
         hidden = config.hidden_size
         self.deployment_encoder = nn.Sequential(
-            nn.Linear(feature_size + 3, hidden),
+            nn.Linear(deployment_feature_size + 3, hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
         )
         self.composition_encoder = nn.Sequential(
-            nn.Linear(feature_size + 3, hidden),
+            nn.Linear(routing_feature_size + 3, hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
         )
-        self.deploy_head = nn.Linear(hidden, self.layout.deployment_action_size)
+        self.deploy_head = nn.Linear(hidden, env.action_space["deploy"].n)
         if config.composition_group_features:
             group_features = _build_group_features(env)
             self.register_buffer("group_features", group_features, persistent=True)
@@ -121,15 +123,17 @@ class StructuredActorCritic(nn.Module):
     def _encoded_phases(
         self, observation: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        features = observation["features"]
-        if features.ndim == 1:
-            features = features.unsqueeze(0)
+        deployment_features = observation.get("deployment_features", observation["features"])
+        routing_features = observation.get("routing_features", observation["features"])
+        if deployment_features.ndim == 1:
+            deployment_features = deployment_features.unsqueeze(0)
+        if routing_features.ndim == 1:
+            routing_features = routing_features.unsqueeze(0)
         action_type = observation["action_type"].long().view(-1)
         phase = torch.nn.functional.one_hot(action_type, num_classes=3).float()
-        inputs = torch.cat([features, phase], dim=-1)
         return (
-            self.deployment_encoder(inputs),
-            self.composition_encoder(inputs),
+            self.deployment_encoder(torch.cat([deployment_features, phase], dim=-1)),
+            self.composition_encoder(torch.cat([routing_features, phase], dim=-1)),
             action_type,
         )
 
@@ -144,6 +148,8 @@ class StructuredActorCritic(nn.Module):
                 self.model_head,
                 self.routing_value_head,
             )
+            if self.composition_group_head is not None:
+                modules += (self.composition_group_head,)
         elif phase == "composition":
             modules = (
                 self.deployment_encoder,
@@ -251,19 +257,16 @@ class StructuredActorCritic(nn.Module):
     ) -> tuple[dict[str, Any], float, float]:
         obs = _observation_to_tensors(observation, device, batched=False)
         phase = int(observation["action_type"])
-        features = obs["features"]
-        if features.ndim == 1:
-            features = features.unsqueeze(0)
         phase_one_hot = torch.nn.functional.one_hot(
             obs["action_type"].long().view(-1), num_classes=3
         ).float()
-        inputs = torch.cat([features, phase_one_hot], dim=-1)
         action = {
             "deploy": 0,
             "model": np.zeros(self.layout.model_action_size, dtype=np.float32),
         }
         if phase < AgentOrchestrationEnv.COMPOSITION:
-            deployment_hidden = self.deployment_encoder(inputs)
+            features = obs.get("deployment_features", obs["features"]).reshape(1, -1)
+            deployment_hidden = self.deployment_encoder(torch.cat([features, phase_one_hot], dim=-1))
             value = self.deployment_value_head(deployment_hidden).squeeze(-1)
             selected, log_prob, _ = _sample_categorical(
                 self.deploy_head(deployment_hidden).squeeze(0),
@@ -274,7 +277,8 @@ class StructuredActorCritic(nn.Module):
             )
             action["deploy"] = int(selected.item())
         else:
-            composition_hidden = self.composition_encoder(inputs)
+            features = obs.get("routing_features", obs["features"]).reshape(1, -1)
+            composition_hidden = self.composition_encoder(torch.cat([features, phase_one_hot], dim=-1))
             value = self.routing_value_head(composition_hidden).squeeze(-1)
             model, model_logp, _ = _sample_grouped_dirichlet(
                 self._composition_logits(composition_hidden).squeeze(0),

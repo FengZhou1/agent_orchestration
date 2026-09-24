@@ -30,6 +30,7 @@ class ObjectiveSpec:
     goodput_weight: float = 0.25
     llm_utilization_target: float = 0.9
     service_utilization_target: float = 0.9
+    network_utilization_target: float | None = None
     attainment_target: float | None = None
     cost_bounds: CostBoundsSource = "library"
     latency_map: LatencyMap = "clip"
@@ -46,12 +47,16 @@ class ObjectiveSpec:
                 raise ValueError(f"{name} must be non-negative")
         if self.attainment_target is not None and not 0.0 <= self.attainment_target <= 1.0:
             raise ValueError("attainment_target must lie in [0, 1]")
+        if self.network_utilization_target is not None and not 0.0 < self.network_utilization_target <= 1.0:
+            raise ValueError("network_utilization_target must lie in (0, 1]")
 
     @property
     def constraint_names(self) -> tuple[str, ...]:
         """Constraint components, in the order the evaluator emits them."""
 
         names = ["llm", "service"]
+        if self.network_utilization_target is not None:
+            names.append("network")
         if self.attainment_target is not None:
             names.append("attainment")
         return tuple(names)
@@ -61,6 +66,8 @@ class ObjectiveSpec:
         """The ``limit`` side of every constraint: excess above it is penalised."""
 
         targets = [self.llm_utilization_target, self.service_utilization_target]
+        if self.network_utilization_target is not None:
+            targets.append(self.network_utilization_target)
         if self.attainment_target is not None:
             targets.append(self.attainment_target)
         return tuple(targets)
@@ -130,6 +137,7 @@ class ObjectiveSpec:
             "goodput_weight",
             "llm_utilization_target",
             "service_utilization_target",
+            "network_utilization_target",
             "attainment_target",
             "cost_bounds",
             "latency_map",
@@ -155,6 +163,7 @@ class ObjectiveSpec:
             "goodput_weight": self.goodput_weight,
             "llm_utilization_target": self.llm_utilization_target,
             "service_utilization_target": self.service_utilization_target,
+            "network_utilization_target": self.network_utilization_target,
             "attainment_target": self.attainment_target,
             "cost_bounds": self.cost_bounds,
             "latency_map": self.latency_map,

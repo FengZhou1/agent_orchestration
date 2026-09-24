@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -47,6 +48,7 @@ def train_ppo(
     initial_policy_state_dict: dict[str, Any] | None = None,
     on_checkpoint: CheckpointCallback | None = None,
     run_logger: Any | None = None,
+    phase_schedule: tuple[tuple[str, int], ...] | None = None,
 ) -> tuple[StructuredActorCritic, list[dict[str, float]]]:
     """Train the structured policy and return it with its per-update history.
 
@@ -57,6 +59,22 @@ def train_ppo(
     device = resolve_device(device)
     config = config.for_constraint_count(len(env.constraint_names))
     _validate_constraint_config(config)
+    if phase_schedule is not None:
+        if not phase_schedule or any(
+            phase not in ("composition", "deployment", "joint") or count <= 0
+            for phase, count in phase_schedule
+        ) or sum(count for _, count in phase_schedule) != updates:
+            raise ValueError("phase_schedule must contain positive phases totaling updates")
+
+    def phase_at(update_index: int) -> str:
+        if phase_schedule is None:
+            return config.training_phase
+        remainder = update_index
+        for phase, count in phase_schedule:
+            if remainder < count:
+                return phase
+            remainder -= count
+        return phase_schedule[-1][0]
     log_update = getattr(run_logger, "log_update", None)
     log_episode = getattr(run_logger, "log_episode", None)
     random.seed(seed)
@@ -68,13 +86,15 @@ def train_ppo(
     policy = StructuredActorCritic(env, config).to(device)
     if initial_policy_state_dict is not None and resume_state is None:
         policy.load_state_dict(initial_policy_state_dict)
-    policy.set_training_phase(config.training_phase)
+    resumed_next_update = int(resume_state.get("next_update", 0)) if resume_state else 0
+    optimizer_phase = phase_at(max(0, resumed_next_update - 1))
+    policy.set_training_phase(optimizer_phase)
     trainable_parameters = [
         parameter for parameter in policy.parameters() if parameter.requires_grad
     ]
     optimizer_learning_rate = (
         config.composition_learning_rate
-        if config.training_phase == "composition"
+        if optimizer_phase == "composition"
         else config.learning_rate
     )
     optimizer = torch.optim.Adam(trainable_parameters, lr=optimizer_learning_rate)
@@ -93,7 +113,7 @@ def train_ppo(
         else None
     )
     action_vector_size = (
-        2 + env.layout.deployment_action_size + env.layout.model_action_size
+        2 + env.action_space["deploy"].n + env.layout.model_action_size
     )
     icm = (
         ICMModule(env.observation_space["features"].shape[0], action_vector_size).to(
@@ -116,6 +136,10 @@ def train_ppo(
     start_update = 0
 
     if resume_state is not None:
+        if resume_state.get("phase_schedule") != phase_schedule:
+            raise ValueError("The checkpoint belongs to a different PPO phase schedule")
+        if resume_state.get("environment_reward_state") is not None:
+            env.restore_reward_state(resume_state["environment_reward_state"])
         policy.load_state_dict(resume_state["policy_state_dict"])
         optimizer.load_state_dict(resume_state["optimizer_state_dict"])
         if rnd is not None and resume_state.get("rnd_state_dict") is not None:
@@ -141,6 +165,8 @@ def train_ppo(
         if start_update < 0 or start_update > updates:
             raise ValueError("The PPO checkpoint has an invalid next_update value")
 
+    if hasattr(env, "training_phase"):
+        env.training_phase = phase_at(start_update if start_update < updates else max(0, updates - 1))
     observation, _ = env.reset(seed=seed + episode_counter)
     if resume_state is not None:
         if "python_random_state" in resume_state:
@@ -159,6 +185,21 @@ def train_ppo(
             )
 
     for update in range(start_update, updates):
+        phase = phase_at(update)
+        if phase != optimizer_phase:
+            policy.set_training_phase(phase)
+            trainable_parameters = [
+                parameter for parameter in policy.parameters() if parameter.requires_grad
+            ]
+            optimizer = torch.optim.Adam(
+                trainable_parameters,
+                lr=(config.composition_learning_rate if phase == "composition" else config.learning_rate),
+            )
+            optimizer_phase = phase
+            if hasattr(env, "training_phase"):
+                env.training_phase = phase
+                observation, _ = env.reset(seed=seed + episode_counter)
+        stage_config = replace(config, training_phase=phase)
         if on_phase is not None:
             on_phase(update, "collecting")
 
@@ -172,7 +213,7 @@ def train_ppo(
             update=update,
             rollout_steps=rollout_steps,
             rollout_periods=rollout_periods,
-            config=config,
+            config=stage_config,
             device=device,
             exploration_weight=_exploration_weight(config, update, updates),
             lagrange_multipliers=lagrange_multipliers,
@@ -199,7 +240,7 @@ def train_ppo(
             policy,
             batch,
             optimizer,
-            config,
+            stage_config,
             device,
             update=update,
             bootstrap_value=bootstrap_value,
@@ -214,12 +255,13 @@ def train_ppo(
         record, next_lagrange = build_update_record(
             update=update,
             batch=batch,
-            config=config,
+            config=stage_config,
             env=env,
             losses=losses,
             lagrange_multipliers=lagrange_multipliers,
         )
         history.append(record)
+        record["training_phase"] = phase
         if on_update is not None:
             on_update(record)
         lagrange_multipliers = next_lagrange
@@ -234,6 +276,8 @@ def train_ppo(
                     "next_update": update + 1,
                     "policy_state_dict": policy.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "optimizer_training_phase": optimizer_phase,
+                    "phase_schedule": phase_schedule,
                     "rnd_state_dict": rnd.state_dict() if rnd is not None else None,
                     "rnd_optimizer_state_dict": (
                         rnd_optimizer.state_dict() if rnd_optimizer is not None else None
@@ -249,6 +293,9 @@ def train_ppo(
                     },
                     "lagrange_multipliers": lagrange_multipliers.copy(),
                     "episode_counter": episode_counter,
+                    "environment_reward_state": (
+                        env.reward_state() if hasattr(env, "reward_state") else None
+                    ),
                     "history": list(history),
                     "python_random_state": random.getstate(),
                     "numpy_random_state": np.random.get_state(),

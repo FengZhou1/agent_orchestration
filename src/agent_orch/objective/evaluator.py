@@ -78,6 +78,7 @@ class ObjectiveEvaluator:
             arrival_rates=arrival_rates,
             llm_utilization=metrics.llm_utilization,
             tool_utilization=metrics.tool_utilization,
+            link_utilization=metrics.link_utilization,
             violation_labels=tuple(metrics.diagnostics.get("violation_labels", ())),
         )
 
@@ -93,6 +94,7 @@ class ObjectiveEvaluator:
         app_quality: Mapping[str, float] | None = None,
         llm_utilization: Mapping[str, float] | None = None,
         tool_utilization: Mapping[str, float] | None = None,
+        link_utilization: Mapping[str, float] | None = None,
         violation_labels: Sequence[str] = (),
     ) -> ObjectiveValue:
         spec = self.spec
@@ -125,6 +127,7 @@ class ObjectiveEvaluator:
             attainment=attainment,
             llm_utilization=llm_utilization or {},
             tool_utilization=tool_utilization or {},
+            link_utilization=link_utilization or {},
             violation_labels=violation_labels,
         )
         diagnostics = {
@@ -239,6 +242,7 @@ class ObjectiveEvaluator:
         attainment: float,
         llm_utilization: Mapping[str, float],
         tool_utilization: Mapping[str, float],
+        link_utilization: Mapping[str, float],
         violation_labels: Sequence[str],
     ) -> list[float]:
         spec = self.spec
@@ -254,11 +258,19 @@ class ObjectiveEvaluator:
             or [0.0]
         )
         labels = tuple(violation_labels)
-        llm += float(any(label.startswith("llm_") for label in labels))
-        service += float(
-            any(label.startswith(("service_", "tool_", "link_")) for label in labels)
-        )
+        llm = max(llm, float(any(label.startswith("llm_") for label in labels)))
+        service = max(service, float(any(label.startswith(("service_", "tool_")) for label in labels)))
         values = [float(llm), float(service)]
+        if spec.network_utilization_target is not None:
+            network = max(
+                [max(0.0, float(value) - spec.network_utilization_target)
+                 for value in link_utilization.values()] or [0.0]
+            )
+            network = max(network, float(any(label.startswith("link_") for label in labels)))
+            values.append(float(network))
+        else:
+            # Preserve the legacy two-resource constraint profile.
+            values[1] = max(values[1], float(any(label.startswith("link_") for label in labels)))
         if spec.attainment_target is not None:
             values.append(max(0.0, spec.attainment_target - float(attainment)))
         return values

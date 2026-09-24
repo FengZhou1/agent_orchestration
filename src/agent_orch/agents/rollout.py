@@ -145,6 +145,8 @@ def collect_rollout(
             float(info.get("learning_utility", utility)) if is_composition else 0.0
         )
         if is_composition:
+            # Previous-episode deltas are a baseline for the four utility terms.
+            # Feasibility, unlike progress, must be charged in absolute units.
             reward = _constrained_utility(
                 learning_utility,
                 constraint_vector,
@@ -193,6 +195,7 @@ def collect_rollout(
                 "trace_offset": int(info.get("trace_offset", 0)),
                 "constraint_vector": constraint_vector,
                 "terminal": bool(terminated or truncated),
+                "period_complete": bool(info.get("period_complete", False)),
                 "discount": float(
                     config.composition_gamma
                     if (
@@ -209,7 +212,7 @@ def collect_rollout(
             }
         )
         observation = next_observation
-        if is_composition:
+        if info.get("period_complete", False):
             completed_periods += 1
         if terminated or truncated:
             episode_counter += 1
@@ -236,11 +239,7 @@ def collect_rollout(
             )
         if target_periods is not None and completed_periods >= target_periods:
             break
-        if (
-            target_periods is None
-            and is_composition
-            and len(records) >= max(1, rollout_steps)
-        ):
+        if target_periods is None and info.get("period_complete", False) and len(records) >= max(1, rollout_steps):
             break
 
     collection_time_s = time.perf_counter() - collection_started
@@ -291,7 +290,7 @@ def collect_rollout(
             np.stack(
                 [
                     structured_action_vector(
-                        r["action"], r["phase"], env.layout.deployment_action_size
+                        r["action"], r["phase"], env.action_space["deploy"].n
                     )
                     for r in records
                 ]
@@ -344,6 +343,9 @@ def _observation_to_tensors(
             observation.get("model_group", 0), dtype=torch.long, device=device
         ),
     }
+    for name in ("deployment_features", "routing_features"):
+        if name in observation:
+            result[name] = torch.as_tensor(observation[name], dtype=torch.float32, device=device)
     if batched:
         return result
     return result
@@ -367,7 +369,7 @@ def _rnd_state_inputs(
 def _stack_observations(
     observations: list[dict[str, Any]], device: torch.device | str
 ) -> dict[str, torch.Tensor]:
-    return {
+    result = {
         "features": torch.as_tensor(
             np.stack([obs["features"] for obs in observations]),
             dtype=torch.float32,
@@ -392,6 +394,12 @@ def _stack_observations(
             device=device,
         ),
     }
+    for name in ("deployment_features", "routing_features"):
+        if name in observations[0]:
+            result[name] = torch.as_tensor(
+                np.stack([obs[name] for obs in observations]), dtype=torch.float32, device=device
+            )
+    return result
 
 
 def _stack_actions(
