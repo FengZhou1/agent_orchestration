@@ -79,7 +79,9 @@ class Simulator:
         arrival_rates = self.current_arrival_rates()
         analytical = self.backend.evaluate(deployment, routing, arrival_rates)
         analytical.violations.extend(
-            self._routing_unserved_violations(deployment, routing, arrival_rates)
+            self._routing_unserved_violations(
+                deployment, routing, arrival_rates, analytical.node_server_distribution
+            )
         )
         workflow = self.workflow.evaluate(
             deployment, routing, analytical, arrival_rates
@@ -156,6 +158,7 @@ class Simulator:
         deployment: DeploymentDecision,
         routing: RoutingDecision,
         arrival_rates: dict[tuple[str, str], float],
+        node_distributions: dict,
     ) -> list[str]:
         violations: list[str] = []
         for app in self.scenario.applications.values():
@@ -206,6 +209,28 @@ class Simulator:
                 )
                 if replicas <= 0 or not has_route:
                     violations.append(f"service_unserved:{app.id}:{source}->{target}")
+            # A route may exist for an idle source but be absent for the source
+            # carrying this flow. Check actual upstream support, not every
+            # hypothetical server, so disconnected idle hosts are not faults.
+            for ingress in app.ingress_rates:
+                if arrival_rates.get((app.id, ingress), 0.0) <= 0.0:
+                    continue
+                for model in self.scenario.models:
+                    if routing.model_share.get((app.id, ingress, model), 0.0) <= 0.0:
+                        continue
+                    for flow in app.pattern_flows:
+                        if flow.probability <= 0.0:
+                            continue
+                        for source, target in flow.edges:
+                            if app.nodes[target].type is not NodeType.TOOL:
+                                continue
+                            key = (app.id, ingress, model, flow.id, source)
+                            for u, mass in node_distributions.get(key, {}).items():
+                                routed = sum(routing.tool_route.get(
+                                    (app.id, source, target, u, v), 0.0
+                                ) for v in self.scenario.servers)
+                                if mass > 0.0 and routed < 1.0 - 1.0e-7:
+                                    violations.append(f"service_unserved:{app.id}:{source}->{target}@{u}")
         return violations
 
     def observation(

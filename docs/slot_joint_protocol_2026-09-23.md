@@ -1,10 +1,20 @@
 # 单时隙联合编排实验协议（2026-09-23）
 
+> **当前版本：`slot_joint_v5`（2026-10-12）**。采用 ACM 主稿 `sections/algorithm.tex` 中的容量比例路由；v4 Softmin 训练结果仅保留为历史。新运行、基线和奖励参照均使用容量路由；旧协议不能续训进 v5。
+
+## v5 容量路由与计算复用
+
+模型 m 的每个推理流 `(a,i)` 的权重为 `visit_probability(i) * sum_g(lambda[a,g] * x[a,g,m])`。保留输入输出 token 对，按同一组成为各在线实例求参考容量；总权重为零时等权处理各推理流，正权重时排除零流量类型。`phi[a,g,i,l] = x[a,g,m] * mu_ref[l] / sum(mu_ref[同模型、在线、从g可达且容量为正的实例])`。工具依赖从源服务器 u 出发，按可达池的 `z[h,v] * service_rate[h,v]` 归一化。历史利用率、零负载时延和网络时延评分不进入该规则；实际排队、通信和 SLO 仍由最终性能评价计算。空支持集保留零分配，由仿真器标记不可服务；无实际流量的不可达源不会独自产生故障。
+
+`performance.analytical.reference_llm_capacity` 只计算 KV/批处理边界与容量，不计算运行点或每类响应。它与最终 macro 评价共享同一容量公式。进程内 LRU 最多保存 4096 个完整输入键（模型、配置、token 类型、权重、chunk），不进行取整/近似合并；输入改变时重新计算。环境另外按固定轨迹槽保留路由器，避免跨 episode 清空拓扑缓存。
+
+模型选择阶段直接安装 `D_t^fix`，保留完成部署后的观测、上一部署与启动费用，每槽收集 20 个模型动作而非回放 105 个冻结部署动作。部署和联合阶段仍依次执行全部离散部署步，不改变时隙轨迹、奖励定义、阶段顺序和 actor/critic 结构。v3/v4 离线评估显式选择历史 Softmin 和旧子步重放，新检查点与奖励状态验证路由协议。
+
 本协议取代旧的 Stage A/B/C 与 `formal_v*` 训练解释。那些结果的轨迹、动作单元和奖励口径不同，只保留为历史记录。当前可运行入口是 `scripts/run_slot_joint.py`；实现集中于 `workload/slot_trajectory.py` 与 `envs/slot_joint_env.py`。
 
 ## 依据与决策单元
 
-参考 `微服务参考论文/博士答辩第四章.pdf` 的算法 4.3、§4.3.2 事件触发和式 (4-26)–(4-29)：一个训练回合覆盖固定的时隙序列；一个时隙内执行多个顺序决策；完成部署和路由后才给外部奖励；当前训练轮次与上一轮次相同时隙的指标相比较。这里保留本论文的物理模型与动作定义：LLM 候选部署 `y` 和无状态服务副本 `z` 由离散 PPO 动作构造，模型比例 `x_{a,g,:}` 由另一 PPO 分支按 `(应用 a, 接入节点 g)` 逐组采样，实例分配 `φ` 和无状态服务路由 `p` 仍由解析 Softmin 求出。同一 Agent 请求的各 LLM 节点使用同一模型。
+参考博士论文算法 4.3 的固定时隙回合、顺序决策和同槽差分结构；当前物理路由以 ACM 主稿容量路由算法为准。LLM 候选部署 `y`、服务副本 `z` 与模型比例 `x_{a,g,:}` 保持原动作定义，同一请求的各 LLM 节点使用同一模型。
 
 只有物理时隙 `t`。部署步 `τ_D` 和模型路由步 `τ_X` 只是时隙内的决策索引，不触发负载抽样、成本计时或指标计算。每个时隙的顺序是：读取该时隙外生状态 → 遍历 LLM 候选二元动作与无状态服务池副本数动作 → 遍历全部 `(a,g)` 模型比例动作 → 计算解析物理路由 → 仿真一次 → 算指标、差分奖励并推进 `t`。部署每时隙从空的构造状态开始，实际实例增减费用仍与上一物理时隙的最终部署比较。
 
@@ -49,7 +59,7 @@
 conda activate agent-orch
 $env:PYTHONPATH='src'
 python scripts/run_slot_joint.py --scenario configs/toy.yaml --output results/slot_joint_toy --slots 8 --updates 10
-python scripts/run_slot_joint.py --scenario configs/benchmarks/main_abilene.yaml --output results/slot_joint_main_v4 --slots 60 --updates 100 --trajectory-seed 101 --mapping-samples 128
+python scripts/run_slot_joint.py --scenario configs/benchmarks/main_abilene.yaml --output results/slot_joint_main_v5 --slots 60 --updates 100 --trajectory-seed 101 --mapping-samples 128
 ```
 
 输出目录包含 `manifest.json`、训练/留出轨迹、`fixed_baseline.json`、`checkpoint.pt`、`policy.pt`、`history.json`、`evaluation.json`、`baselines.json`。留出轨迹上同时评估 greedy、equal、least-load、random，采用同一目标评估器与时隙条件。从中断处继续须使用完全相同的参数及 `--resume`，包括原先的总 `--updates` 和阶段划分；当前入口不能把已完成的 120 次更新直接改成 160 次无损续训。脚本拒绝覆盖已有运行，也拒绝与 checkpoint 不一致的轨迹、场景或训练参数。

@@ -10,7 +10,7 @@ import gymnasium as gym
 from agent_orch.baselines import GreedyPolicy
 from agent_orch.capacity import CapacityPlanner
 from agent_orch.objective import ObjectiveEvaluator
-from agent_orch.routing import PhysicalRouter
+from agent_orch.routing import CapacityProportionalRouter, PhysicalRouter
 from agent_orch.schema.models import NodeType, Scenario
 from agent_orch.simulator import Simulator
 from agent_orch.workload.slot_trajectory import SlotTrajectory
@@ -31,12 +31,19 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         scenario: Scenario,
         trajectory: SlotTrajectory,
         *args: Any,
+        routing_method: str = "capacity_proportional",
+        replay_frozen_deployment_steps: bool = False,
         **kwargs: Any,
     ) -> None:
         if scenario.id != trajectory.scenario_id or not trajectory.slots:
             raise ValueError("A nonempty trajectory for this scenario is required")
         self.base_scenario = scenario
         self.trajectory = trajectory
+        if routing_method not in ("capacity_proportional", "softmin"):
+            raise ValueError("Unknown physical routing method")
+        self.routing_method = routing_method
+        self.replay_frozen_deployment_steps = replay_frozen_deployment_steps
+        self._slot_routers: dict[int, Any] = {}
         self._model_group = 0
         self._working_share = np.zeros(
             (sum(len(app.ingress_rates) for app in scenario.applications.values()),
@@ -76,6 +83,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def reward_state(self) -> dict[str, Any]:
         return {
             "trajectory_digest": self.trajectory.digest(),
+            "routing_method": self.routing_method,
+            "replay_frozen_deployment_steps": self.replay_frozen_deployment_steps,
             "previous_round": self._previous_round,
             "completed_once": sorted(self._completed_once),
         }
@@ -88,6 +97,10 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def restore_reward_state(self, state: dict[str, Any]) -> None:
         if state["trajectory_digest"] != self.trajectory.digest():
             raise ValueError("Checkpoint reward baseline belongs to a different trajectory")
+        if (state.get("routing_method", "softmin") != self.routing_method
+                or state.get("replay_frozen_deployment_steps", True)
+                != self.replay_frozen_deployment_steps):
+            raise ValueError("Checkpoint reward baseline uses a different routing protocol")
         self._previous_round = {
             int(slot): dict(values)
             for slot, values in state["previous_round"].items()
@@ -105,7 +118,13 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         self.simulator.last_metrics = last_metrics
         self.scenario = slot_scenario
         self.planner = CapacityPlanner(slot_scenario)
-        self.physical_router = PhysicalRouter(slot_scenario)
+        router = self._slot_routers.get(self._period_index)
+        if router is None or router.scenario != slot_scenario:
+            router_type = (CapacityProportionalRouter
+                           if self.routing_method == "capacity_proportional" else PhysicalRouter)
+            router = router_type(slot_scenario)
+            self._slot_routers[self._period_index] = router
+        self.physical_router = router
         self.objective = ObjectiveEvaluator(
             slot_scenario, self.objective.spec, self.objective.references
         )
@@ -121,6 +140,24 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
 
     def _begin_deployment_cycle(self) -> None:
         self._activate_slot()
+        if self._stage_deployment is not None and not self.replay_frozen_deployment_steps:
+            # Assign D_t^fix directly as in the manuscript warm-up stage.
+            self.current_deployment = self._stage_deployment.copy()
+            self._base_deployment = self.current_deployment.copy()
+            self._deployment_targets = [
+                ("llm", cid, "") for cid in self.planner.candidate_order()
+            ] + [("tool", tool, server) for tool in self.layout.tools for server in self.layout.servers]
+            # Preserve the completed-deployment observation (progress=1),
+            # while counting no policy deployment transitions.
+            self._deployment_target_index = len(self._deployment_targets)
+            self._current_demand = None
+            self._deployment_actions_in_period = 0
+            self._last_placement = -1
+            self._capacity_plan = None
+            self._planning_shortfall = {"llm": 0.0, "tool": 0.0}
+            self._period_initial_potential = self._last_potential = 0.0
+            self.phase = self.COMPOSITION
+            return
         super()._begin_deployment_cycle()
         # One binary decision per LLM candidate and one replica-count decision
         # per stateless-service pool. No substep advances physical time.
@@ -154,6 +191,10 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
                 simulator.previous_deployment = previous
             simulator.last_metrics = last_metrics
             routing = policy.routing(deployment, last_metrics)
+            if self.routing_method == "capacity_proportional":
+                routing = CapacityProportionalRouter(scenario).route(
+                    deployment, routing.model_share, arrival_rates=simulator.current_arrival_rates()
+                )
             metrics = simulator.step(deployment, routing).metrics
             value = ObjectiveEvaluator(
                 scenario, self.objective.spec, self.objective.references

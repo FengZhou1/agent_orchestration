@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 from dataclasses import fields
 from pathlib import Path
 
@@ -21,7 +22,10 @@ from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
-from run_slot_joint import _evaluate, _evaluate_routing_baselines, _write_json
+from run_slot_joint import (
+    _evaluate, _evaluate_baselines, _evaluate_routing_baselines,
+    _write_json, environment_options,
+)
 
 
 def main() -> None:
@@ -37,9 +41,11 @@ def main() -> None:
     args = parser.parse_args()
 
     manifest = json.loads((args.run / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("protocol") not in ("slot_joint_v3", "slot_joint_v4"):
-        raise ValueError("Snapshot evaluator requires slot_joint_v3 or slot_joint_v4")
-    scenario = ScenarioLoader.load(manifest["scenario"])
+    options = environment_options(manifest)
+    scenario_path = Path(manifest["scenario"])
+    if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
+        raise ValueError("Scenario changed since training")
+    scenario = ScenarioLoader.load(scenario_path)
     variation = SlotVariationSpec(**manifest["variation"])
     evaluation_seed = (
         args.evaluation_seed
@@ -62,11 +68,15 @@ def main() -> None:
         raise ValueError("mapping-samples must be positive")
     checkpoint_source = args.policy_snapshot or (args.run / "checkpoint.pt")
     checkpoint = torch.load(checkpoint_source, map_location="cpu", weights_only=False)
+    if checkpoint.get("protocol", manifest["protocol"]) != manifest["protocol"]:
+        raise ValueError("Checkpoint and run use different routing protocols")
+    if manifest["protocol"] == "slot_joint_v5" and checkpoint.get("physical_routing") != options["routing_method"]:
+        raise ValueError("Capacity-routing snapshot is missing its routing provenance")
     if (checkpoint.get("scenario_hash") is not None
             and checkpoint["scenario_hash"] != manifest["scenario_hash"]):
         raise ValueError("Policy snapshot belongs to a different scenario")
     env = SlotSequentialJointEnv(
-        scenario, trajectory, mapping_samples=mapping_samples, objective=objective
+        scenario, trajectory, mapping_samples=mapping_samples, objective=objective, **options
     )
     policy = StructuredActorCritic(
         env, PPOConfig(shared_composition_head=bool(
@@ -75,13 +85,17 @@ def main() -> None:
     )
     policy.load_state_dict(checkpoint["policy_state_dict"])
     policy.eval()
+    evaluation_phase = ("composition" if manifest["training_settings"]["phase_schedule"][-1][0]
+                        == "composition" else "joint")
     rows = _evaluate(
         scenario, trajectory, policy, mapping_samples, "cpu", objective,
-        evaluation_phase="composition",
+        evaluation_phase=evaluation_phase, **options,
     )
     update = int(checkpoint["next_update"])
     report = {
         "protocol": manifest["protocol"],
+        "physical_routing": options["routing_method"],
+        "evaluation_phase": evaluation_phase,
         "checkpoint_next_update": update,
         "checkpoint_source": str(checkpoint_source),
         "evaluation_seed": evaluation_seed,
@@ -96,9 +110,15 @@ def main() -> None:
         "slots": rows,
     }
     if args.baselines:
-        report["routing_baselines_same_placement"] = _evaluate_routing_baselines(
-            scenario, trajectory, mapping_samples, objective
-        )
+        if evaluation_phase == "composition":
+            report["routing_baselines_same_placement"] = _evaluate_routing_baselines(
+                scenario, trajectory, mapping_samples, objective, **options
+            )
+        else:
+            report["baselines"] = _evaluate_baselines(
+                scenario, trajectory, mapping_samples, objective, env.objective.references,
+                routing_method=options["routing_method"],
+            )
     seed_suffix = (
         f"_seed_{evaluation_seed}" if args.evaluation_seed is not None else ""
     )
@@ -111,6 +131,7 @@ def main() -> None:
     temporary_policy_output = policy_output.with_suffix(".tmp.pt")
     torch.save({
         "next_update": update,
+        "protocol": manifest["protocol"], "physical_routing": options["routing_method"],
         "policy_state_dict": checkpoint["policy_state_dict"],
         "trajectory_digest": trajectory.digest(),
         "scenario_hash": manifest["scenario_hash"],

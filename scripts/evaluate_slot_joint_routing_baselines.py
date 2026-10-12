@@ -17,7 +17,7 @@ from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
-from run_slot_joint import _evaluate_routing_baselines, _write_json
+from run_slot_joint import _evaluate_routing_baselines, _write_json, environment_options
 
 
 def main() -> None:
@@ -30,8 +30,7 @@ def main() -> None:
         raise ValueError("mapping-samples must be positive")
 
     manifest = json.loads((args.run / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("protocol") != "slot_joint_v4":
-        raise ValueError("The routing baseline evaluator requires slot_joint_v4")
+    options = environment_options(manifest)
     scenario_path = Path(manifest["scenario"])
     if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
         raise ValueError("Scenario changed since training")
@@ -52,10 +51,11 @@ def main() -> None:
     if output.exists():
         raise FileExistsError(output)
     results = _evaluate_routing_baselines(
-        scenario, trajectory, args.mapping_samples, objective
+        scenario, trajectory, args.mapping_samples, objective, **options
     )
     _write_json(output, {
         "protocol": manifest["protocol"],
+        "physical_routing": options["routing_method"],
         "scenario_hash": manifest["scenario_hash"],
         "trajectory_digest": trajectory.digest(),
         "evaluation_seed": args.evaluation_seed,

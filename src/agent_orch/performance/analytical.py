@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 import math
 
 import numpy as np
@@ -478,6 +479,43 @@ def _two_mode_capacity(
     return best_rate, best_nu
 
 
+def reference_llm_capacity(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    chunk_tokens: int,
+) -> tuple[float, float]:
+    """Macro capacity only, without a load operating point or class delays.
+
+    Exact input values (including model/config resources and token mixture)
+    key a bounded process-local cache, so rebuilding a slot router does not
+    discard identical calculations. No rounding or workload approximation is
+    used. Class order is retained for the deterministic packed-batch model.
+    """
+    return _reference_llm_capacity_cached(
+        model, config, tuple(classes), tuple(weights), chunk_tokens
+    )
+
+
+@lru_cache(maxsize=4096)
+def _reference_llm_capacity_cached(model, config, classes, weights, chunk_tokens):
+    classes, weights = list(classes), list(weights)
+    residency = residency_capacity(
+        classes, weights, config.kv_token_capacity, config.max_num_seqs, chunk_tokens
+    )
+    if residency.capacity < 1:
+        return 0.0, 1.0
+    execution = IterationCalibration(
+        config.effective_flops, config.effective_bandwidth_bytes_s
+    )
+    return two_mode_capacity(
+        model, TwoModeCalibration(decode=execution, mix=execution),
+        classes, weights, chunk_tokens, config.max_num_batched_tokens,
+        residency.capacity,
+    )
+
+
 def evaluate_llm_instance(
     model: ModelSpec,
     config: LLMConfigSpec,
@@ -571,14 +609,8 @@ def evaluate_llm_instance(
                 config.effective_bandwidth_bytes_s,
             )
             calibration = TwoModeCalibration(decode=execution, mix=execution)
-            capacity, capacity_concurrency = two_mode_capacity(
-                model,
-                calibration,
-                classes,
-                weights,
-                chunk_tokens,
-                config.max_num_batched_tokens,
-                residency.capacity,
+            capacity, capacity_concurrency = reference_llm_capacity(
+                model, config, classes, weights, chunk_tokens
             )
             macro_state = two_mode_operating_point(
                 model,

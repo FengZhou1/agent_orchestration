@@ -20,9 +20,24 @@ from agent_orch.agents import PPOConfig, StructuredActorCritic, train_ppo
 from agent_orch.baselines import make_policy
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec
+from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
+
+
+PROTOCOL = "slot_joint_v5"
+PHYSICAL_ROUTING = "capacity_proportional"
+
+
+def environment_options(manifest: dict) -> dict:
+    """Keep historical evaluation semantics explicit rather than relabeling it."""
+    protocol = manifest.get("protocol")
+    if protocol in ("slot_joint_v3", "slot_joint_v4"):
+        return {"routing_method": "softmin", "replay_frozen_deployment_steps": True}
+    if protocol == PROTOCOL and manifest.get("physical_routing") == PHYSICAL_ROUTING:
+        return {"routing_method": PHYSICAL_ROUTING, "replay_frozen_deployment_steps": False}
+    raise ValueError("Unknown or inconsistent slot-joint routing protocol")
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -33,10 +48,14 @@ def _evaluate(
     scenario, trajectory: SlotTrajectory, policy: StructuredActorCritic,
     mapping_samples: int, device: str, objective_spec: ObjectiveSpec,
     evaluation_phase: str = "joint",
+    routing_method: str = PHYSICAL_ROUTING,
+    replay_frozen_deployment_steps: bool = False,
 ) -> list[dict[str, object]]:
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=mapping_samples,
         seed=trajectory.seed, objective=objective_spec,
+        routing_method=routing_method,
+        replay_frozen_deployment_steps=replay_frozen_deployment_steps,
     )
     env.training_phase = evaluation_phase
     observation, _ = env.reset(seed=trajectory.seed)
@@ -66,6 +85,7 @@ def _evaluate(
 def _evaluate_baselines(
     scenario, trajectory: SlotTrajectory, mapping_samples: int,
     objective_spec, references,
+    routing_method: str = PHYSICAL_ROUTING,
 ) -> dict[str, object]:
     results = {}
     for name in ("greedy", "equal", "least_load", "random"):
@@ -82,6 +102,10 @@ def _evaluate_baselines(
             baseline = make_policy(name, current, seed=trajectory.seed + slot)
             deployment = baseline.deployment()
             routing = baseline.routing(deployment, last_metrics)
+            if routing_method == PHYSICAL_ROUTING:
+                routing = CapacityProportionalRouter(current).route(
+                    deployment, routing.model_share, arrival_rates=simulator.current_arrival_rates()
+                )
             metrics = simulator.step(deployment, routing).metrics
             value = ObjectiveEvaluator(current, objective_spec, references).evaluate(
                 metrics,
@@ -115,6 +139,8 @@ def _evaluate_baselines(
 def _evaluate_routing_baselines(
     scenario, trajectory: SlotTrajectory, mapping_samples: int,
     objective_spec: ObjectiveSpec,
+    routing_method: str = PHYSICAL_ROUTING,
+    replay_frozen_deployment_steps: bool = False,
 ) -> dict[str, object]:
     """Compare model shares under exactly the routing warm-up placements."""
     results = {}
@@ -122,6 +148,8 @@ def _evaluate_routing_baselines(
         env = SlotSequentialJointEnv(
             scenario, trajectory, mapping_samples=mapping_samples,
             seed=trajectory.seed, objective=objective_spec,
+            routing_method=routing_method,
+            replay_frozen_deployment_steps=replay_frozen_deployment_steps,
         )
         env.training_phase = "composition"
         observation, _ = env.reset(seed=trajectory.seed)
@@ -228,8 +256,9 @@ def main() -> None:
             json.loads(trajectory_path.read_text(encoding="utf-8"))
         )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("protocol") != "slot_joint_v4":
-            raise ValueError("Checkpoint uses an incompatible deployment-action protocol")
+        if manifest.get("protocol") != PROTOCOL:
+            raise ValueError("Resume requires slot_joint_v5 capacity routing; use a new output directory")
+        environment_options(manifest)
         if manifest["scenario_hash"] != scenario_hash or manifest["trajectory_digest"] != trajectory.digest():
             raise ValueError("Scenario or trajectory changed since the checkpoint")
         if len(trajectory) != args.slots or trajectory.seed != args.trajectory_seed:
@@ -239,6 +268,9 @@ def main() -> None:
         if manifest["training_settings"] != training_settings:
             raise ValueError("Training settings differ from checkpoint")
         resume_state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if (resume_state.get("protocol") != PROTOCOL
+                or resume_state.get("physical_routing") != PHYSICAL_ROUTING):
+            raise ValueError("Checkpoint does not belong to the capacity-routing protocol")
     else:
         if any(path.exists() for path in (trajectory_path, checkpoint_path, manifest_path)):
             raise FileExistsError("Output already contains a slot-joint run; choose a new directory or --resume")
@@ -246,7 +278,7 @@ def main() -> None:
         _write_json(trajectory_path, trajectory.to_dict())
         resume_state = None
         _write_json(manifest_path, {
-            "protocol": "slot_joint_v4",
+            "protocol": PROTOCOL,
             "scenario": str(scenario_path.resolve()),
             "scenario_hash": scenario_hash,
             "trajectory_digest": trajectory.digest(),
@@ -263,7 +295,8 @@ def main() -> None:
             "model_action": "one Dirichlet simplex per (application, ingress) substep",
             "deployment_action": "one binary action per LLM candidate; one masked replica count per (tool, server) pool",
             "training": ", ".join(phase for phase, _ in phase_schedule),
-            "physical_routing": "deterministic softmin after all model substeps",
+            "physical_routing": PHYSICAL_ROUTING,
+            "frozen_deployment_substeps": 0,
         })
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=args.mapping_samples,
@@ -278,6 +311,8 @@ def main() -> None:
     )
 
     def checkpoint(state):
+        state = {**state, "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
+                 "scenario_hash": scenario_hash}
         temporary = checkpoint_path.with_suffix(".tmp.pt")
         torch.save(state, temporary)
         temporary.replace(checkpoint_path)
@@ -303,6 +338,7 @@ def main() -> None:
         evaluation_phase=("composition" if phase_schedule[-1][0] == "composition" else "joint"),
     )
     _write_json(output / "evaluation.json", {
+        "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
         "trajectory_digest": evaluation_trace.digest(),
         "evaluation_phase": ("composition" if phase_schedule[-1][0] == "composition" else "joint"),
         "slots": rows,
@@ -314,11 +350,13 @@ def main() -> None:
         env.objective.spec, env.objective.references,
     )
     _write_json(output / "baselines.json", {
+        "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
         "trajectory_digest": evaluation_trace.digest(),
         "policies": baselines,
     })
     if phase_schedule[-1][0] == "composition":
         _write_json(output / "routing_baselines_same_placement.json", {
+            "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
             "trajectory_digest": evaluation_trace.digest(),
             "policies": _evaluate_routing_baselines(
                 scenario, evaluation_trace, args.mapping_samples, objective_spec

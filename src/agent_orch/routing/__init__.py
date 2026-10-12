@@ -1,5 +1,6 @@
 from .composition import CompositionCandidate, CompositionSolution, CompositionSolver
 from .physical import PhysicalRouter, PhysicalRouterConfig
+from .capacity import CapacityProportionalRouter
 
 __all__ = [
     "CompositionCandidate",
@@ -7,4 +8,5 @@ __all__ = [
     "CompositionSolver",
     "PhysicalRouter",
     "PhysicalRouterConfig",
+    "CapacityProportionalRouter",
 ]
