@@ -24,7 +24,7 @@ from agent_orch.objective import (
     ObjectiveValue,
     ReferenceScales,
 )
-from agent_orch.routing import PhysicalRouter
+from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.models import DeploymentDecision, RoutingDecision, Scenario
 from agent_orch.simulator import Simulator
 from agent_orch.workload import ArrivalTrace
@@ -94,7 +94,7 @@ class BaseOrchestrationEnv(gym.Env):
         self.planner = CapacityPlanner(scenario)
         self.simulator = Simulator(scenario, max_mapping_samples=mapping_samples)
         self.simulator.set_arrival_trace(arrival_trace)
-        self.physical_router = PhysicalRouter(scenario)
+        self.physical_router = CapacityProportionalRouter(scenario)
         self.deployment_library = resolve_deployment_library(
             scenario, deployment_library, deployment_library_path
         )

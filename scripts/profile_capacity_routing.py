@@ -10,10 +10,9 @@ from unittest.mock import patch
 
 from agent_orch.capacity import CapacityPlanner
 from agent_orch.performance import analytical
-from agent_orch.routing import CapacityProportionalRouter, PhysicalRouter
+from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.simulator import Simulator
 from agent_orch.schema.loader import ScenarioLoader
-import agent_orch.routing.physical as softmin
 
 
 def main():
@@ -22,7 +21,7 @@ def main():
     parser.add_argument("--mapping-samples", type=int, default=8)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rollout-slots", type=int, default=0,
-                        help="Also time one CPU model-selection episode per protocol")
+                        help="Also time one CPU model-selection episode")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -36,10 +35,9 @@ def main():
     report = {"scenario_hash": hashlib.sha256(args.scenario.read_bytes()).hexdigest(),
               "active_instances": sum(placement.llm_active.values()),
               "mapping_samples": args.mapping_samples, "timings": {}}
-    for name, router_type in (("legacy_softmin", PhysicalRouter),
-                              ("capacity_proportional", CapacityProportionalRouter)):
+    for name, router_type in (("capacity_proportional", CapacityProportionalRouter),):
         analytical._reference_llm_capacity_cached.cache_clear()
-        with patch.object(softmin, "evaluate_llm_instance", wraps=softmin.evaluate_llm_instance) as full, \
+        with patch.object(analytical, "evaluate_llm_instance", wraps=analytical.evaluate_llm_instance) as full, \
              patch.object(analytical, "two_mode_capacity", wraps=analytical.two_mode_capacity) as scans:
             router = router_type(scenario)
             start = perf_counter()
@@ -86,7 +84,7 @@ def profile_rollout(scenario, slots, mapping_samples):
     config = replace(PPOConfig().for_constraint_count(4), training_phase="composition",
                      gae_lambda=1., exploration_mode="none", shared_composition_head=True)
     results = {"trajectory_digest": trace.digest(), "ppo_seed": 0}
-    for method, replay in (("softmin", True), ("capacity_proportional", False)):
+    for method, replay in (("capacity_proportional", False),):
         analytical._reference_llm_capacity_cached.cache_clear()
         random.seed(0)
         np.random.seed(0)

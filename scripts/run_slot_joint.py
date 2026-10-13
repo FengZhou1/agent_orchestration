@@ -1,7 +1,7 @@
 """Train the slot-only, sequential deployment/model-routing experiment.
 
 The sampled trajectory is written before training and replayed from slot zero
-in every episode.  A distinct sampled trajectory is used only for evaluation.
+in every episode. Evaluation replays that exact saved training trajectory.
 Old stage_a/formal_v* results and checkpoints are incompatible with this run.
 """
 
@@ -26,18 +26,31 @@ from agent_orch.simulator import Simulator
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
 
-PROTOCOL = "slot_joint_v5"
+PROTOCOL = "slot_joint_v6"
 PHYSICAL_ROUTING = "capacity_proportional"
+EVALUATION_PROTOCOL = "training_trajectory_replay"
 
 
 def environment_options(manifest: dict) -> dict:
-    """Keep historical evaluation semantics explicit rather than relabeling it."""
+    """Reject obsolete protocols instead of rescoring them under different rules."""
     protocol = manifest.get("protocol")
-    if protocol in ("slot_joint_v3", "slot_joint_v4"):
-        return {"routing_method": "softmin", "replay_frozen_deployment_steps": True}
-    if protocol == PROTOCOL and manifest.get("physical_routing") == PHYSICAL_ROUTING:
+    if (protocol == PROTOCOL and manifest.get("physical_routing") == PHYSICAL_ROUTING
+            and manifest.get("evaluation_protocol") == EVALUATION_PROTOCOL):
         return {"routing_method": PHYSICAL_ROUTING, "replay_frozen_deployment_steps": False}
     raise ValueError("Unknown or inconsistent slot-joint routing protocol")
+
+
+def load_training_trajectory(run: Path, manifest: dict) -> SlotTrajectory:
+    """Load and integrity-check the one permitted policy-evaluation trajectory."""
+    environment_options(manifest)
+    trajectory = SlotTrajectory.from_dict(json.loads(
+        (run / "train_trajectory.json").read_text(encoding="utf-8")
+    ))
+    if (trajectory.digest() != manifest["trajectory_digest"]
+            or len(trajectory) != manifest["slots"]
+            or trajectory.seed != manifest["trajectory_seed"]):
+        raise ValueError("Saved training trajectory differs from its manifest")
+    return trajectory
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -87,6 +100,9 @@ def _evaluate_baselines(
     objective_spec, references,
     routing_method: str = PHYSICAL_ROUTING,
 ) -> dict[str, object]:
+    if routing_method != PHYSICAL_ROUTING:
+        raise ValueError("Only capacity_proportional physical routing is supported")
+    trajectory.validate_fixed_workload()
     results = {}
     for name in ("greedy", "equal", "least_load", "random"):
         previous = None
@@ -102,10 +118,9 @@ def _evaluate_baselines(
             baseline = make_policy(name, current, seed=trajectory.seed + slot)
             deployment = baseline.deployment()
             routing = baseline.routing(deployment, last_metrics)
-            if routing_method == PHYSICAL_ROUTING:
-                routing = CapacityProportionalRouter(current).route(
-                    deployment, routing.model_share, arrival_rates=simulator.current_arrival_rates()
-                )
+            routing = CapacityProportionalRouter(current).route(
+                deployment, routing.model_share, arrival_rates=simulator.current_arrival_rates()
+            )
             metrics = simulator.step(deployment, routing).metrics
             value = ObjectiveEvaluator(current, objective_spec, references).evaluate(
                 metrics,
@@ -252,13 +267,11 @@ def main() -> None:
     if args.resume:
         if not trajectory_path.exists() or not checkpoint_path.exists() or not manifest_path.exists():
             raise FileNotFoundError("Resume requires trajectory, manifest and checkpoint")
-        trajectory = SlotTrajectory.from_dict(
-            json.loads(trajectory_path.read_text(encoding="utf-8"))
-        )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("protocol") != PROTOCOL:
-            raise ValueError("Resume requires slot_joint_v5 capacity routing; use a new output directory")
+            raise ValueError(f"Resume requires {PROTOCOL}; use a new output directory")
         environment_options(manifest)
+        trajectory = load_training_trajectory(output, manifest)
         if manifest["scenario_hash"] != scenario_hash or manifest["trajectory_digest"] != trajectory.digest():
             raise ValueError("Scenario or trajectory changed since the checkpoint")
         if len(trajectory) != args.slots or trajectory.seed != args.trajectory_seed:
@@ -296,6 +309,7 @@ def main() -> None:
             "deployment_action": "one binary action per LLM candidate; one masked replica count per (tool, server) pool",
             "training": ", ".join(phase for phase, _ in phase_schedule),
             "physical_routing": PHYSICAL_ROUTING,
+            "evaluation_protocol": EVALUATION_PROTOCOL,
             "frozen_deployment_substeps": 0,
         })
     env = SlotSequentialJointEnv(
@@ -312,6 +326,7 @@ def main() -> None:
 
     def checkpoint(state):
         state = {**state, "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
+                 "evaluation_protocol": EVALUATION_PROTOCOL,
                  "scenario_hash": scenario_hash}
         temporary = checkpoint_path.with_suffix(".tmp.pt")
         torch.save(state, temporary)
@@ -327,10 +342,9 @@ def main() -> None:
     torch.save(policy.state_dict(), output / "policy.pt")
     _write_json(output / "history.json", history)
     _write_json(output / "fixed_baseline.json", env.baseline_report())
-    evaluation_trace = SlotTrajectory.sample(
-        scenario, args.slots, args.trajectory_seed + 1, variation
-    )
-    _write_json(output / "evaluation_trajectory.json", evaluation_trace.to_dict())
+    evaluation_trace = load_training_trajectory(output, json.loads(
+        manifest_path.read_text(encoding="utf-8")
+    ))
     policy.eval()
     rows = _evaluate(
         scenario, evaluation_trace, policy, args.mapping_samples,
@@ -339,6 +353,7 @@ def main() -> None:
     )
     _write_json(output / "evaluation.json", {
         "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
+        "evaluation_protocol": EVALUATION_PROTOCOL,
         "trajectory_digest": evaluation_trace.digest(),
         "evaluation_phase": ("composition" if phase_schedule[-1][0] == "composition" else "joint"),
         "slots": rows,
@@ -351,12 +366,14 @@ def main() -> None:
     )
     _write_json(output / "baselines.json", {
         "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
+        "evaluation_protocol": EVALUATION_PROTOCOL,
         "trajectory_digest": evaluation_trace.digest(),
         "policies": baselines,
     })
     if phase_schedule[-1][0] == "composition":
         _write_json(output / "routing_baselines_same_placement.json", {
             "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
+            "evaluation_protocol": EVALUATION_PROTOCOL,
             "trajectory_digest": evaluation_trace.digest(),
             "policies": _evaluate_routing_baselines(
                 scenario, evaluation_trace, args.mapping_samples, objective_spec

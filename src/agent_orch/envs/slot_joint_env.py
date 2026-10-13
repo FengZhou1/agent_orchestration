@@ -10,7 +10,7 @@ import gymnasium as gym
 from agent_orch.baselines import GreedyPolicy
 from agent_orch.capacity import CapacityPlanner
 from agent_orch.objective import ObjectiveEvaluator
-from agent_orch.routing import CapacityProportionalRouter, PhysicalRouter
+from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.models import NodeType, Scenario
 from agent_orch.simulator import Simulator
 from agent_orch.workload.slot_trajectory import SlotTrajectory
@@ -39,8 +39,9 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             raise ValueError("A nonempty trajectory for this scenario is required")
         self.base_scenario = scenario
         self.trajectory = trajectory
-        if routing_method not in ("capacity_proportional", "softmin"):
-            raise ValueError("Unknown physical routing method")
+        if routing_method != "capacity_proportional":
+            raise ValueError("Only capacity_proportional physical routing is supported")
+        trajectory.validate_fixed_workload()
         self.routing_method = routing_method
         self.replay_frozen_deployment_steps = replay_frozen_deployment_steps
         self._slot_routers: dict[int, Any] = {}
@@ -97,7 +98,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def restore_reward_state(self, state: dict[str, Any]) -> None:
         if state["trajectory_digest"] != self.trajectory.digest():
             raise ValueError("Checkpoint reward baseline belongs to a different trajectory")
-        if (state.get("routing_method", "softmin") != self.routing_method
+        if (state.get("routing_method") != self.routing_method
                 or state.get("replay_frozen_deployment_steps", True)
                 != self.replay_frozen_deployment_steps):
             raise ValueError("Checkpoint reward baseline uses a different routing protocol")
@@ -120,9 +121,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         self.planner = CapacityPlanner(slot_scenario)
         router = self._slot_routers.get(self._period_index)
         if router is None or router.scenario != slot_scenario:
-            router_type = (CapacityProportionalRouter
-                           if self.routing_method == "capacity_proportional" else PhysicalRouter)
-            router = router_type(slot_scenario)
+            router = CapacityProportionalRouter(slot_scenario)
             self._slot_routers[self._period_index] = router
         self.physical_router = router
         self.objective = ObjectiveEvaluator(

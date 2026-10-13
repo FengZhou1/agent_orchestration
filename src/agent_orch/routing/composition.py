@@ -25,7 +25,7 @@ from typing import Any, Callable, Mapping
 
 from agent_orch.objective import ObjectiveEvaluator
 from agent_orch.performance.analytical import evaluate_llm_instance
-from agent_orch.routing.physical import PhysicalRouter
+from agent_orch.routing.capacity import CapacityProportionalRouter
 from agent_orch.schema.models import ApplicationSpec, DeploymentDecision, NodeType, Scenario
 from agent_orch.simulator import Simulator
 from agent_orch.workload import ArrivalTrace
@@ -147,7 +147,7 @@ class CompositionSolver:
         # the two disagree on individual deployments and voids the comparison.
         self.scorer = scorer
         self.simulator = Simulator(scenario, max_mapping_samples=self.mapping_samples)
-        self.router = PhysicalRouter(scenario)
+        self.router = CapacityProportionalRouter(scenario)
         self.groups: tuple[tuple[str, str], ...] = tuple(
             (app.id, ingress)
             for app in scenario.applications.values()

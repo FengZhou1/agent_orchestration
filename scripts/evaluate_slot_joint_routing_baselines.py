@@ -15,15 +15,16 @@ from pathlib import Path
 
 from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
-from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
-from run_slot_joint import _evaluate_routing_baselines, _write_json, environment_options
+from run_slot_joint import (
+    _evaluate_routing_baselines, _write_json, environment_options,
+    load_training_trajectory, EVALUATION_PROTOCOL,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
-    parser.add_argument("--evaluation-seed", type=int, required=True)
     parser.add_argument("--mapping-samples", type=int, required=True)
     args = parser.parse_args()
     if args.mapping_samples <= 0:
@@ -35,17 +36,14 @@ def main() -> None:
     if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
         raise ValueError("Scenario changed since training")
     scenario = ScenarioLoader.load(scenario_path)
-    variation = SlotVariationSpec(**manifest["variation"])
-    trajectory = SlotTrajectory.sample(
-        scenario, manifest["slots"], args.evaluation_seed, variation
-    )
+    trajectory = load_training_trajectory(args.run, manifest)
     spec_fields = {field.name for field in fields(ObjectiveSpec)}
     objective = ObjectiveSpec(**{
         key: value for key, value in manifest["objective"].items()
         if key in spec_fields
     })
     output = args.run / (
-        f"routing_baselines_seed_{args.evaluation_seed}"
+        "routing_baselines_training_replay"
         f"_samples_{args.mapping_samples}.json"
     )
     if output.exists():
@@ -58,7 +56,8 @@ def main() -> None:
         "physical_routing": options["routing_method"],
         "scenario_hash": manifest["scenario_hash"],
         "trajectory_digest": trajectory.digest(),
-        "evaluation_seed": args.evaluation_seed,
+        "evaluation_protocol": EVALUATION_PROTOCOL,
+        "trajectory_seed": trajectory.seed,
         "mapping_samples": args.mapping_samples,
         "policies": results,
     })

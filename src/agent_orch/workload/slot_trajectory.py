@@ -21,9 +21,6 @@ from agent_orch.schema.models import NodeType, Scenario
 @dataclass(frozen=True)
 class SlotVariationSpec:
     arrival_range: tuple[float, float] = (0.6, 1.4)
-    flow_concentration: float = 40.0
-    prompt_range: tuple[float, float] = (0.8, 1.2)
-    output_range: tuple[float, float] = (0.8, 1.2)
     bandwidth_range: tuple[float, float] = (0.7, 1.0)
     cpu_range: tuple[float, float] = (0.8, 1.0)
     memory_range: tuple[float, float] = (0.8, 1.0)
@@ -33,14 +30,11 @@ class SlotVariationSpec:
 
     def validate(self) -> None:
         for name in (
-            "arrival_range", "prompt_range", "output_range",
-            "bandwidth_range", "cpu_range", "memory_range",
+            "arrival_range", "bandwidth_range", "cpu_range", "memory_range",
         ):
             low, high = getattr(self, name)
             if not 0.0 < low <= high:
                 raise ValueError(f"{name} must be positive and ordered")
-        if self.flow_concentration <= 0.0:
-            raise ValueError("flow_concentration must be positive")
         if not 0.0 <= self.gpu_unavailable_probability < 1.0:
             raise ValueError("gpu_unavailable_probability must lie in [0, 1)")
 
@@ -118,7 +112,20 @@ class SlotTrajectory:
             )
             for raw in payload["slots"]
         )
-        return SlotTrajectory(payload["scenario_id"], int(payload["seed"]), variation, slots)
+        trajectory = SlotTrajectory(payload["scenario_id"], int(payload["seed"]), variation, slots)
+        trajectory.validate_fixed_workload()
+        return trajectory
+
+    def validate_fixed_workload(self) -> None:
+        """Reject traces that change application token lengths or pattern probabilities."""
+        if not self.slots:
+            raise ValueError("A nonempty slot trajectory is required")
+        first = self.slots[0]
+        for snapshot in self.slots[1:]:
+            if (snapshot.flow_probabilities != first.flow_probabilities
+                    or snapshot.prompt_tokens != first.prompt_tokens
+                    or snapshot.output_tokens != first.output_tokens):
+                raise ValueError("Token lengths and pattern probabilities must stay fixed across slots")
 
     def digest(self) -> str:
         encoded = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
@@ -163,38 +170,19 @@ def _sample_snapshot(
     flows = {}
     prompts = {}
     outputs = {}
-    model_limits = {
-        model: min(config.max_model_len for config in base.llm_configs.values() if config.model == model)
-        for model in base.models
-    }
     for app_id, app in base.applications.items():
         arrivals[app_id] = {
             ingress: max(0.0, rate * _draw(rng, variation.arrival_range))
             for ingress, rate in app.ingress_rates.items()
         }
-        nonzero = [flow for flow in app.pattern_flows if flow.probability > 0.0]
-        sampled = rng.dirichlet(
-            np.asarray([flow.probability for flow in nonzero]) * variation.flow_concentration
-        )
-        flows[app_id] = {flow.id: 0.0 for flow in app.pattern_flows}
-        flows[app_id].update({flow.id: float(p) for flow, p in zip(nonzero, sampled)})
+        flows[app_id] = {flow.id: flow.probability for flow in app.pattern_flows}
         prompts[app_id] = {}
         outputs[app_id] = {}
         for node_id, node in app.nodes.items():
             if node.type is not NodeType.LLM:
                 continue
-            prompts[app_id][node_id] = {}
-            outputs[app_id][node_id] = {}
-            for model in base.models:
-                prompt = node.prompt_tokens[model] * _draw(rng, variation.prompt_range)
-                output = node.output_tokens[model] * _draw(rng, variation.output_range)
-                limit = model_limits[model]
-                if prompt + output > limit:
-                    scale = limit / (prompt + output)
-                    prompt *= scale
-                    output *= scale
-                prompts[app_id][node_id][model] = float(prompt)
-                outputs[app_id][node_id][model] = float(output)
+            prompts[app_id][node_id] = dict(node.prompt_tokens)
+            outputs[app_id][node_id] = dict(node.output_tokens)
     servers = {}
     for server_id, server in base.servers.items():
         gpu_count = server.gpu_count

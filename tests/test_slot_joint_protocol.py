@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from dataclasses import replace
 
 from agent_orch.agents.config import PPOConfig
@@ -35,10 +36,82 @@ def test_trajectory_replays_and_varies_between_slots():
     assert SlotTrajectory.from_dict(first.to_dict()).digest() == first.digest()
     assert first.slots[0].arrivals != first.slots[1].arrivals
     assert first.slots[0].link_capacity_mbps != first.slots[1].link_capacity_mbps
-    assert first.slots[0].prompt_tokens != first.slots[1].prompt_tokens
+    assert first.slots[0].prompt_tokens == first.slots[1].prompt_tokens
+    assert first.slots[0].output_tokens == first.slots[1].output_tokens
+    assert first.slots[0].flow_probabilities == first.slots[1].flow_probabilities
     assert first.slots[0].server_resources != first.slots[1].server_resources
     # SLOs are application contracts, and the physical topology is stable.
     assert first.scenario_at(0, scenario).applications[next(iter(scenario.applications))].slo == scenario.applications[next(iter(scenario.applications))].slo
+
+
+def test_fixed_workload_matches_base_exactly_and_rejects_tampered_slots(scenario):
+    trace = SlotTrajectory.sample(scenario, slots=3, seed=61)
+    for snapshot in trace.slots:
+        for app in scenario.applications.values():
+            assert snapshot.flow_probabilities[app.id] == {
+                flow.id: flow.probability for flow in app.pattern_flows
+            }
+            for node in app.nodes.values():
+                if node.type.value == "llm":
+                    assert snapshot.prompt_tokens[app.id][node.id] == node.prompt_tokens
+                    assert snapshot.output_tokens[app.id][node.id] == node.output_tokens
+    import copy
+    payload = copy.deepcopy(trace.to_dict())
+    app = next(iter(scenario.applications.values()))
+    node = next(node for node in app.nodes.values() if node.type.value == "llm")
+    model = next(iter(scenario.models))
+    payload["slots"][1]["prompt_tokens"][app.id][node.id][model] += 1
+    with pytest.raises(ValueError, match="stay fixed"):
+        SlotTrajectory.from_dict(payload)
+
+
+def test_evaluation_loads_only_saved_training_trajectory(scenario, tmp_path, monkeypatch):
+    import json
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from run_slot_joint import load_training_trajectory, PROTOCOL, PHYSICAL_ROUTING, EVALUATION_PROTOCOL
+    trace = SlotTrajectory.sample(scenario, slots=2, seed=71)
+    (tmp_path / "train_trajectory.json").write_text(json.dumps(trace.to_dict()), encoding="utf-8")
+    manifest = {"protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
+                "evaluation_protocol": EVALUATION_PROTOCOL,
+                "trajectory_digest": trace.digest(), "slots": 2, "trajectory_seed": 71}
+    def no_sampling(*args, **kwargs):
+        raise AssertionError("Evaluation must not sample another trajectory")
+    monkeypatch.setattr(SlotTrajectory, "sample", no_sampling)
+    assert load_training_trajectory(tmp_path, manifest).digest() == trace.digest()
+    with pytest.raises(ValueError, match="differs"):
+        load_training_trajectory(tmp_path, {**manifest, "trajectory_digest": "tampered"})
+
+
+def test_main_evaluates_training_trace_without_another_sampling_call(tmp_path, monkeypatch):
+    """Exercise the CLI plumbing with a mock trainer, not a training experiment."""
+    import json
+    import sys
+    from pathlib import Path
+    from agent_orch.agents import StructuredActorCritic
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import run_slot_joint
+    original = SlotTrajectory.sample
+    calls = []
+    def sample_once(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    def fake_train(env, **kwargs):
+        return StructuredActorCritic(env, kwargs["config"]), []
+    monkeypatch.setattr(SlotTrajectory, "sample", sample_once)
+    monkeypatch.setattr(run_slot_joint, "train_ppo", fake_train)
+    monkeypatch.setattr(sys, "argv", ["run_slot_joint.py", "--scenario", "configs/toy.yaml",
+        "--output", str(tmp_path), "--slots", "1", "--updates", "1",
+        "--route-updates", "1", "--deploy-updates", "0", "--mapping-samples", "2"])
+    run_slot_joint.main()
+    assert len(calls) == 1
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    evaluation = json.loads((tmp_path / "evaluation.json").read_text(encoding="utf-8"))
+    baselines = json.loads((tmp_path / "baselines.json").read_text(encoding="utf-8"))
+    assert manifest["trajectory_digest"] == evaluation["trajectory_digest"] == baselines["trajectory_digest"]
+    assert evaluation["evaluation_protocol"] == run_slot_joint.EVALUATION_PROTOCOL
+    assert not (tmp_path / "evaluation_trajectory.json").exists()
 
 
 def test_joint_substeps_and_previous_episode_slot_reward():

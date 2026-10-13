@@ -119,9 +119,9 @@ def _run_library_deployments(
             for ingress in app.ingress_rates
             for model in scenario.models
         }
-        from agent_orch.routing import PhysicalRouter
+        from agent_orch.routing import CapacityProportionalRouter
 
-        router = PhysicalRouter(scenario)
+        router = CapacityProportionalRouter(scenario)
         routing = router.route(deployment, uniform, None, arrival_rates)
         values = []
         for period in range(periods):

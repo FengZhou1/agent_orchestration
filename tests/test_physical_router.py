@@ -1,4 +1,4 @@
-from agent_orch.routing import PhysicalRouter
+from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.models import SlotMetrics
 
 
@@ -28,7 +28,7 @@ def test_physical_router_preserves_model_and_service_probabilities(scenario):
         for ingress in app.ingress_rates:
             model_share[(app.id, ingress, "small")] = 0.6
             model_share[(app.id, ingress, "large")] = 0.4
-    routing = PhysicalRouter(scenario).route(deployment, model_share, _metrics())
+    routing = CapacityProportionalRouter(scenario).route(deployment, model_share, _metrics())
 
     for app in scenario.applications.values():
         for ingress in app.ingress_rates:
@@ -42,7 +42,7 @@ def test_physical_router_preserves_model_and_service_probabilities(scenario):
                 assert abs(small_sum - 0.6) < 1.0e-7
 
 
-def test_llm_router_reduces_share_for_a_more_utilized_instance(scenario):
+def test_capacity_router_ignores_historical_instance_utilization(scenario):
     from agent_orch.capacity import CapacityPlanner
 
     deployment = CapacityPlanner(scenario).initial_deployment()
@@ -56,7 +56,8 @@ def test_llm_router_reduces_share_for_a_more_utilized_instance(scenario):
         for candidate_ingress in candidate_app.ingress_rates
         for model in scenario.models
     }
-    routing = PhysicalRouter(scenario).route(
+    router = CapacityProportionalRouter(scenario)
+    routing = router.route(
         deployment,
         model_share,
         _metrics({"small-n0": 0.9, "small-n2": 0.0}),
@@ -64,4 +65,7 @@ def test_llm_router_reduces_share_for_a_more_utilized_instance(scenario):
     llm_node = next(node for node in app.nodes.values() if node.type.value == "llm")
     loaded = routing.llm_share[(app.id, ingress, llm_node.id, "small-n0")]
     idle = routing.llm_share[(app.id, ingress, llm_node.id, "small-n2")]
-    assert loaded < idle
+    total_capacity = router.reference_capacities["small-n0"] + router.reference_capacities["small-n2"]
+    assert abs(loaded - router.reference_capacities["small-n0"] / total_capacity) < 1e-7
+    assert abs(loaded + idle - 1.0) < 1e-7
+    assert routing == router.route(deployment, model_share, _metrics())

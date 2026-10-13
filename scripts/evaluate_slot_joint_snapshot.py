@@ -1,4 +1,4 @@
-"""Evaluate a running slot-joint checkpoint on the fixed held-out trajectory.
+"""Evaluate a slot-joint checkpoint by replaying its saved training trajectory.
 
 This is a diagnostic read of an atomic checkpoint; it does not modify the
 training process or its reward baseline. Snapshot scores are not used to update
@@ -20,11 +20,10 @@ from agent_orch.agents import PPOConfig, StructuredActorCritic
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
-from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
 from run_slot_joint import (
     _evaluate, _evaluate_baselines, _evaluate_routing_baselines,
-    _write_json, environment_options,
+    _write_json, environment_options, load_training_trajectory, EVALUATION_PROTOCOL,
 )
 
 
@@ -36,8 +35,6 @@ def main() -> None:
                         help="Evaluation fidelity; defaults to the training value")
     parser.add_argument("--policy-snapshot", type=Path,
                         help="Evaluate saved snapshot weights instead of the latest checkpoint")
-    parser.add_argument("--evaluation-seed", type=int,
-                        help="Held-out trajectory seed; defaults to training seed plus one")
     args = parser.parse_args()
 
     manifest = json.loads((args.run / "manifest.json").read_text(encoding="utf-8"))
@@ -46,14 +43,7 @@ def main() -> None:
     if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
         raise ValueError("Scenario changed since training")
     scenario = ScenarioLoader.load(scenario_path)
-    variation = SlotVariationSpec(**manifest["variation"])
-    evaluation_seed = (
-        args.evaluation_seed
-        if args.evaluation_seed is not None else manifest["trajectory_seed"] + 1
-    )
-    trajectory = SlotTrajectory.sample(
-        scenario, manifest["slots"], evaluation_seed, variation
-    )
+    trajectory = load_training_trajectory(args.run, manifest)
     spec_fields = {field.name for field in fields(ObjectiveSpec)}
     objective = ObjectiveSpec(**{
         key: value for key, value in manifest["objective"].items()
@@ -70,8 +60,10 @@ def main() -> None:
     checkpoint = torch.load(checkpoint_source, map_location="cpu", weights_only=False)
     if checkpoint.get("protocol", manifest["protocol"]) != manifest["protocol"]:
         raise ValueError("Checkpoint and run use different routing protocols")
-    if manifest["protocol"] == "slot_joint_v5" and checkpoint.get("physical_routing") != options["routing_method"]:
+    if checkpoint.get("physical_routing") != options["routing_method"]:
         raise ValueError("Capacity-routing snapshot is missing its routing provenance")
+    if checkpoint.get("trajectory_digest") != trajectory.digest():
+        raise ValueError("Policy snapshot belongs to a different training trajectory")
     if (checkpoint.get("scenario_hash") is not None
             and checkpoint["scenario_hash"] != manifest["scenario_hash"]):
         raise ValueError("Policy snapshot belongs to a different scenario")
@@ -98,7 +90,8 @@ def main() -> None:
         "evaluation_phase": evaluation_phase,
         "checkpoint_next_update": update,
         "checkpoint_source": str(checkpoint_source),
-        "evaluation_seed": evaluation_seed,
+        "evaluation_protocol": EVALUATION_PROTOCOL,
+        "trajectory_seed": trajectory.seed,
         "policy_source_trajectory_digest": checkpoint.get("trajectory_digest"),
         "mapping_samples": mapping_samples,
         "trajectory_digest": trajectory.digest(),
@@ -119,11 +112,8 @@ def main() -> None:
                 scenario, trajectory, mapping_samples, objective, env.objective.references,
                 routing_method=options["routing_method"],
             )
-    seed_suffix = (
-        f"_seed_{evaluation_seed}" if args.evaluation_seed is not None else ""
-    )
     output = args.run / (
-        f"snapshot_update_{update:03d}_samples_{mapping_samples}{seed_suffix}.json"
+        f"snapshot_update_{update:03d}_samples_{mapping_samples}.json"
     )
     policy_output = output.with_suffix(".pt")
     if output.exists() or policy_output.exists():

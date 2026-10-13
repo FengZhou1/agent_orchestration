@@ -8,7 +8,7 @@ import pytest
 from agent_orch.capacity import CapacityPlanner
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.performance import analytical
-from agent_orch.routing import CapacityProportionalRouter, PhysicalRouter
+from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.models import NodeType, SlotMetrics
 from agent_orch.simulator import Simulator
 from agent_orch.workload import SlotTrajectory
@@ -189,18 +189,25 @@ def test_frozen_deployment_shortcut_matches_replay_and_reuses_slot_router(scenar
         assert a["metrics"] == b["metrics"]
     fast.reset(seed=999)
     assert fast.physical_router is router
-    legacy = SlotSequentialJointEnv(scenario, trace, mapping_samples=8,
-                                   routing_method="softmin", replay_frozen_deployment_steps=True)
-    legacy_state = legacy.reward_state()
+    legacy_state = {**fast.reward_state(), "routing_method": "removed_method"}
     with pytest.raises(ValueError, match="routing protocol"):
         fast.restore_reward_state(legacy_state)
 
 
-def test_old_manifest_keeps_softmin_and_new_manifest_requires_capacity_marker():
+def test_only_current_capacity_protocol_is_supported(scenario):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from run_slot_joint import environment_options
-    assert environment_options({"protocol": "slot_joint_v4"}) == {
-        "routing_method": "softmin", "replay_frozen_deployment_steps": True}
-    assert environment_options({"protocol": "slot_joint_v5", "physical_routing": "capacity_proportional"})["routing_method"] == "capacity_proportional"
+    from run_slot_joint import environment_options, PROTOCOL, EVALUATION_PROTOCOL
+    manifest = {"protocol": PROTOCOL, "physical_routing": "capacity_proportional",
+                "evaluation_protocol": EVALUATION_PROTOCOL}
+    assert environment_options(manifest)["routing_method"] == "capacity_proportional"
     with pytest.raises(ValueError):
-        environment_options({"protocol": "slot_joint_v5", "physical_routing": "softmin"})
+        environment_options({"protocol": "slot_joint_v4"})
+    with pytest.raises(ValueError):
+        environment_options({**manifest, "physical_routing": "removed_method"})
+    with pytest.raises(ValueError, match="Only capacity_proportional"):
+        SlotSequentialJointEnv(scenario, SlotTrajectory.sample(scenario, 1, 0),
+                               routing_method="removed_method")
+    from run_slot_joint import _evaluate_baselines
+    with pytest.raises(ValueError, match="Only capacity_proportional"):
+        _evaluate_baselines(scenario, SlotTrajectory.sample(scenario, 1, 0), 1, None, None,
+                            routing_method="removed_method")
