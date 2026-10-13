@@ -94,13 +94,19 @@ class PatternFlow:
     probability: float
     final_node: str
     chains: tuple[tuple[str, ...], ...]
+    graph_nodes: tuple[str, ...] = ()
+    graph_edges: tuple[tuple[str, str], ...] = ()
 
     @property
     def nodes(self) -> tuple[str, ...]:
+        if self.graph_nodes:
+            return self.graph_nodes
         return tuple(dict.fromkeys(node for chain in self.chains for node in chain))
 
     @property
     def edges(self) -> tuple[tuple[str, str], ...]:
+        if self.graph_nodes:
+            return self.graph_edges
         edges: list[tuple[str, str]] = []
         for chain in self.chains:
             edges.extend(zip(chain[:-1], chain[1:]))
@@ -134,6 +140,10 @@ class ApplicationSpec:
     family: str = "unspecified"
     template_id: str = "unspecified"
     length_class: str = "unspecified"
+    exit_data_by_flow: dict[str, dict[str, float]] = field(default_factory=dict)
+
+    def exit_payload(self, flow_id: str, model: str) -> float:
+        return self.exit_data_by_flow.get(flow_id, self.exit_data_mb)[model]
 
     def visit_probability(self, node_id: str) -> float:
         return sum(

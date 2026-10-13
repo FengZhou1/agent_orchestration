@@ -46,6 +46,8 @@ def export_catalogs(scenario_path: str | Path, output: str | Path) -> None:
                         "probability": flow.probability,
                         "final_node": flow.final_node,
                         "chains": [list(chain) for chain in flow.chains],
+                        "graph_nodes": list(flow.graph_nodes),
+                        "graph_edges": [list(edge) for edge in flow.graph_edges],
                     }
                     for flow in app.pattern_flows
                 ],

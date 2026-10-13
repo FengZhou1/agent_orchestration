@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import itertools
+import networkx as nx
 
 from agent_orch.schema.models import (
     DeploymentDecision,
@@ -286,19 +287,23 @@ class WorkflowEvaluator:
                 return perf.response_s if perf is not None else overload
             return result.tool_delay.get((node.tool or "", server), overload)
 
-        prefix_delays: list[float] = []
-        for chain in flow.chains:
-            first = location(chain[0])
-            delay = overload if not first else self._path_delay(ingress, first, result)
-            for source, target in zip(chain[:-1], chain[1:]):
-                delay += node_response(source)
-                source_server, target_server = location(source), location(target)
-                if not source_server or not target_server:
-                    delay += overload
-                else:
-                    delay += self._path_delay(source_server, target_server, result)
-            prefix_delays.append(delay)
-        critical_prefix = max(prefix_delays, default=overload)
+        graph = nx.DiGraph()
+        graph.add_nodes_from(flow.nodes)
+        graph.add_edges_from(flow.edges)
+        starts = {}
+        completions = {}
+        for node_id in nx.lexicographical_topological_sort(graph):
+            destination = location(node_id)
+            parents = list(graph.predecessors(node_id))
+            if not parents:
+                starts[node_id] = overload if not destination else self._path_delay(ingress, destination, result)
+            else:
+                starts[node_id] = max(completions[parent] + (
+                    self._path_delay(location(parent), destination, result)
+                    if location(parent) and destination else overload
+                ) for parent in parents)
+            completions[node_id] = starts[node_id] + node_response(node_id)
+        critical_prefix = starts[flow.final_node]
         final_server = location(flow.final_node)
         final_candidate = mapping.get(flow.final_node, ("", None))[1]
         final_perf = result.llm_performance.get(
@@ -316,7 +321,7 @@ class WorkflowEvaluator:
             final_server, ingress, result
         )
         output_tokens = max(1.0, app.nodes[flow.final_node].output_tokens[model])
-        token_data = app.exit_data_mb[model] / output_tokens
+        token_data = app.exit_payload(flow.id, model) / output_tokens
         first_token_return = overload if not final_server else self._first_token_delay(
             final_server, ingress, token_data
         )
@@ -324,26 +329,7 @@ class WorkflowEvaluator:
         for node in app.nodes.values():
             if node.type is not NodeType.LLM or node.id == flow.final_node or node.id not in flow.nodes:
                 continue
-            prefixes: list[float] = []
-            for chain in flow.chains:
-                if node.id not in chain:
-                    continue
-                index = chain.index(node.id)
-                prefix = chain[: index + 1]
-                first_server = location(prefix[0])
-                delay = overload if not first_server else self._path_delay(
-                    ingress, first_server, result
-                )
-                for source, target in zip(prefix[:-1], prefix[1:]):
-                    delay += node_response(source)
-                    source_server, target_server = location(source), location(target)
-                    delay += overload if not source_server or not target_server else self._path_delay(
-                        source_server, target_server, result
-                    )
-                delay += node_response(node.id)
-                prefixes.append(delay)
-            if prefixes:
-                stage_times[node.id] = max(prefixes)
+            stage_times[node.id] = completions[node.id]
         return (
             critical_prefix + final_response + exit_delay,
             critical_prefix + final_ttft + first_token_return,
@@ -503,7 +489,7 @@ class WorkflowEvaluator:
     ) -> float:
         app = self.scenario.applications[app_id]
         output_tokens = max(1.0, app.nodes[final_node].output_tokens[model])
-        token_data = app.exit_data_mb[model] / output_tokens
+        token_data = app.exit_payload(flow_id, model) / output_tokens
         distribution = result.node_server_distribution.get(
             (app_id, ingress, model, flow_id, final_node), {}
         )

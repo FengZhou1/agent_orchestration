@@ -2,7 +2,7 @@
 
 当前主线为 **slot_joint_v6**：仅容量比例物理路由、token与分支概率跨时隙固定、评价重放保存的训练轨迹。入口为 [run_slot_joint.py](scripts/run_slot_joint.py)，流程见[时隙协议](docs/slot_joint_protocol_2026-09-23.md)，参数来源与待办见[参数登记表](docs/experiment_parameter_register_2026-10-13.md)。
 
-> 2026-10-13：Softmin实现和专用槽跳变诊断脚本已删除；旧v3–v5检查点不能续接或用本入口重新评分。历史结果与未提交的独立探针原文件保留，不作为当前实验结论。大规模随机应用池和联合token生成目前仅完成规则设计，尚未接入生成器；Toy/Main配置仅用于代码验证。
+> 2026-10-13：Softmin实现和专用槽跳变诊断已删除；旧v3–v5检查点不能续接或重新评分。概率扩展式应用池和联合token生成器现已实现，支持紧凑DAG与固定嵌套子集，详见[生成器说明](docs/agent_generator.md)。现有生成与接口检查不代表正式PPO或真实服务效果。
 
 ## 1. 训练与评价流程
 
@@ -89,6 +89,22 @@ python scripts/evaluate_slot_joint_routing_baselines.py `
 
 运行目录只有一条train_trajectory.json。manifest记录协议、场景/轨迹摘要、PPO种子、训练设置和evaluation_protocol=training_trajectory_replay。checkpoint.pt供恢复，policy.pt为最终权重，history及评价/基线JSON记录实际过程；仅有checkpoint不表示训练完成。结果、原始数据、权重被Git忽略。
 
-正式实验仍需随机应用池生成器、工具文本48–5,000 token与历史/预算联合生成、参数冻结，以及网络时间单位修正。网络修正本轮只给方案，未改性能代码；slot_seconds=1为旧占位值，不是1秒完成部署的声明。vLLM动态chunk与现有固定chunk解析也仍待校验。
+随机应用池、工具文本与历史/预算联合生成已实现；正式参数冻结、网络时间单位修正与vLLM动态chunk解析兼容仍待完成。slot_seconds=1是旧占位值，不是1秒完成部署的声明。生成器示例继承指定基础场景的硬件/模型配置，不能当作新的真实profile。
+
+## 6. 生成固定应用池
+
+```powershell
+python scripts/generate_agent_pool.py `
+  --infrastructure configs/benchmarks/main_abilene.yaml `
+  --config configs/agent_generator.yaml `
+  --output results/generated_agent_pool --subsets 20,50,100,200
+
+python scripts/rebind_agent_tools.py `
+  --pool results/generated_agent_pool/pool.json `
+  --infrastructure configs/benchmarks/main_abilene.yaml `
+  --tool-counts 20,50,100,200 --output results/generated_tool_scale
+```
+
+生成器不调用真实LLM、不训练策略、不输出教师动作。使用生成的applications_N.yaml作为run_slot_joint.py的--scenario；所有场景独立训练，同一场景的token和概率跨槽固定。正式跑前仍须处理上述模型/单位与参数待办。测试新生成器时在第2节的taskTests列表追加tests/test_agent_generator.py（提交后该文件会由git ls-files自动列入）。
 
 旧部署库、内层求解器、蒸馏和矩阵脚本不是主流程。删除的源码及专用诊断可从Git历史或修改前恢复点找回；未提交旧探针未改动，但其Softmin依赖已不受支持。

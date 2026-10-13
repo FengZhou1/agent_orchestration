@@ -1034,7 +1034,7 @@ class AnalyticalBackend:
                                 server,
                                 ingress,
                                 rate * probability,
-                                app.exit_data_mb[model],
+                                app.exit_payload(flow.id, model),
                             )
                         for source, target in flow.edges:
                             data_mb = app.edge_data_mb.get((model, source, target), 0.0)

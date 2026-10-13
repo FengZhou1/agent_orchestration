@@ -40,6 +40,11 @@ class ScenarioLoader:
         with Path(path).open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle)
 
+        return ScenarioLoader.from_mapping(raw)
+
+    @staticmethod
+    def from_mapping(raw: dict[str, Any]) -> Scenario:
+
         servers = {item["id"]: ServerSpec(**item) for item in raw["servers"]}
         links = tuple(LinkSpec(**item) for item in raw["links"])
         models = {item["id"]: ModelSpec(**item) for item in raw["models"]}
@@ -70,7 +75,9 @@ class ScenarioLoader:
                     id=flow["id"],
                     probability=float(flow["probability"]),
                     final_node=flow["final_node"],
-                    chains=tuple(tuple(chain) for chain in flow["chains"]),
+                    chains=tuple(tuple(chain) for chain in flow.get("chains", ())),
+                    graph_nodes=tuple(flow.get("graph_nodes", ())),
+                    graph_edges=tuple(tuple(edge) for edge in flow.get("graph_edges", ())),
                 )
                 for flow in item["pattern_flows"]
             )
@@ -94,6 +101,8 @@ class ScenarioLoader:
                 family=str(item.get("family", "unspecified")),
                 template_id=str(item.get("template_id", "unspecified")),
                 length_class=str(item.get("length_class", "unspecified")),
+                exit_data_by_flow={f: {m: float(v) for m, v in payload.items()}
+                                   for f, payload in item.get("exit_data_by_flow", {}).items()},
             )
 
         simulation_payload = dict(raw.get("simulation", {}))
@@ -193,6 +202,19 @@ class ScenarioLoader:
             if abs(total_probability - 1.0) > 1e-9:
                 raise ValueError(f"Pattern-flow probabilities of {app.id} do not sum to one")
             for flow in app.pattern_flows:
+                if flow.id in app.exit_data_by_flow and set(app.exit_data_by_flow[flow.id]) != set(scenario.models):
+                    raise ValueError("Pattern output payload lacks model entries")
+                if not flow.nodes or flow.final_node not in flow.nodes:
+                    raise ValueError("Pattern must contain its final response node")
+                if any(node not in app.nodes for node in flow.nodes):
+                    raise ValueError("Unknown node in a pattern")
+                if any(u not in flow.nodes or v not in flow.nodes for u, v in flow.edges):
+                    raise ValueError("Pattern edge references a missing node")
+                if flow.graph_nodes and flow.chains:
+                    chain_nodes = set(node for chain in flow.chains for node in chain)
+                    chain_edges = set(edge for chain in flow.chains for edge in zip(chain[:-1], chain[1:]))
+                    if chain_nodes != set(flow.graph_nodes) or chain_edges != set(flow.graph_edges):
+                        raise ValueError("Explicit graph and legacy chains disagree")
                 if flow.final_node not in app.nodes:
                     raise ValueError(f"Unknown final node {flow.final_node}")
                 if app.nodes[flow.final_node].type is not NodeType.LLM:
