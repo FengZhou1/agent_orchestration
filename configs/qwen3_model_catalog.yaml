@@ -1,0 +1,51 @@
+# Pinned primary metadata read on 2026-10-14; no model weights downloaded.
+# weight_bytes is total_size in model.safetensors.index.json, not rounded B*2.
+models:
+  - id: qwen3-4b
+    repo: Qwen/Qwen3-4B
+    revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    parameter_count: 4022468096
+    weight_bytes: 8044936192
+    layers: 36
+    hidden_size: 2560
+    kv_heads: 8
+    head_dim: 128
+    max_position_embeddings: 40960
+    config_sha256: 8ba006f74fecfaaeb392872a60f4a480e7ec9860153d2e1b769ec81f9a147f8a
+    weights_index_sha256: 6dc0981b8829fead746441f68f38f24c5ca4a3a66351f652c26c6df0efc43ab2
+  - id: qwen3-8b
+    repo: Qwen/Qwen3-8B
+    revision: b968826d9c46dd6066d109eabc6255188de91218
+    parameter_count: 8190735360
+    weight_bytes: 16381470720
+    layers: 36
+    hidden_size: 4096
+    kv_heads: 8
+    head_dim: 128
+    max_position_embeddings: 40960
+    config_sha256: f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30
+    weights_index_sha256: f9fdbcb91c23971c13ec5d5f2573d2349e8f61f2f049371ec699281748fdb1bc
+  - id: qwen3-14b
+    repo: Qwen/Qwen3-14B
+    revision: 40c069824f4251a91eefaf281ebe4c544efd3e18
+    parameter_count: 14768307200
+    weight_bytes: 29536614400
+    layers: 40
+    hidden_size: 5120
+    kv_heads: 8
+    head_dim: 128
+    max_position_embeddings: 40960
+    config_sha256: e73c3664ca09b10a673fef0c22e8a6b456201d49bd4713c9691f775720e8857a
+    weights_index_sha256: 62d7ad35757bae5e7baa452cb1483178b7daa50e869e923226b8da10871f7ebc
+  - id: qwen3-32b
+    repo: Qwen/Qwen3-32B
+    revision: 9216db5781bf21249d130ec9da846c4624c16137
+    parameter_count: 32762123264
+    weight_bytes: 65524246528
+    layers: 64
+    hidden_size: 5120
+    kv_heads: 8
+    head_dim: 128
+    max_position_embeddings: 40960
+    config_sha256: 97e295b63283935788fac5e4f8860862a56d4089538cafc93f0431f2ebe483bb
+    weights_index_sha256: bed42c6c55274bc08a1f616bceb3bcb84b3f02cb6584c573bd18c6519291ecd0

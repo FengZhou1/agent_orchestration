@@ -103,7 +103,7 @@ def test_main_evaluates_training_trace_without_another_sampling_call(tmp_path, m
     monkeypatch.setattr(run_slot_joint, "train_ppo", fake_train)
     monkeypatch.setattr(sys, "argv", ["run_slot_joint.py", "--scenario", "configs/toy.yaml",
         "--output", str(tmp_path), "--slots", "1", "--updates", "1",
-        "--route-updates", "1", "--deploy-updates", "0", "--mapping-samples", "2"])
+        "--route-updates", "1", "--deploy-updates", "0", "--mapping-samples", "2", "--smoke"])
     run_slot_joint.main()
     assert len(calls) == 1
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))

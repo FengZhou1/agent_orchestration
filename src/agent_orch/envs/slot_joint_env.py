@@ -41,7 +41,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         self.trajectory = trajectory
         if routing_method != "capacity_proportional":
             raise ValueError("Only capacity_proportional physical routing is supported")
-        trajectory.validate_fixed_workload()
+        trajectory.validate_against(scenario)
         self.routing_method = routing_method
         self.replay_frozen_deployment_steps = replay_frozen_deployment_steps
         self._slot_routers: dict[int, Any] = {}
@@ -52,7 +52,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             snapshot.apply(scenario).max_tool_replica_limit()
             for snapshot in trajectory.slots))
         self._working_share = np.zeros(
-            (sum(len(app.ingress_rates) for app in scenario.applications.values()),
+            (sum(sum(rate > 0 for rate in app.ingress_rates.values()) for app in scenario.applications.values()),
              len(scenario.models)), dtype=np.float64
         )
         self._previous_round: dict[int, dict[str, float]] = {}

@@ -28,6 +28,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-orch-sim")
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run")
+    run.add_argument("--legacy-smoke", action="store_true",
+                     help="Explicit retired stationary-trace diagnostic, not the main experiment")
     run.add_argument("--scenario", required=True)
     run.add_argument(
         "--policy",
@@ -39,12 +41,14 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--output", default="results")
     run.add_argument("--arrival-scale", type=float, default=1.0)
     train = subparsers.add_parser("train")
+    train.add_argument("--legacy-smoke", action="store_true",
+                       help="Explicit retired environment diagnostic, not slot_joint_v7")
     train.add_argument("--scenario", required=True)
     train.add_argument("--updates", type=int, default=10)
     train.add_argument("--rollout-steps", type=int, default=256)
     train.add_argument("--rollout-periods", type=int, default=16)
-    train.add_argument("--update-epochs", type=int, default=10)
-    train.add_argument("--minibatch-size", type=int, default=256)
+    train.add_argument("--update-epochs", type=int, default=3)
+    train.add_argument("--minibatch-size", type=int, default=32)
     train.add_argument("--mapping-samples", type=int, default=128)
     train.add_argument(
         "--periods", "--max-slots", dest="periods", type=int, default=600,
@@ -53,9 +57,9 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--seed", type=int, default=7)
     train.add_argument("--potential-shaping", dest="potential_shaping", action="store_true")
     train.add_argument("--no-potential-shaping", dest="potential_shaping", action="store_false")
-    train.set_defaults(potential_shaping=True)
+    train.set_defaults(potential_shaping=False)
     train.add_argument(
-        "--exploration", choices=["rnd", "none"], default="rnd"
+        "--exploration", choices=["rnd", "none"], default="none"
     )
     train.add_argument("--unconstrained", action="store_true")
     train.add_argument("--mode", choices=["joint", "deploy", "route"], default="joint")
@@ -133,7 +137,11 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    args = _parser().parse_args()
+    parser = _parser()
+    args = parser.parse_args()
+    if not args.legacy_smoke:
+        parser.error("This console interface is a retired diagnostic. Use scripts/run_slot_joint.py "
+                     "with the registered scenario/profile; --legacy-smoke is not a paper run.")
     if args.command == "run":
         return _run(args)
     if args.command == "train":

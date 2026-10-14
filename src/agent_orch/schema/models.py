@@ -60,10 +60,10 @@ class LLMConfigSpec:
     load_cost: float = 0.0
     gpu_type: str = "generic"
     dtype: str = "bfloat16"
-    gpu_memory_utilization: float = 0.9
+    gpu_memory_utilization: float = 0.92
     max_model_len: int = 32768
-    max_num_batched_tokens: int = 8192
-    max_num_seqs: int = 128
+    max_num_batched_tokens: int = 2048
+    max_num_seqs: int = 256
     chunked_prefill: bool = True
     prefix_cache: bool = False
 
@@ -169,9 +169,9 @@ class SimulationSpec:
     switch_amortization_s: float = 60.0
     prefill_chunk_tokens: int = 512
     overload_delay_s: float = 60.0
-    # The slot is the decision step and the only clock: arrival intensity may vary
-    # per slot, cost accrues per slot, and deployment is re-decided per slot (or
-    # held by T^dep). There is no separate orchestration period.
+    # Slot indexes the exogenous state. Communication uses a separate fixed
+    # measurement window; cost is a rate with fixed switch amortization. Neither
+    # is multiplied by slot_seconds. There is no orchestration-period clock.
 
 
 

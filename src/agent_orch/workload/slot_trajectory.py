@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
+import math
 from typing import Any
 
 import numpy as np
@@ -130,6 +131,42 @@ class SlotTrajectory:
     def digest(self) -> str:
         encoded = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def validate_against(self, base: Scenario) -> None:
+        """Fixed values must match the base, not merely match the first slot."""
+        self.validate_fixed_workload()
+        if self.scenario_id != base.id:
+            raise ValueError("Trajectory belongs to a different scenario")
+        expected_flows = {a.id: {f.id: f.probability for f in a.pattern_flows}
+                          for a in base.applications.values()}
+        expected_prompt = {a.id: {n.id: n.prompt_tokens for n in a.nodes.values() if n.type is NodeType.LLM}
+                           for a in base.applications.values()}
+        expected_output = {a.id: {n.id: n.output_tokens for n in a.nodes.values() if n.type is NodeType.LLM}
+                           for a in base.applications.values()}
+        for snapshot in self.slots:
+            if (snapshot.flow_probabilities != expected_flows or
+                    snapshot.prompt_tokens != expected_prompt or snapshot.output_tokens != expected_output):
+                raise ValueError("Trajectory token lengths or probabilities differ from the base scenario")
+            if (set(snapshot.arrivals) != set(base.applications) or
+                    set(snapshot.server_resources) != set(base.servers) or
+                    len(snapshot.link_capacity_mbps) != len(base.links)):
+                raise ValueError("Trajectory application/server/link layout differs from base")
+            for a in base.applications.values():
+                rates = snapshot.arrivals[a.id]
+                if set(rates) != set(a.ingress_rates) or any(
+                    not math.isfinite(r) or r < 0 or ((r > 0) != (a.ingress_rates[n] > 0))
+                    for n, r in rates.items()):
+                    raise ValueError("Trajectory changed the fixed positive-ingress support")
+            for n, s in base.servers.items():
+                resources = snapshot.server_resources[n]
+                if (set(resources) != {"cpu_cores", "memory_gb", "gpu_count"} or
+                    not math.isfinite(resources["cpu_cores"]) or resources["cpu_cores"] < 1 or
+                    not math.isfinite(resources["memory_gb"]) or resources["memory_gb"] <= 0 or
+                    not 0 <= resources["gpu_count"] <= s.gpu_count or
+                    (self.variation.gpu_unavailable_probability == 0 and resources["gpu_count"] != s.gpu_count)):
+                    raise ValueError("Trajectory contains invalid resources or changed GPU inventory")
+            if any(not math.isfinite(c) or c <= 0 for c in snapshot.link_capacity_mbps):
+                raise ValueError("Trajectory has invalid bandwidth")
 
     @staticmethod
     def sample(

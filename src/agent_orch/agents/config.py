@@ -21,20 +21,21 @@ class PPOConfig:
     # composition and deployment share one trajectory now.  A numeric value keeps
     # the one-step bandit form as an explicit ablation.
     composition_gamma: float | None = None
-    gae_lambda: float = 0.95
+    gae_lambda: float = 1.0
     deployment_gae_lambda: float = 1.0
     clip_ratio: float = 0.2
-    learning_rate: float = 3.0e-4
-    composition_learning_rate: float = 3.0e-4
-    update_epochs: int = 10
-    minibatch_size: int = 256
+    learning_rate: float = 1.0e-4
+    composition_learning_rate: float = 1.0e-4
+    update_epochs: int = 3
+    minibatch_size: int = 32
     entropy_coefficient: float = 0.01
     composition_entropy_coefficient: float = 0.0001
     composition_concentration_min: float = 1.0
-    shared_composition_head: bool = False
+    shared_composition_head: bool = True
     value_coefficient: float = 0.5
     max_grad_norm: float = 0.5
-    hidden_size: int = 128
+    hidden_size: int = 256
+    hidden_layers: int = 4
     constrained: bool = True
     constraint_limits: tuple[float, float] = (0.0, 0.0)
     lagrangian_learning_rates: tuple[float, float] = (
@@ -49,8 +50,8 @@ class PPOConfig:
         50.0,
         50.0,
     )
-    shaping_coefficient: float = 1.0
-    exploration_mode: Literal["rnd", "none", "icm"] = "rnd"
+    shaping_coefficient: float = 0.0
+    exploration_mode: Literal["rnd", "none", "icm"] = "none"
     rnd_feature_size: int = 64
     rnd_learning_rate: float = 1.0e-4
     rnd_initial_weight: float = 0.01

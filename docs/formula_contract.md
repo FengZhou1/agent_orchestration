@@ -1,6 +1,6 @@
 # 论文公式与代码实现对应关系
 
-系统模型与算法以当前 ACM 主稿 `latex/ACM_Conference_Proceedings_Primary_Article_Template__1_/sections/` 为准。训练主入口为 `slot_joint_v5`；历史实现条目须结合下面的当前算法接线读取。
+系统模型与算法以当前 ACM 主稿 `latex/ACM_Conference_Proceedings_Primary_Article_Template__1_/sections/` 为准。当前训练主入口为`slot_joint_v7`，参数以`experiment_parameter_register_2026-10-13.md`为准、机器配置为`configs/experiment_settings.yaml`。固定网络计量窗口、成本率和完成请求应用等权时延见`metric_conventions_2026-10-14.md`；历史条目须结合最新接线读取，不用于恢复旧默认值。
 
 | 论文对象 | 代码实现 | 量纲或约束 |
 |---|---|---|

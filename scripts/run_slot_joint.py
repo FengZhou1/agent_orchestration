@@ -8,7 +8,7 @@ Old stage_a/formal_v* results and checkpoints are incompatible with this run.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
@@ -16,10 +16,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from agent_orch.agents import PPOConfig, StructuredActorCritic, train_ppo
+from agent_orch.agents import StructuredActorCritic, train_ppo
 from agent_orch.baselines import make_policy
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec
+from agent_orch.parameters import (
+    DEFAULT_SETTINGS, audit_scenario, load_settings, make_ppo_config,
+    require_consistent, require_formal_ready, settings_receipt,
+)
 from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
@@ -51,6 +55,11 @@ def load_training_trajectory(run: Path, manifest: dict) -> SlotTrajectory:
             or trajectory.seed != manifest["trajectory_seed"]):
         raise ValueError("Saved training trajectory differs from its manifest")
     return trajectory
+
+
+def checkpoint_trajectory_digest(checkpoint):
+    """Earlier v7 callbacks placed the digest inside environment_reward_state."""
+    return checkpoint.get("trajectory_digest") or checkpoint.get("environment_reward_state", {}).get("trajectory_digest")
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -224,30 +233,65 @@ def _evaluate_routing_baselines(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", default="configs/toy.yaml")
+    parser.add_argument("--scenario", required=True)
+    parser.add_argument("--settings", default=str(DEFAULT_SETTINGS))
+    parser.add_argument("--smoke", action="store_true",
+                        help="Explicit non-paper diagnostic; permits toy or declared runtime overrides")
+    parser.add_argument("--formal", action="store_true",
+                        help="Require the parameter register to be author-frozen")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--slots", type=int, default=8)
-    parser.add_argument("--updates", type=int, default=10)
+    parser.add_argument("--slots", type=int)
+    parser.add_argument("--updates", type=int, required=True,
+                        help="Explicit training budget; no unconfirmed formal episode default")
     parser.add_argument("--route-updates", type=int, default=None,
-                        help="Model-selection warm-up updates; default one quarter")
+                        help="Model-selection warm-up updates; defaults to registered phase ratio")
     parser.add_argument("--deploy-updates", type=int, default=None,
-                        help="Deployment-only updates with frozen model selection; default one quarter")
+                        help="Deployment-only updates; defaults to registered phase ratio")
     parser.add_argument("--seed", type=int, default=0, help="PPO random seed")
     parser.add_argument("--trajectory-seed", type=int, default=101)
     parser.add_argument("--variation", help="JSON file with SlotVariationSpec fields")
-    parser.add_argument("--mapping-samples", type=int, default=128)
+    parser.add_argument("--mapping-samples", type=int)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--update-epochs", type=int, default=3)
-    parser.add_argument("--minibatch-size", type=int, default=128)
-    parser.add_argument("--exploration", choices=("none", "rnd", "icm"), default="none")
+    parser.add_argument("--update-epochs", type=int)
+    parser.add_argument("--minibatch-size", type=int)
+    parser.add_argument("--hidden-size", type=int)
+    parser.add_argument("--hidden-layers", type=int)
+    parser.add_argument("--exploration", choices=("none",), default="none")
     parser.add_argument("--shared-model-head", action="store_true",
                         help="Share one model-selection head across (application, ingress) groups")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
+    settings = load_settings(args.settings)
+    if args.formal:
+        if args.smoke:
+            raise ValueError("Formal and smoke modes are mutually exclusive")
+        require_formal_ready(settings)
+    args.slots = args.slots if args.slots is not None else settings["training"]["slots"]
+    args.mapping_samples = (args.mapping_samples if args.mapping_samples is not None
+                            else settings["training"]["mapping_samples"])
+    args.update_epochs = (args.update_epochs if args.update_epochs is not None
+                          else settings["ppo"]["update_epochs"])
+    args.minibatch_size = (args.minibatch_size if args.minibatch_size is not None
+                           else settings["ppo"]["minibatch_size"])
+    args.hidden_size = args.hidden_size if args.hidden_size is not None else settings["ppo"]["hidden_size"]
+    args.hidden_layers = args.hidden_layers if args.hidden_layers is not None else settings["ppo"]["hidden_layers"]
+    if not args.smoke and any(getattr(args, key) != settings["ppo"][key] for key in
+                             ("update_epochs", "minibatch_size", "hidden_size", "hidden_layers")):
+        raise ValueError("Runtime PPO overrides require explicit --smoke or an updated settings profile")
+    if args.shared_model_head and not settings["ppo"]["shared_composition_head"] and not args.smoke:
+        raise ValueError("Model-head override requires --smoke or an updated settings profile")
+    config = make_ppo_config(settings, training_phase="joint", exploration_mode="none",
+        update_epochs=args.update_epochs, minibatch_size=args.minibatch_size,
+        hidden_size=args.hidden_size, hidden_layers=args.hidden_layers,
+        shared_composition_head=(args.shared_model_head or settings["ppo"]["shared_composition_head"]),
+        composition_group_relative_advantages=False, factorized_credit=False)
     if args.slots <= 0 or args.updates <= 0 or args.mapping_samples <= 0:
         raise ValueError("slots, updates and mapping-samples must be positive")
-    route_updates = args.route_updates if args.route_updates is not None else (max(1, args.updates // 4) if args.updates >= 3 else 0)
-    deploy_updates = args.deploy_updates if args.deploy_updates is not None else (max(1, args.updates // 4) if args.updates >= 3 else 0)
+    ratio = settings["training"]["phase_ratio"]
+    route_updates = args.route_updates if args.route_updates is not None else (
+        max(1, int(args.updates * ratio[0] / sum(ratio))) if args.updates >= 3 else 0)
+    deploy_updates = args.deploy_updates if args.deploy_updates is not None else (
+        max(1, int(args.updates * ratio[1] / sum(ratio))) if args.updates >= 3 else 0)
     joint_updates = args.updates - route_updates - deploy_updates
     if route_updates < 0 or deploy_updates < 0 or joint_updates < 0:
         raise ValueError("Stage update counts must be nonnegative and total no more than updates")
@@ -261,26 +305,35 @@ def main() -> None:
         "minibatch_size": args.minibatch_size,
         "exploration": args.exploration,
         "phase_schedule": manifest_phase_schedule,
+        "shared_model_head": config.shared_composition_head,
+        "ppo_config": config.to_dict(),
+        "parameter_receipt": settings_receipt(settings),
+        "smoke": args.smoke,
     }
-    if args.shared_model_head:
-        training_settings["shared_model_head"] = True
+    # JSON reload turns dataclass tuples into lists. Compare the same canonical
+    # representation on resume instead of rejecting every fresh checkpoint.
+    training_settings = json.loads(json.dumps(training_settings))
     output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
     scenario_path = Path(args.scenario)
     scenario = ScenarioLoader.load(scenario_path)
+    parameter_audit = audit_scenario(scenario, settings)
+    if not args.smoke:
+        require_consistent(parameter_audit)
+        if scenario.metadata.get("parameter_receipt") != settings_receipt(settings):
+            raise ValueError("Scenario provenance differs from the current parameter profile; regenerate "
+                             "using the saved pool, not the old infrastructure template")
     scenario_hash = hashlib.sha256(scenario_path.read_bytes()).hexdigest()
     variation = (
         SlotVariationSpec(**json.loads(Path(args.variation).read_text(encoding="utf-8")))
-        if args.variation else SlotVariationSpec()
+        if args.variation else SlotVariationSpec(**settings["variation"])
     )
     variation.validate()
     # All four model objectives remain visible while SLO attainment is also an
     # explicit constraint.  Weights/target are placeholders pending calibration.
-    objective_spec = replace(
-        ObjectiveSpec.slo_constrained(attainment_target=0.9),
-        quality_weight=0.25, goodput_weight=0.25,
-        network_utilization_target=0.9,
-    )
+    objective_spec = ObjectiveSpec(**settings["objective"])
+    if not args.smoke and asdict(variation) != asdict(SlotVariationSpec(**settings["variation"])):
+        raise ValueError("Trajectory overrides require --smoke or an updated settings profile")
+    output.mkdir(parents=True, exist_ok=True)
     trajectory_path = output / "train_trajectory.json"
     checkpoint_path = output / "checkpoint.pt"
     manifest_path = output / "manifest.json"
@@ -321,6 +374,10 @@ def main() -> None:
             "ppo_seed": args.seed,
             "objective": objective_spec.to_dict(),
             "training_settings": training_settings,
+            "ppo_config": config.to_dict(),
+            "parameter_receipt": settings_receipt(settings),
+            "parameter_status": "smoke" if args.smoke else settings["status"],
+            "pending_parameters": settings["pending"],
             "reward": "same-slot previous-episode four-component difference minus absolute constraint penalty",
             "constraint_accounting": "one absolute constraint vector per completed physical slot",
             "first_episode_reference": "deterministic greedy policy on train trajectory",
@@ -332,22 +389,18 @@ def main() -> None:
             "evaluation_protocol": EVALUATION_PROTOCOL,
             "frozen_deployment_substeps": 0,
         })
+        _write_json(output / "parameter_audit.json", parameter_audit)
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=args.mapping_samples,
         seed=args.seed, objective=objective_spec,
-    )
-    config = replace(
-        PPOConfig(), training_phase="joint", exploration_mode=args.exploration,
-        update_epochs=args.update_epochs, minibatch_size=args.minibatch_size,
-        gae_lambda=1.0, deployment_gae_lambda=1.0,
-        shaping_coefficient=0.0, composition_group_relative_advantages=False,
-        factorized_credit=False, shared_composition_head=args.shared_model_head,
     )
 
     def checkpoint(state):
         state = {**state, "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
                  "evaluation_protocol": EVALUATION_PROTOCOL,
-                 "scenario_hash": scenario_hash}
+                 "scenario_hash": scenario_hash, "trajectory_digest": trajectory.digest(),
+                 "ppo_config": config.to_dict()}
+        state["parameter_receipt"] = settings_receipt(settings)
         temporary = checkpoint_path.with_suffix(".tmp.pt")
         torch.save(state, temporary)
         temporary.replace(checkpoint_path)

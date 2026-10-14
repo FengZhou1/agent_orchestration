@@ -7,3 +7,4 @@
 - Results, checkpoints and raw datasets remain ignored and outside this recovery mechanism. Changes to those assets require their own scoped backup.
 - `git recover` previews restoration to the latest checkpoint; `git recover --apply` saves a rescue checkpoint and restores working files. HEAD and the index stay unchanged.
 - The full recovery guide is `../../GIT_RECOVERY.md`. Use the current source and protocol rather than historical results in the parent overview.
+- Current parameter authority: `docs/experiment_parameter_register_2026-10-13.md`, executable companion `configs/experiment_settings.yaml`, generator distribution `configs/agent_generator.yaml`, pinned models `configs/qwen3_model_catalog.yaml`. Main scenarios come from `build_registered_scenarios.py`; Abilene/GEANT and old GPU fixtures are historical only. Candidate values are authorized for pre-experiments, not frozen formal runs. Do not silently remove the `pending` gate or add unconfirmed scale points.

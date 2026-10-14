@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.parameters import DEFAULT_SETTINGS, load_settings, audit_scenario, require_consistent, settings_receipt
+from agent_orch.workload.infrastructure import build_infrastructure
 from agent_orch.workload.agent_pool import (
     GeneratorConfig, generate_pool, digest, pool_statistics, scenario_mapping,
 )
@@ -17,8 +19,11 @@ from agent_orch.workload.agent_pool import (
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--infrastructure", type=Path, required=True,
-                        help="Existing scenario supplying servers/models/configs; its applications/tools are replaced")
+    parser.add_argument("--infrastructure", type=Path,
+                        help="Optional registered infrastructure; otherwise build a random edge network")
+    parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
+    parser.add_argument("--legacy-smoke", action="store_true",
+                        help="Explicit compatibility diagnostic, not a registered experiment")
     parser.add_argument("--config", type=Path, default=Path("configs/agent_generator.yaml"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--applications", type=int)
@@ -40,7 +45,11 @@ def main():
         raise ValueError("All subset sizes must fit in the fixed pool")
     if args.output.exists():
         raise FileExistsError("Choose a new output directory; generated data is not overwritten")
-    template = ScenarioLoader.load(args.infrastructure)
+    settings = load_settings(args.settings)
+    template = (ScenarioLoader.load(args.infrastructure) if args.infrastructure
+                else build_infrastructure(settings))
+    if not args.legacy_smoke:
+        require_consistent(audit_scenario(template, settings, infrastructure_only=True))
     def progress(iteration, statistics):
         p = statistics["input"]
         o = statistics["output"]
@@ -66,8 +75,10 @@ def main():
             "application_ids": list(reloaded.applications), "actual_tool_types": len(reloaded.tools),
             "statistics": pool_statistics(pool.applications[:n], reloaded.tools)}
     manifest = {"pool_digest": pool_digest, "generator_config": asdict(config),
-        "infrastructure_source": str(args.infrastructure.resolve()),
-        "infrastructure_sha256": hashlib.sha256(args.infrastructure.read_bytes()).hexdigest(),
+        "infrastructure_source": str(args.infrastructure.resolve()) if args.infrastructure else "registered_random_network",
+        "infrastructure_sha256": (hashlib.sha256(args.infrastructure.read_bytes()).hexdigest()
+                                  if args.infrastructure else digest(scenario_mapping(template))),
+        "parameter_receipt": settings_receipt(settings), "legacy_smoke": args.legacy_smoke,
         "validation": validation, "scenarios": scenarios,
         "generator_source_sha256": {str(path.relative_to(Path(__file__).resolve().parents[1])):
             hashlib.sha256(path.read_bytes()).hexdigest() for path in [Path(__file__).resolve(),

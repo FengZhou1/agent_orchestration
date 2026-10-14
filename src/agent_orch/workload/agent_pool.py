@@ -75,7 +75,10 @@ class GeneratorConfig:
     tool_service_rate_rps: tuple[float, float] = (2., 8.)
     tool_running_cost: float = .05
     tool_start_cost: float = .1
-    nontext_return_mb: tuple[float, float] = (0., 2.)
+    tool_cpu_cost_per_s: float | None = .02
+    tool_memory_cost_per_gb_s: float | None = .001
+    tool_start_cost_ratio_s: float | None = .1
+    nontext_return_mb: tuple[float, float] = (2., 10.)
     text_bytes_per_token: float = 4.
     application_rate_rps: tuple[float, float] = (.005, .02)
     ingress_probability: float = .3
@@ -83,13 +86,17 @@ class GeneratorConfig:
     ttft_s_range: tuple[float, float] = (2., 20.)
     tbt_s_range: tuple[float, float] = (.02, .2)
     deadline_s_range: tuple[float, float] = (20., 180.)
-    quality_range: tuple[float, float] = (.35, .98)
+    quality_range: tuple[float, float] = (.4, .95)
     quality_noise: float = .1
     quality_base: float = .58
     quality_size_gain: float = .24
     calibration_passes: int = 20
 
     def validate(self):
+        prices = (self.tool_cpu_cost_per_s, self.tool_memory_cost_per_gb_s,
+                  self.tool_start_cost_ratio_s)
+        if any(v is not None for v in prices) and any(v is None or v < 0 for v in prices):
+            raise ValueError("Resource-based tool pricing requires all three nonnegative coefficients")
         if self.applications < 1 or self.tool_types < 1:
             raise ValueError("Application and tool counts must be positive")
         if not (0 <= self.pure_fraction <= .1 and 0 <= self.shared_fraction <= 1
@@ -250,8 +257,12 @@ def bind_tools(applications, template, cfg, uniform_profile=False):
                      else trng.uniform(*cfg.tool_service_rate_rps))
         memory = float(sum(cfg.tool_memory_gb) / 2 if uniform_profile
                        else trng.uniform(*cfg.tool_memory_gb))
+        running = (cfg.tool_cpu_cost_per_s + memory * cfg.tool_memory_cost_per_gb_s
+                   if cfg.tool_cpu_cost_per_s is not None else cfg.tool_running_cost)
+        start = (running * cfg.tool_start_cost_ratio_s
+                 if cfg.tool_start_cost_ratio_s is not None else cfg.tool_start_cost)
         tools[name] = ToolSpec(name, 1, memory, {n: rate for n in template.servers},
-                              1., cfg.tool_running_cost, cfg.tool_start_cost)
+                              1., running, start)
     return tools, {"private_owners": owners, "shared_tools": shared,
                    "profile_mode": "uniform" if uniform_profile else "heterogeneous"}
 
@@ -362,6 +373,9 @@ class ApplicationPool:
         scene = replace(template, id=f"agent-pool-{self.config.seed}-a{count}-h{len(used)}-{variant_key}",
             applications=apps, tools={t: self.tools[t] for t in sorted(used)},
             metadata={"infrastructure_template_metadata": template.metadata,
+                "parameter_receipt": template.metadata.get("parameter_receipt"),
+                "generator_config": asdict(self.config),
+                "raw_pattern_details_required": True,
                 "role": "synthetic-generator-validation", "quality_status": "synthetic proxy",
                 "slo_status": "declared synthetic ranges",
                 "generator_version": GENERATOR_VERSION, "pool_seed": self.config.seed,

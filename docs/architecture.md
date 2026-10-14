@@ -1,5 +1,7 @@
 # 代码结构（2026-09-20 重构后）
 
+> **2026-10-14 当前入口优先**：参数依据是`experiment_parameter_register_2026-10-13.md`，执行配置为`configs/experiment_settings.yaml`；主流程是随机网络/应用池与`run_slot_joint.py`，不使用Abilene/GEANT、蒸馏、ICM/RND或验证集。`parameters.py`与`workload/infrastructure.py`负责统一参数与随机网络。下文是旧模块地图，其中历史训练流程不作为当前协议；最新见README和`slot_joint_protocol_2026-09-23.md`。
+
 本次重构把实验流水线拆成职责单一的模块，并新增三个此前缺失的能力：**可审计的目标函数**、**离线分层可行部署库**、**TensorBoard + SwanLab 双写记录**。
 
 `gym_env.py` 与 `structured_ppo.py` 退化为转发层，历史导入路径全部保留。
@@ -188,4 +190,3 @@ Dirichlet 头的浓度被 `_concentrations` 夹在 `[minimum, max(100, 2*minimum
 求解器的目标经常是近似 one-hot 的（把全部份额给最强模型），因此会**超出这个上限**。门禁报告里的 `dirichlet_ceiling` 段会统计"有多少组的目标超出上限"以及最差超出量——这部分差距是**构造上不可达的**，不是学习失败。toy 场景实测最差超出 +0.0099，与"策略比最优低 0.4%"完全吻合。
 
 如果后续要缩小这个差距，正确的做法是放宽 `_concentrations` 的上夹（会同时加宽探索），而不是把门禁阈值放宽。
-

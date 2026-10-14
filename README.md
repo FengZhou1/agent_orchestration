@@ -1,110 +1,114 @@
 # Agentic 应用的边缘 LLM–无状态服务联合编排实验
 
-当前主线为 **slot_joint_v7**：容量比例路由、固定工作负载、训练轨迹重放；固定网络计量窗口、成本率、仅完成请求的应用等权时延。入口为 [run_slot_joint.py](scripts/run_slot_joint.py)，流程见[时隙协议](docs/slot_joint_protocol_2026-09-23.md)，来源与修正见[计算口径记录](docs/metric_conventions_2026-10-14.md)。旧v6权重不续训或重评分。
+当前主线为 **slot_joint_v7**。参数以[当前登记表](docs/experiment_parameter_register_2026-10-13.md)为依据，统一机器配置为[experiment_settings.yaml](configs/experiment_settings.yaml)，另引用[图/工具分布](configs/agent_generator.yaml)与[固定版本模型清单](configs/qwen3_model_catalog.yaml)。主流程不再继承Abilene、GEANT或旧GPU档案。
 
-> 2026-10-13：Softmin实现和专用槽跳变诊断已删除；旧v3–v5检查点不能续接或重新评分。概率扩展式应用池和联合token生成器现已实现，支持紧凑DAG与固定嵌套子集，详见[生成器说明](docs/agent_generator.md)。现有生成与接口检查不代表正式PPO或真实服务效果。
+用户允许候选用于预实验，正式训练仍须确认。未冻结项由`pending`列出，`--formal`会拒绝启动。新网络、GPU效率、非KV显存、价格、传播时间映射均是显式合成假设，不是实测数据。接线与验收边界见[全参数核对记录](docs/parameter_alignment_2026-10-14.md)。
 
-## 1. 训练与评价流程
+## 1. 训练与评价
 
-只有物理时隙t。训练前采样一次轨迹，保存为train_trajectory.json；每个episode从槽0重放。到达率、带宽、可用CPU/内存可以跨槽变化；图结构、pattern概率、各LLM节点输入输出token、质量和SLO固定。
+每回合从槽0重放同一条预采样轨迹。到达率、带宽、可用CPU/内存可以跨槽变化；图、pattern概率、token代表值、工具绑定、质量及SLO固定。每槽从空部署表顺序确定LLM候选开关、工具池整数副本数，再逐正到达率的(应用,接入节点)进行请求级模型选择，最后计算容量比例物理路由、完整工作流指标和共同奖励。切换费用仍与上一槽最终部署比较，不表示真实服务每槽全部重启。
 
-每槽依次顺序部署LLM候选与工具副本，再逐(应用,接入节点)确定请求级模型选择比例，之后计算容量比例路由并评价一次完整工作流。同一请求的各LLM阶段使用同一模型。部署/模型子步不推进物理时间；从空表构造当期方案，不表示实际服务每槽全部重启，切换费用仍与上一槽最终部署比较。
-
-LLM在在线、可达、正容量同模型实例之间按参考容量分配；工具按副本数乘单副本处理率分配。空支持集标为不可服务，不用均匀路由补齐。四项效用与上一回合同槽比较，首轮使用固定贪心参照；惩罚使用当前绝对违约量。
-
-| 阶段 | 更新分支 | 另一类决策 |
+| 阶段 | 更新分支 | 另一分支 |
 |---|---|---|
-| composition | 模型选择 | 安装各槽固定、多样可行部署，不调用部署actor |
+| composition | 模型选择 | 安装各槽固定多样部署，不调用部署actor |
 | deployment | 部署 | 模型选择冻结，采用Dirichlet均值 |
-| joint | 两分支 | 依次产生动作，共同更新 |
+| joint | 两分支 | 顺序决策并共同更新 |
 
---route-updates、--deploy-updates及剩余预算决定阶段。随机初始化，无教师或蒸馏权重，贪心只作奖励参照。当前需求/资源合成扰动范围为到达率U(0.6,1.4)、带宽U(0.7,1.0)、CPU/内存U(0.8,1.0)，尚未实测标定。token与pattern概率直接复制基础配置，不再通过随机扰动或大Dirichlet浓度近似固定。
+保持两个条件化actor/critic分支、共同槽末差分效用、当前绝对违约惩罚及首轮固定贪心参照。无教师、蒸馏或ICM/RND。所有场景独立随机初始化，不从最大规模续训。同一请求的各LLM阶段使用同一模型；物理路由仅容量比例，不含Softmin。
 
-评价直接读取保存的训练轨迹并核对摘要；不生成evaluation_trajectory.json，没有额外评价种子。策略与基线使用相同轨迹及评价精度，结果属于训练场景内评价，不作为未见场景泛化证据。
+评价读取保存的`train_trajectory.json`并核对摘要，不生成另一条评价轨迹。结果是训练场景内评价，不作为未见场景泛化证据。指标口径见[时隙协议](docs/slot_joint_protocol_2026-09-23.md)和[计算口径记录](docs/metric_conventions_2026-10-14.md)：固定网络计量窗口、成本率、仅完成请求的应用等权时延；无完成请求时延为null，另报完成/失败率。
 
 ## 2. 安装与测试
 
-在仓库目录执行：
+在本仓库执行：
 
 ```powershell
 conda env create -f environment.yml
 conda activate agent-orch
 python -m pip install -e ".[rl,dev,plot]"
-# 当前Git管理的正式测试，不运行未提交的旧Softmin探针。
+$env:PYTHONIOENCODING='utf-8'
 $taskTests = @(git ls-files -- 'tests/test_*.py')
 python -m pytest @taskTests
 ```
 
-已有环境时跳过创建。未editable安装时先设PYTHONPATH为src。Windows绘图前应激活环境以加载DLL路径。
+已有环境时跳过创建。未editable安装时先设`$env:PYTHONPATH='src'`。测试列表不包含未提交的旧Softmin探针；其文件未被本轮修改。
 
-## 3. 运行示例
+## 3. 一次应用池、多网络、嵌套子集
 
-以下为功能验证，不是冻结的正式参数，输出须为新目录：
+当前表中候选服务器点为10/20/30/40/50，默认20；未自动加入128台或改成40台主场景。生成器不调用真实LLM、不训练策略、不按PPO或SLO成绩筛图。
 
 ```powershell
-python scripts/run_slot_joint.py `
-  --scenario configs/toy.yaml --output results/slot_joint_v7_toy_01 `
-  --slots 2 --updates 2 --route-updates 1 --deploy-updates 0 `
-  --trajectory-seed 101 --seed 0 --mapping-samples 2 --device cpu
+python scripts/build_registered_scenarios.py `
+  --servers 10,20,30,40,50 --subsets 20,50,100,200 `
+  --output results/registered_scenarios
+
+python scripts/audit_registered_parameters.py `
+  --scenario results/registered_scenarios/servers_20_applications_50.yaml
 ```
 
-主场景模型选择诊断仍使用现有配置，不代表随机应用池已构建：
+从一个固定池保留图、pattern、token、SLO、质量、工具绑定和每应用总请求率，仅显式映射不同网络的入口、工具服务器率。更多入口不自动增加总负载。更换网络时不会重新抽图或缩短token；保存每个子集的真实使用工具数，不能把闲置目录计入规模。
+
+输出含`pool.json`、各网络`infrastructure_nN.yaml`、可训练的`servers_N_applications_A.yaml`、逐场景审计JSON和manifest。用`--pool <saved pool.json>`可复用池，不重复生成结构/长度；输出目录须为新目录，不覆盖已有结果。生成后的实际分位数和拒绝率必须复核，不能只引用提案分布。
+
+单网络接口仍可用：
 
 ```powershell
-python scripts/run_slot_joint.py `
-  --scenario configs/benchmarks/main_abilene.yaml `
-  --output results/slot_joint_v7_capacity_s0 `
-  --slots 8 --updates 120 --route-updates 120 --deploy-updates 0 `
-  --trajectory-seed 101 --seed 0 --mapping-samples 8 `
-  --update-epochs 3 --minibatch-size 128 `
-  --shared-model-head --exploration none --device cpu
-```
-
-完整三阶段试跑可设--updates 12 --route-updates 4 --deploy-updates 4，剩余4次为联合更新。不同正式场景独立随机初始化，不从最大规模续训。中断后--resume仅用于同目录、场景、轨迹、种子、协议和训练配置，包括原定总更新数和阶段划分；不支持直接修改总更新数后无损延长。
-
-## 4. 快照评价与基线
-
-训练结束自动生成evaluation.json与baselines.json；模型选择单阶段另生成同部署的routing_baselines_same_placement.json。额外快照诊断仍重放训练轨迹：
-
-```powershell
-python scripts/evaluate_slot_joint_snapshot.py `
-  --run results/<run-directory> --mapping-samples 128 --baselines
-
-python scripts/evaluate_slot_joint_routing_baselines.py `
-  --run results/<run-directory> --mapping-samples 128
-```
-
-输出已存在时报错，不静默覆盖。比较时核对场景与训练轨迹摘要、映射精度、部署条件及更新数。提高映射样本数只改变数值评价精度，不产生新业务轨迹。旧v4专用绘图脚本仅处理历史文件。
-
-## 5. 文件与边界
-
-| 文件 | 用途 |
-|---|---|
-| src/agent_orch/workload/slot_trajectory.py | 固定工作负载、可变需求/资源的轨迹 |
-| src/agent_orch/envs/slot_joint_env.py | 顺序部署、模型选择、同槽反馈 |
-| src/agent_orch/routing/capacity.py | 唯一物理路由实现 |
-| src/agent_orch/agents/ | 两个actor/critic分支、PPO及乘子 |
-| scripts/profile_capacity_routing.py | 容量路由计时及容量扫描统计 |
-| docs/experiment_parameter_register_2026-10-13.md | 参数、联合长度规则与待办 |
-
-运行目录只有一条train_trajectory.json。manifest记录协议、场景/轨迹摘要、PPO种子、训练设置和evaluation_protocol=training_trajectory_replay。checkpoint.pt供恢复，policy.pt为最终权重，history及评价/基线JSON记录实际过程；仅有checkpoint不表示训练完成。结果、原始数据、权重被Git忽略。
-
-随机应用池、联合长度生成与本轮计算口径修正已实现；正式参数冻结及固定chunk实机实现/验证仍待完成。slot_seconds不影响通信或成本率，也不是动作生效时长。生成器示例继承基础场景的硬件/模型配置，不能当作新的真实profile。
-
-## 6. 生成固定应用池
-
-```powershell
-python scripts/generate_agent_pool.py `
-  --infrastructure configs/benchmarks/main_abilene.yaml `
-  --config configs/agent_generator.yaml `
-  --output results/generated_agent_pool --subsets 20,50,100,200
-
+python scripts/generate_agent_pool.py --output results/one_network_pool
 python scripts/rebind_agent_tools.py `
-  --pool results/generated_agent_pool/pool.json `
-  --infrastructure configs/benchmarks/main_abilene.yaml `
-  --tool-counts 20,50,100,200 --output results/generated_tool_scale
+  --pool results/registered_scenarios/pool.json `
+  --infrastructure results/registered_scenarios/infrastructure_n10.yaml `
+  --tool-counts 20,50,100,200 --output results/tool_scale
 ```
 
-生成器不调用真实LLM、不训练策略、不输出教师动作。使用生成的applications_N.yaml作为run_slot_joint.py的--scenario；所有场景独立训练，同一场景的token和概率跨槽固定。正式跑前仍须处理上述模型/单位与参数待办。测试新生成器时在第2节的taskTests列表追加tests/test_agent_generator.py（提交后该文件会由git ls-files自动列入）。
+工具重绑定的基础网络必须与保存池兼容，或先用多网络构建器显式映射。其默认统一工具profile用于隔离种类数/复用的作用。
 
-旧部署库、内层求解器、蒸馏和矩阵脚本不是主流程。删除的源码及专用诊断可从Git历史或修改前恢复点找回；未提交旧探针未改动，但其Softmin依赖已不受支持。
+## 4. 预实验训练
+
+以下是功能试跑，不是正式收敛预算：
+
+```powershell
+python scripts/run_slot_joint.py `
+  --scenario results/registered_scenarios/servers_20_applications_50.yaml `
+  --output results/registered_trial_s0 --updates 12 `
+  --route-updates 4 --deploy-updates 4 --trajectory-seed 101 --seed 0 --device cpu
+```
+
+主入口统一读取预实验候选：4层×256、两个分支学习率1e-4、PPO小批量32、epoch3、共享条件化模型选择头、跨槽gamma0.99、当前GAE1。32槽、映射128和阶段比例1:1:2也只是登记候选。总更新数必须明确给出，没有自动决定的正式训练预算。
+
+toy和运行时学习参数覆盖必须显式标记为`--smoke`：
+
+```powershell
+python scripts/run_slot_joint.py --scenario configs/toy.yaml `
+  --output results/toy_smoke --slots 1 --updates 3 `
+  --route-updates 1 --deploy-updates 1 --mapping-samples 2 `
+  --hidden-size 32 --hidden-layers 2 --update-epochs 1 --minibatch-size 32 --smoke
+```
+
+启动前检查数值与结构，旧Abilene或引擎参数冲突会阻止主运行。审计不会把人工/运行时/实机核验项伪装成自动通过。恢复仅限同目录、场景、轨迹、种子、协议、完整配置和原定阶段/总预算，参数来源摘要不同会拒绝`--resume`。
+
+## 5. 评价与记录
+
+训练结束自动生成`evaluation.json`和`baselines.json`；纯模型选择阶段另有同部署基线。快照诊断仍重放训练轨迹，网络结构从训练manifest恢复，不重新用默认层数：
+
+```powershell
+python scripts/evaluate_slot_joint_snapshot.py --run results/registered_trial_s0 --baselines
+python scripts/evaluate_slot_joint_routing_baselines.py --run results/registered_trial_s0 --mapping-samples 128
+```
+
+manifest记录完整PPO/目标/阶段设置、参数表/配置/模型清单摘要、场景和轨迹摘要；`parameter_audit.json`记录检查及待定项，`checkpoint.pt`仅供同场景恢复，`policy.pt`是最终权重。结果与权重被Git忽略，只有checkpoint不代表训练完成。旧v6及更旧协议不续训、不重评分。
+
+## 6. 主代码与历史边界
+
+| 文件 | 职责 |
+|---|---|
+| src/agent_orch/parameters.py | 统一读取、数值/结构审计、正式冻结检查、来源摘要 |
+| src/agent_orch/workload/infrastructure.py | 连通随机网络、GPU候选、跨网络入口映射 |
+| src/agent_orch/workload/agent_*.py | 概率扩展、工具绑定、联合消息/预算、固定池 |
+| src/agent_orch/workload/slot_trajectory.py | 固定工作负载与可变需求/资源轨迹 |
+| src/agent_orch/envs/slot_joint_env.py | 槽内顺序部署和模型选择、同槽反馈 |
+| src/agent_orch/routing/capacity.py | 唯一物理路由 |
+| src/agent_orch/agents/ | 两分支PPO、critic与乘子更新 |
+
+`configs/benchmarks/`、旧矩阵/蒸馏/内层求解器脚本及旧结果仅为历史资产，不是参数依据或主训练流程。未删除它们，也未把旧结果重标为新协议结果。单网络生成器只有显式`--legacy-smoke`才允许不符合登记表的旧基础模板。固定chunk实机、实际KV、SLO、质量、价格和正式预算仍待确认/校验，未声称已经完成真实服务器实验。
+
+旧console接口`agent-orch-sim`也必须显式`--legacy-smoke`，防止误跑旧环境/奖励；当前各脚本角色见[scripts/README](scripts/README.md)。

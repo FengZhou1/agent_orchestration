@@ -4,6 +4,8 @@
 
 ## 1. 时间轴与三阶段训练
 
+参数表为唯一设置依据，主入口读取`configs/experiment_settings.yaml`，不从Abilene/GEANT继承硬件或工作负载。`build_registered_scenarios.py`从一池构造多种网络/嵌套子集，GPU候选由固定版本模型和显式资源假设推导。候选仅用于预实验，`--formal`要求参数已冻结。登记范围仍是10–50台，未自动采用扩展建议。
+
 每回合从时隙0重放固定外生轨迹。每槽先顺序部署LLM候选的二元启用状态和工具—服务器池的整数副本数，再逐(应用,接入节点)选择模型比例，最后解析路由、完整工作流评价和共同反馈。子动作不推进物理时间。部署从空表构造，但切换费用与上一物理槽最终部署比较。
 
 保持同一环境、两类观测/actor/critic和三阶段安排：固定多样部署下训练模型选择；冻结模型选择、使用其Dirichlet均值训练部署；最后共同更新。模型选择阶段直接安装固定部署，不回放部署actor子动作。各场景独立随机初始化，主方法无教师、蒸馏、ICM/RND。贪心只用于首轮参照和部署上下文构造。
@@ -59,7 +61,7 @@ manifest记录evaluation_protocol=training_trajectory_replay及physical_routing=
 ```powershell
 conda activate agent-orch
 $env:PYTHONPATH='src'
-python scripts/run_slot_joint.py --scenario configs/toy.yaml --output results/slot_joint_v7_toy --slots 2 --updates 2 --route-updates 1 --deploy-updates 0
+python scripts/run_slot_joint.py --scenario configs/toy.yaml --output results/slot_joint_v7_toy --slots 2 --updates 2 --route-updates 1 --deploy-updates 0 --smoke
 python scripts/evaluate_slot_joint_snapshot.py --run results/slot_joint_v7_toy --mapping-samples 128 --baselines
 ```
 

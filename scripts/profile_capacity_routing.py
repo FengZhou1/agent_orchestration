@@ -17,7 +17,8 @@ from agent_orch.schema.loader import ScenarioLoader
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", type=Path, default=Path("configs/benchmarks/main_abilene.yaml"))
+    parser.add_argument("--scenario", type=Path, required=True,
+                        help="Explicit generated scenario; no inherited Abilene default")
     parser.add_argument("--mapping-samples", type=int, default=8)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rollout-slots", type=int, default=0,

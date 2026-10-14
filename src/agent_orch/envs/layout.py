@@ -29,6 +29,7 @@ class StructuredActionLayout:
                 (app.id, ingress)
                 for app in scenario.applications.values()
                 for ingress in app.ingress_rates
+                if app.ingress_rates[ingress] > 0
             ),
             deployment_targets=(("keep", "0"), ("add", "1"), ("remove", "2")),
         )

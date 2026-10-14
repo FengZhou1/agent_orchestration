@@ -16,14 +16,16 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from agent_orch.agents import PPOConfig, StructuredActorCritic
+from agent_orch.agents import StructuredActorCritic
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.parameters import ppo_config_from_manifest
 
 from run_slot_joint import (
     _evaluate, _evaluate_baselines, _evaluate_routing_baselines,
     _write_json, environment_options, load_training_trajectory, EVALUATION_PROTOCOL,
+    checkpoint_trajectory_digest,
 )
 
 
@@ -62,7 +64,7 @@ def main() -> None:
         raise ValueError("Checkpoint and run use different routing protocols")
     if checkpoint.get("physical_routing") != options["routing_method"]:
         raise ValueError("Capacity-routing snapshot is missing its routing provenance")
-    if checkpoint.get("trajectory_digest") != trajectory.digest():
+    if checkpoint_trajectory_digest(checkpoint) != trajectory.digest():
         raise ValueError("Policy snapshot belongs to a different training trajectory")
     if (checkpoint.get("scenario_hash") is not None
             and checkpoint["scenario_hash"] != manifest["scenario_hash"]):
@@ -71,9 +73,7 @@ def main() -> None:
         scenario, trajectory, mapping_samples=mapping_samples, objective=objective, **options
     )
     policy = StructuredActorCritic(
-        env, PPOConfig(shared_composition_head=bool(
-            manifest["training_settings"].get("shared_model_head", False)
-        ))
+        env, ppo_config_from_manifest(manifest)
     )
     policy.load_state_dict(checkpoint["policy_state_dict"])
     policy.eval()
@@ -92,7 +92,7 @@ def main() -> None:
         "checkpoint_source": str(checkpoint_source),
         "evaluation_protocol": EVALUATION_PROTOCOL,
         "trajectory_seed": trajectory.seed,
-        "policy_source_trajectory_digest": checkpoint.get("trajectory_digest"),
+        "policy_source_trajectory_digest": checkpoint_trajectory_digest(checkpoint),
         "mapping_samples": mapping_samples,
         "trajectory_digest": trajectory.digest(),
         "mean_utility": float(np.mean([row["utility"] for row in rows])),

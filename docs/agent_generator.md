@@ -34,7 +34,7 @@
 
 工具类型为可部署服务，节点为一次请求。同工具可重复出现在多个节点。共享候选以Zipf权重选择，私有候选只允许所属应用使用；不强制每个应用具有共享工具。所有库中类型至少被一个正概率pattern使用。共享候选不保证在每个子集都被多个应用使用，因此另报告实际跨应用复用类型与未复用类型。
 
-示例工具每副本1CPU核，主存0.5–3GB，单核率2–8请求/s；范围借鉴前作，但秒单位与分布是明确的合成假设。同类工具在各服务器处理率相同。SLO、质量、接入支持及基准率由显式配置独立生成，质量仅为代理分数。硬件、模型与价格从指定基础场景读取；基础场景原应用和工具被替换，不把遗留profile当作新测量。
+示例工具每副本1CPU核，主存0.5–3GB，单核率2–8请求/s；范围借鉴前作，但秒单位与分布是明确的合成假设。同类工具在各服务器处理率相同。SLO、质量、接入支持及基准率由显式配置独立生成，质量仅为代理分数。硬件、模型与价格由登记表统一配置生成，不再从Abilene继承。准确权重与KV结构来自固定revision；有效算力、非KV内存和价格仍是合成假设。非文本返回2–10MB与48–5,000可见文本token分别记录。
 
 应用身份按无节点/应用编号的属性图与全局参数比较，包含结构、工具绑定、pattern概率、长度和通信量。发生相同配置时重新生成长度，而非只换名字；不按拓扑去重。拓扑数忽略资源/绑定/token，按节点类型和依赖用图同构检查，哈希只用于候选分桶。
 
@@ -46,13 +46,12 @@
 conda activate agent-orch
 $env:PYTHONPATH='src'
 python scripts/generate_agent_pool.py `
-  --infrastructure configs/benchmarks/main_abilene.yaml `
   --config configs/agent_generator.yaml `
   --output results/generated_agent_pool --subsets 20,50,100,200
 
 python scripts/rebind_agent_tools.py `
   --pool results/generated_agent_pool/pool.json `
-  --infrastructure configs/benchmarks/main_abilene.yaml `
+  --infrastructure results/registered_scenarios/infrastructure_n20.yaml `
   --tool-counts 20,50,100,200 --output results/generated_tool_scale
 ```
 

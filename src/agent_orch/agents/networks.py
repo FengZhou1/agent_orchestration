@@ -86,18 +86,15 @@ class StructuredActorCritic(nn.Module):
         deployment_feature_size = env.observation_space["deployment_features"].shape[0] if "deployment_features" in env.observation_space.spaces else feature_size
         routing_feature_size = env.observation_space["routing_features"].shape[0] if "routing_features" in env.observation_space.spaces else feature_size
         hidden = config.hidden_size
-        self.deployment_encoder = nn.Sequential(
-            nn.Linear(deployment_feature_size + 3, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden),
-            nn.Tanh(),
-        )
-        self.composition_encoder = nn.Sequential(
-            nn.Linear(routing_feature_size + 3, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden),
-            nn.Tanh(),
-        )
+        if config.hidden_layers < 1 or hidden < 1:
+            raise ValueError("Hidden layer count and width must be positive")
+        def encoder(input_size):
+            layers = []
+            for index in range(config.hidden_layers):
+                layers.extend((nn.Linear(input_size if index == 0 else hidden, hidden), nn.Tanh()))
+            return nn.Sequential(*layers)
+        self.deployment_encoder = encoder(deployment_feature_size + 3)
+        self.composition_encoder = encoder(routing_feature_size + 3)
         self.deploy_head = nn.Linear(hidden, env.action_space["deploy"].n)
         if config.composition_group_features:
             group_features = _build_group_features(env)

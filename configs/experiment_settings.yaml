@@ -1,0 +1,108 @@
+# Executable companion of the parameter register, not a frozen paper protocol.
+register: docs/experiment_parameter_register_2026-10-13.md
+status: provisional
+protocol: slot_joint_v7
+server_counts: [10, 20, 30, 40, 50]
+application_counts: [20, 50, 100, 200]
+tool_counts: [20, 50, 100, 200]
+generator: configs/agent_generator.yaml
+model_catalog: configs/qwen3_model_catalog.yaml
+infrastructure:
+  seed: 20261014
+  server_count: 20
+  cpu_cores: [8, 64]
+  memory_gb: [16.0, 80.0]
+  topology: mst_plus_edges
+  average_degree: 4.0   # NT02 provisional, not a measured topology
+  link_capacity_mbps: [50.0, 100.0]
+  propagation_time_units: [0.2, 1.0]
+  seconds_per_time_unit: 1.0 # user-approved synthetic pre-experiment conversion
+  gpu_count_probabilities: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+  gpu_type_probabilities: [0.5, 0.5] # user-approved provisional RTX4090 / RTX_A6000
+  non_kv_memory_gib_per_gpu: 2.0 # explicit approximation, NOT a vLLM default
+  # HW08-10: declared analytical assumptions, not manufacturer peak/profile.
+  effective_flops: {RTX4090: 120000000000000.0, RTX_A6000: 60000000000000.0}
+  bandwidth_efficiency: 0.75
+  tensor_parallel_speedup_2: 1.6
+  gpu_running_cost_per_s: {RTX4090: 1.0, RTX_A6000: 1.5}
+  loading_cost_to_rate_ratio_s: 0.1
+  network_cost_per_mb: 0.00001
+engine:
+  version: v0.31.0
+  entrypoint: vllm serve
+  performance_mode: balanced
+  dtype: bfloat16
+  gpu_memory_utilization: 0.92
+  max_model_len: 32768
+  max_num_batched_tokens: 2048
+  max_num_seqs: 256
+  chunked_prefill: true
+  prefix_cache: false
+simulation:
+  slot_seconds: 1.0 # compatibility metadata, not a latency/cost time factor
+  network_accounting_window_s: 1.0 # provisional fixed measurement window
+  switch_amortization_s: 60.0 # provisional, independent of slot duration
+  prefill_chunk_tokens: 512 # analytical limit; real fixed-chunk validation pending
+  overload_delay_s: 600.0 # sentinel only; failed requests excluded from latency
+variation:
+  arrival_range: [0.6, 1.4]
+  bandwidth_range: [0.7, 1.0]
+  cpu_range: [0.8, 1.0]
+  memory_range: [0.8, 1.0]
+  gpu_unavailable_probability: 0.0
+objective:
+  profile: slo_constrained
+  quality_weight: 0.25
+  cost_weight: 0.25
+  latency_weight: 0.25
+  goodput_weight: 0.25
+  llm_utilization_target: 0.9
+  service_utilization_target: 0.9
+  network_utilization_target: 0.9
+  attainment_target: 0.9
+  cost_bounds: library
+  latency_map: clip
+ppo:
+  hidden_layers: 4 # RL02 candidate from Energy, not a guarantee for PPO
+  hidden_size: 256
+  learning_rate: 0.0001
+  composition_learning_rate: 0.0001
+  update_epochs: 3
+  minibatch_size: 32
+  gamma: 0.99
+  gae_lambda: 1.0
+  deployment_gae_lambda: 1.0
+  clip_ratio: 0.2
+  entropy_coefficient: 0.01
+  composition_entropy_coefficient: 0.0001
+  composition_concentration_min: 1.0
+  shared_composition_head: true
+  value_coefficient: 0.5
+  max_grad_norm: 0.5
+  constrained: true
+  constraint_limits: [0.0, 0.0, 0.0, 0.0]
+  initial_lagrange_multipliers: [0.0, 0.0, 0.0, 0.0]
+  lagrangian_learning_rates: [0.05, 0.05, 0.05, 0.05]
+  max_lagrange_multipliers: [50.0, 50.0, 50.0, 50.0]
+  shaping_coefficient: 0.0
+  exploration_mode: none
+training:
+  slots: 32 # RL22 candidate, unrelated to PPO batch size
+  mapping_samples: 128
+  phase_ratio: [1, 1, 2]
+  evaluation_protocol: training_trajectory_replay
+  checkpoint_selection: final_budget_checkpoint
+# Formal training must wait for an explicit parameter freeze. These are not
+# assertions that the corresponding implementation is absent.
+pending:
+  SC01_SC02_SC05_SC06: final scale points and common workload/load scan rule
+  AG05_AG07_AG09_AG10_AG12: synthetic graph/control/binding distribution choices
+  SC08_HW07: ingress sparsity and GPU inventory mixture
+  HW03_HW08_HW09_HW10_LM16: resource variation and effective hardware assumptions
+  LM11_LM17_LM21: fixed-chunk real engine and actual KV capacity validation
+  NT02_NT06_NT07_NT09: topology density, PHY boundary, time unit, bytes/token
+  AR01_AR02_AR03_AR04: load calibration and scan points
+  SL02_SL03_SL04_SL05_SL06_QU01_QU02: SLO and synthetic quality contract
+  CO01_CO02_CO03_CO04_NT11: price, amortization and accounting-window choices
+  OB01_OB02_OB03_OB06: utility weights, safety targets and fixed references
+  RL02_RL05_RL06_RL10_RL13_RL16_RL17_RL18_RL21_RL22_RL28_RL29: learning and evaluation budget
