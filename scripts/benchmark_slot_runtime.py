@@ -22,6 +22,7 @@ from agent_orch.agents import StructuredActorCritic
 from agent_orch.agents.rollout import collect_rollout
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveSpec
+from agent_orch.performance.workflow import WorkflowEvaluator
 from agent_orch.parameters import load_settings, make_ppo_config
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload import SlotTrajectory
@@ -41,6 +42,7 @@ def main():
     parser.add_argument("--trajectory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--scalar-workflow", action="store_true", help="Use the retained scalar oracle for an exactness comparison")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -48,7 +50,7 @@ def main():
     provenance = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in (
         args.scenario, args.trajectory, Path('configs/experiment_settings.yaml'),
         *[Path('src/agent_orch') / p for p in ('envs/base.py', 'envs/slot_joint_env.py',
-            'performance/analytical.py', 'performance/workflow.py', 'agents/rollout.py')])}
+            'performance/analytical.py', 'performance/workflow.py', 'performance/workflow_batch.py', 'agents/rollout.py')])}
     settings = load_settings()
     scene = ScenarioLoader.load(args.scenario)
     trajectory = SlotTrajectory.from_dict(json.loads(args.trajectory.read_text(encoding="utf-8")))
@@ -56,6 +58,7 @@ def main():
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
+    WorkflowEvaluator.DEFAULT_BATCH_EVALUATION = not args.scalar_workflow
     started = time.perf_counter()
     env = SlotSequentialJointEnv(scene, trajectory, mapping_samples=128,
         seed=0, objective=ObjectiveSpec(**settings["objective"]))
@@ -103,6 +106,7 @@ def main():
         "transitions": len(batch.records), "record_digest": h.hexdigest(),
         "metrics_digest": metrics_digest, "timings_s": getattr(batch, "timings_s", {}),
         "profile_enabled": args.profile, "profile_top": top}
+    report["workflow_evaluation"] = "scalar" if args.scalar_workflow else "indexed_batch"
     (args.output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     (args.output / "metrics.json").write_text(json.dumps(scientific, indent=2), encoding="utf-8")
     print(json.dumps(report), flush=True)

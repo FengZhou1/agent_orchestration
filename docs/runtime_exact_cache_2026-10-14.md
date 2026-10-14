@@ -1,5 +1,7 @@
 # 逐轮进度、运行时缓存与等价性核验（2026-10-14）
 
+> 本页保留第一轮优化的历史结果。随后完成的整数索引和批量关键路径/SLO评价见[后续核验记录](indexed_workflow_2026-10-14.md)，不将新耗时覆盖到本页旧记录。
+
 ## Material Passport
 
 - Origin Skill: academic-research-suite / experiment-agent

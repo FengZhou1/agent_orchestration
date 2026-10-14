@@ -16,6 +16,7 @@ from agent_orch.schema.models import (
 )
 
 from .analytical import AnalyticalBackend, AnalyticalResult
+from .workflow_batch import IndexedWorkflowKernel
 
 
 @lru_cache(maxsize=4096)
@@ -45,16 +46,21 @@ class WorkflowResult:
 
 class WorkflowEvaluator:
     _MAX_MAPPING_SAMPLES = 4096
+    DEFAULT_BATCH_EVALUATION = True
 
     def __init__(
         self,
         scenario: Scenario,
         backend: AnalyticalBackend,
         max_mapping_samples: int = _MAX_MAPPING_SAMPLES,
+        *,
+        batch_evaluation: bool | None = None,
     ):
         self.scenario = scenario
         self.backend = backend
         self.max_mapping_samples = max(1, int(max_mapping_samples))
+        self.batch_evaluation = self.DEFAULT_BATCH_EVALUATION if batch_evaluation is None else batch_evaluation
+        self._batch_kernel = None
         self._mapping_cache: dict[tuple[str, str, str, str], list[tuple[dict[str, tuple[str, str | None]], float]]] = {}
         self._path_delay_cache: dict[tuple[str, str], float] = {}
         self._first_token_delay_cache: dict[tuple[str, str, float], float] = {}
@@ -68,6 +74,7 @@ class WorkflowEvaluator:
         analytical: AnalyticalResult,
         arrival_rates: dict[tuple[str, str], float] | None = None,
     ) -> WorkflowResult:
+        self._batch_kernel = None
         self._mapping_cache = {}
         self._path_delay_cache = {}
         self._first_token_delay_cache = {}
@@ -141,7 +148,7 @@ class WorkflowEvaluator:
         mean_latency = (sum(app_latency.values()) / len(app_latency)
                         if app_latency else None)
         quality = quality_numerator / total_arrival if total_arrival > 0.0 else 0.0
-        return WorkflowResult(
+        workflow_result = WorkflowResult(
             app_latency,
             mean_latency,
             goodput,
@@ -152,6 +159,8 @@ class WorkflowEvaluator:
             sum(app_completed.values()),
             app_completed,
         )
+        self._batch_kernel = None
+        return workflow_result
 
     def _flow_latency(
         self,
@@ -167,7 +176,36 @@ class WorkflowEvaluator:
         )
         return e2e, ttft, tbt, slo_probability >= 1.0 - 1.0e-8, stage_times
 
-    def _flow_summary(
+    def _flow_summary(self, app_id, ingress, model, flow_id, routing, result):
+        if not self.batch_evaluation:
+            return self._flow_summary_scalar(app_id, ingress, model, flow_id, routing, result)
+        app = self.scenario.applications[app_id]
+        flow = next(flow for flow in app.pattern_flows if flow.id == flow_id)
+        outcomes = self._physical_mapping_outcomes(app_id, ingress, model, flow_id, routing, result)
+        if self._batch_kernel is None or self._batch_kernel.result is not result:
+            self._batch_kernel = IndexedWorkflowKernel(self, result)
+        batch = self._batch_kernel.evaluate(app_id, ingress, model, flow, outcomes)
+        e2e_sum = ttft_sum = tbt_sum = slo_sum = completed = 0.0
+        stage_sums = {}
+        # Keep scalar float64 additions in exactly the original sample order.
+        for row, (_, probability) in enumerate(outcomes):
+            if not batch.valid[row]:
+                continue
+            completed += probability
+            e2e_sum += probability * float(batch.e2e[row])
+            ttft_sum += probability * float(batch.ttft[row])
+            tbt_sum += probability * float(batch.tbt[row])
+            if batch.slo[row]:
+                slo_sum += probability
+            for name, column in batch.stages:
+                stage_sums[name] = stage_sums.get(name, 0.0) + probability * float(batch.completions[row, column])
+        self._completion_probability[(app_id, ingress, model, flow_id)] = completed
+        if not completed:
+            return None, None, None, 0.0, {}
+        return (e2e_sum / completed, ttft_sum / completed, tbt_sum / completed,
+                slo_sum, {n: value / completed for n, value in stage_sums.items()})
+
+    def _flow_summary_scalar(
         self,
         app_id: str,
         ingress: str,

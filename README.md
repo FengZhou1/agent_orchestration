@@ -117,6 +117,8 @@ Get-Content results/single_slot_n20_a50_s0/training_history.jsonl -Tail 3
 
 原2000轮单槽任务中断后，用原命令原参数加`--resume`，不覆盖场景或改变阶段预算。新日志记录后续轮次，旧轮次仍保留在原`history.json`，实际恢复以检查点为准。缓存与等价性核验见[运行时优化记录](docs/runtime_exact_cache_2026-10-14.md)；这些改动降低重复计算，不包含最大规模PPO整轮缓存的存储压缩。
 
+工作流评价现默认采用[整数索引与样本批量计算](docs/indexed_workflow_2026-10-14.md)：保留同一采样器，每个映射独立求关键路径/判断SLO，再按原样本顺序汇总。`benchmark_slot_runtime.py --scalar-workflow`仅用于与保留的标量实现对照，不是另一种训练算法。原训练命令无需新增开关。
+
 ## 6. 主代码与历史边界
 
 | 文件 | 职责 |
