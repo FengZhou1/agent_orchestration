@@ -1,5 +1,7 @@
 # 全参数口径核对与主流程接线（2026-10-14）
 
+> 本页是上一轮已完成核对的历史记录。随后用户指定A10/L20/H20、重复实例候选、逐GPU默认和0.2–2ms，并要求负载不变、SLO稍后确定；当前实现见[本轮记录](datacenter_gpu_update_2026-10-14.md)，不能继续采用本页旧4090/A6000仿真数值。
+
 ## Material Passport
 
 - Origin Skill: academic-research-suite / experiment-agent

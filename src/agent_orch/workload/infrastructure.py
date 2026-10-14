@@ -10,18 +10,19 @@ import numpy as np
 import yaml
 
 from agent_orch.parameters import settings_receipt
+from agent_orch.hardware import vllm_online_batch_defaults
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.schema.models import (
     CandidateInstance, LinkSpec, LLMConfigSpec, ModelSpec, RewardSpec,
     Scenario, ServerSpec, SimulationSpec,
 )
-from .agent_pool import keyed_seed
+from .agent_pool import keyed_seed, digest
 
 
 def build_infrastructure(settings, server_count=None, seed=None):
     cfg, engine = settings["infrastructure"], settings["engine"]
     missing = [name for name in ("gpu_count_probabilities", "gpu_type_probabilities",
-               "seconds_per_time_unit", "non_kv_memory_gib_per_gpu") if cfg[name] is None]
+               "non_kv_memory_gib_per_gpu") if cfg[name] is None]
     if missing:
         raise ValueError("Infrastructure choices still unset: " + ", ".join(missing))
     count = cfg["server_count"] if server_count is None else server_count
@@ -36,11 +37,13 @@ def build_infrastructure(settings, server_count=None, seed=None):
             raise ValueError(f"{name} must be a normalized nonnegative vector")
         return p
     inventory_p = probabilities("gpu_count_probabilities", 3)
-    type_p = probabilities("gpu_type_probabilities", 2)
-    if cfg["seconds_per_time_unit"] <= 0 or cfg["non_kv_memory_gib_per_gpu"] < 0:
-        raise ValueError("Invalid time conversion or non-KV assumption")
-    gpu_types = ("RTX4090", "RTX_A6000")
-    gpu_specs = {"RTX4090": (24., 1008e9), "RTX_A6000": (48., 768e9)}
+    gpu_types = tuple(cfg["gpu_types"])
+    type_p = probabilities("gpu_type_probabilities", len(gpu_types))
+    if set(gpu_types) != {"A10", "L20", "H20"}:
+        raise ValueError("The main simulation uses A10/L20/H20, separate from real hardware")
+    if not 0 <= cfg["propagation_ms"][0] <= cfg["propagation_ms"][1] or cfg["non_kv_memory_gib_per_gpu"] < 0:
+        raise ValueError("Invalid propagation_ms or non-KV assumption")
+    gpu_specs = {gpu: (cfg["gpu_memory_gib"][gpu], cfg["gpu_bandwidth_bytes_s"][gpu]) for gpu in gpu_types}
     servers = {}
     coordinates = {}
     for i in range(count):
@@ -71,8 +74,7 @@ def build_infrastructure(settings, server_count=None, seed=None):
     for u, v in sorted(network.edges):
         rng = np.random.default_rng(keyed_seed(seed, "link:" + u + ":" + v))
         link = LinkSpec(u, v, float(rng.uniform(*cfg["link_capacity_mbps"])),
-                        float(rng.uniform(*cfg["propagation_time_units"])) *
-                        cfg["seconds_per_time_unit"] * 1000, cfg["network_cost_per_mb"])
+                        float(rng.uniform(*cfg["propagation_ms"])), cfg["network_cost_per_mb"])
         # NetworkBackend stores directed arcs. One undirected adjacency must
         # supply both directions, with an independent budget per direction.
         links.extend((link, replace(link, source=v, target=u)))
@@ -86,6 +88,7 @@ def build_infrastructure(settings, server_count=None, seed=None):
         models[model.id] = model
         for gpu in gpu_types:
             memory, bandwidth = gpu_specs[gpu]
+            batch = vllm_online_batch_defaults(memory, gpu, engine)
             for cards in (1, 2):
                 # Physical memory is explicit GiB here; network MB remains decimal.
                 kv_total_bytes = cards * (memory * engine["gpu_memory_utilization"] -
@@ -104,18 +107,26 @@ def build_infrastructure(settings, server_count=None, seed=None):
                     bandwidth * cfg["bandwidth_efficiency"] * speedup,
                     kv_capacity, running, running * cfg["loading_cost_to_rate_ratio_s"], gpu,
                     **{k: engine[k] for k in ("dtype", "gpu_memory_utilization", "max_model_len",
-                       "max_num_batched_tokens", "max_num_seqs", "chunked_prefill", "prefix_cache")})
+                       "chunked_prefill", "prefix_cache")}, **batch)
                 for n in compatible:
-                    key = f"{name}@{n}"
-                    candidates[key] = CandidateInstance(key, model.id, name, n)
+                    # Each slot is an interchangeable process candidate, not a
+                    # fixed physical GPU ID. Shared masks enforce total cards.
+                    for replica in range(servers[n].gpu_count // cards):
+                        key = f"{name}@{n}#r{replica}"
+                        candidates[key] = CandidateInstance(key, model.id, name, n, replica)
     if {c.model for c in candidates.values()} != set(models):
         raise ValueError("Sampled inventory cannot host every registered model tier; change declared "
                          "inventory/seed, not silently resample/filter the topology")
-    scene = Scenario(f"synthetic-edge-n{count}-s{seed}", servers, tuple(links), models, configs,
+    hardware_key = digest({"infrastructure": {**cfg, "server_count": count, "seed": seed},
+                           "engine": engine, "models": entries})[:12]
+    scene = Scenario(f"synthetic-edge-n{count}-s{seed}-{hardware_key}", servers, tuple(links), models, configs,
         {}, candidates, {}, metadata={"parameter_source": "parameter_register",
             "parameter_receipt": settings_receipt(settings), "status": settings["status"],
             "infrastructure_settings": {**cfg, "server_count": count, "seed": seed},
             "model_provenance": entries, "engine": engine,
+            "batch_defaults_by_gpu": {gpu: vllm_online_batch_defaults(gpu_specs[gpu][0], gpu, engine)
+                                      for gpu in gpu_types},
+            "candidate_semantics": "distinct replica indices per (model, configuration, server); shared GPU budget",
             "link_semantics": "bidirectional adjacency; capacity/load/cost accounted per directed arc",
             "units": {"gpu_memory_gb": "GiB", "memory_gb": "GB", "network": "Mbps/decimal MB",
                       "effective_flops": "FLOP/s, synthetic assumption", "cost": "relative unit/s"}},

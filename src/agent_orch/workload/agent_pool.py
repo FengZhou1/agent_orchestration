@@ -370,7 +370,7 @@ class ApplicationPool:
         apps = {a.spec.id: a.spec for a in self.applications[:count]}
         used = {node.tool for app in apps.values() for node in app.nodes.values() if node.type is NodeType.TOOL}
         variant_key = digest({"config": asdict(self.config), "bindings": self.provenance["bindings"]})[:12]
-        scene = replace(template, id=f"agent-pool-{self.config.seed}-a{count}-h{len(used)}-{variant_key}",
+        scene = replace(template, id=f"agent-pool-{self.config.seed}-a{count}-h{len(used)}-{variant_key}-i{digest(template.id)[:10]}",
             applications=apps, tools={t: self.tools[t] for t in sorted(used)},
             metadata={"infrastructure_template_metadata": template.metadata,
                 "parameter_receipt": template.metadata.get("parameter_receipt"),

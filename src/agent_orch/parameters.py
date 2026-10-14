@@ -13,6 +13,7 @@ import re
 
 import networkx as nx
 import yaml
+from agent_orch.hardware import vllm_online_batch_defaults
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS = ROOT / "configs/experiment_settings.yaml"
@@ -115,13 +116,16 @@ def audit_scenario(scenario, settings, *, infrastructure_only=False):
           {n: [s.cpu_cores, s.memory_gb] for n, s in scenario.servers.items()})
     check("HW04 HW05 HW06", "GPU inventory uses registered types and physical memory",
           all(s.gpu_count in (0, 1, 2) and (s.gpu_count == 0 or
-              s.gpu_type in ("RTX4090", "RTX_A6000") and s.gpu_memory_gb ==
-              {"RTX4090": 24.0, "RTX_A6000": 48.0}[s.gpu_type])
+              s.gpu_type in infra["gpu_types"] and s.gpu_memory_gb ==
+              infra["gpu_memory_gib"][s.gpu_type])
               for s in scenario.servers.values()),
           {n: [s.gpu_type, s.gpu_count, s.gpu_memory_gb] for n, s in scenario.servers.items()})
     check("NT03", "effective link rate range",
           all(within(e.capacity_mbps, infra["link_capacity_mbps"]) for e in scenario.links),
           [e.capacity_mbps for e in scenario.links])
+    check("NT07", "per-hop propagation is in explicitly declared milliseconds",
+          all(within(e.propagation_ms, infra["propagation_ms"]) for e in scenario.links),
+          [e.propagation_ms for e in scenario.links])
     catalogue = yaml.safe_load(Path(settings["model_catalog"]).read_text(encoding="utf-8"))["models"]
     expected_models = {m["id"]: m for m in catalogue}
     check("LM01 LM02 LM04 LM05", "pinned model structure, weight and KV bytes",
@@ -134,12 +138,16 @@ def audit_scenario(scenario, settings, *, infrastructure_only=False):
               expected_models[k]["head_dim"] for k, m in scenario.models.items() if k in expected_models),
           list(scenario.models))
     config_fields = ("dtype", "gpu_memory_utilization", "max_model_len",
-                     "max_num_batched_tokens", "max_num_seqs", "chunked_prefill", "prefix_cache")
+                     "chunked_prefill", "prefix_cache")
     check("LM03 LM08 LM09 LM10 LM13 LM14 LM15", "engine parameters",
           bool(scenario.llm_configs) and all(
-              all(getattr(c, field) == engine[field] for field in config_fields)
+              all(getattr(c, field) == engine[field] for field in config_fields) and
+              c.gpu_type in infra["gpu_types"] and
+              all(getattr(c, k) == v for k, v in vllm_online_batch_defaults(
+                  infra["gpu_memory_gib"][c.gpu_type], c.gpu_type, engine).items())
               for c in scenario.llm_configs.values()),
-          {k: {f: getattr(c, f) for f in config_fields} for k, c in scenario.llm_configs.items()})
+          {k: {f: getattr(c, f) for f in (*config_fields, "max_num_batched_tokens", "max_num_seqs")}
+           for k, c in scenario.llm_configs.items()})
     check("LM19", "all model tiers have compatible candidates",
           {c.model for c in scenario.candidates.values()} == set(scenario.models),
           len(scenario.candidates))
@@ -148,7 +156,7 @@ def audit_scenario(scenario, settings, *, infrastructure_only=False):
         if c.gpu_type not in infra["effective_flops"] or c.model not in scenario.models:
             derive_ok = False
             continue
-        memory, bandwidth = {"RTX4090": (24., 1008e9), "RTX_A6000": (48., 768e9)}[c.gpu_type]
+        memory, bandwidth = infra["gpu_memory_gib"][c.gpu_type], infra["gpu_bandwidth_bytes_s"][c.gpu_type]
         m = scenario.models[c.model]
         scale = 1. if c.gpu_count == 1 else infra["tensor_parallel_speedup_2"]
         nonkv = infra["non_kv_memory_gib_per_gpu"]
@@ -164,6 +172,19 @@ def audit_scenario(scenario, settings, *, infrastructure_only=False):
                       c.load_cost == running * infra["loading_cost_to_rate_ratio_s"])
     check("HW08 HW09 HW10 LM16 LM17 LM18 CO01 CO04", "GPU candidates derive from declared assumptions",
           derive_ok, "GiB capacity; pinned BF16 weights; synthetic efficiencies, not measured profiles")
+    groups = {}
+    for candidate in scenario.candidates.values():
+        groups.setdefault((candidate.config, candidate.server), []).append(candidate)
+    replica_ok = all(
+        len(group) == scenario.servers[host].gpu_count // scenario.llm_configs[config].gpu_count and
+        {c.replica_index for c in group} == set(range(len(group)))
+        for (config, host), group in groups.items())
+    replica_ok &= all(
+        (config.id, host.id) in groups
+        for config in scenario.llm_configs.values() for host in scenario.servers.values()
+        if host.gpu_type == config.gpu_type and host.gpu_count >= config.gpu_count)
+    check("LM18 LM19", "replica candidates cover resource-derived multiplicity without changing TP meaning",
+          replica_ok, {f"{config}@{host}": len(group) for (config, host), group in groups.items()})
     check("LM11 NT10 NT11 NT12", "simulation uses explicit fixed conventions",
           all(getattr(scenario.simulation, k) == v for k, v in settings["simulation"].items()),
           {k: getattr(scenario.simulation, k) for k in settings["simulation"]})

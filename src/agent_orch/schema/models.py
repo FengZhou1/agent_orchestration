@@ -160,6 +160,7 @@ class CandidateInstance:
     model: str
     config: str
     server: str
+    replica_index: int = 0
 
 
 @dataclass(frozen=True)

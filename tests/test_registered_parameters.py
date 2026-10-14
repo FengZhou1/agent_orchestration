@@ -53,10 +53,12 @@ def test_registered_network_is_connected_and_has_no_legacy_profiles(settings, co
         for v in scene.servers:
             network.path(u, v)
     assert {c.model for c in scene.candidates.values()} == set(scene.models)
-    assert {s.gpu_type for s in scene.servers.values()} <= {"none", "RTX4090", "RTX_A6000"}
+    assert {s.gpu_type for s in scene.servers.values()} <= {"none", "A10", "L20", "H20"}
     require_consistent(audit_scenario(scene, settings, infrastructure_only=True))
-    assert all(c.max_num_batched_tokens == 2048 and c.max_num_seqs == 256 and
+    assert all(c.max_num_batched_tokens == (8192 if c.gpu_type == "H20" else 2048) and
+               c.max_num_seqs == (1024 if c.gpu_type == "H20" else 256) and
                c.gpu_memory_utilization == .92 and not c.prefix_cache for c in scene.llm_configs.values())
+    assert all(.2 <= link.propagation_ms <= 2. for link in scene.links)
 
 
 def test_prefix_stable_hardware_and_distinct_trajectory_identity(settings):
@@ -70,7 +72,7 @@ def test_inventory_not_silently_resampled_and_unset_assumptions_block(settings):
     changed["infrastructure"]["gpu_count_probabilities"] = [1., 0., 0.]
     with pytest.raises(ValueError, match="cannot host every"):
         build_infrastructure(changed)
-    changed["infrastructure"]["seconds_per_time_unit"] = None
+    changed["infrastructure"]["non_kv_memory_gib_per_gpu"] = None
     with pytest.raises(ValueError, match="unset"):
         build_infrastructure(changed)
 

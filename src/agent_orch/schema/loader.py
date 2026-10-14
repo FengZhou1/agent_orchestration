@@ -157,6 +157,8 @@ class ScenarioLoader:
         if abs(sum(reward_weights) - 1.0) > 1e-9:
             raise ValueError("Reward weights must sum to one")
         for candidate in scenario.candidates.values():
+            if not isinstance(candidate.replica_index, int) or candidate.replica_index < 0:
+                raise ValueError(f"Candidate {candidate.id} has an invalid replica index")
             if candidate.model not in scenario.models:
                 raise ValueError(f"Unknown model in candidate {candidate.id}")
             if candidate.config not in scenario.llm_configs:

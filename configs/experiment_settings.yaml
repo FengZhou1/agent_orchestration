@@ -15,16 +15,19 @@ infrastructure:
   topology: mst_plus_edges
   average_degree: 4.0   # NT02 provisional, not a measured topology
   link_capacity_mbps: [50.0, 100.0]
-  propagation_time_units: [0.2, 1.0]
-  seconds_per_time_unit: 1.0 # user-approved synthetic pre-experiment conversion
+  propagation_ms: [0.2, 2.0] # user-confirmed per-hop milliseconds, not time units
   gpu_count_probabilities: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
-  gpu_type_probabilities: [0.5, 0.5] # user-approved provisional RTX4090 / RTX_A6000
+  gpu_types: [A10, L20, H20]
+  gpu_type_probabilities: [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+  gpu_memory_gib: {A10: 24.0, L20: 48.0, H20: 96.0}
+  gpu_bandwidth_bytes_s: {A10: 600000000000.0, L20: 864000000000.0, H20: 4000000000000.0}
   non_kv_memory_gib_per_gpu: 2.0 # explicit approximation, NOT a vLLM default
-  # HW08-10: declared analytical assumptions, not manufacturer peak/profile.
-  effective_flops: {RTX4090: 120000000000000.0, RTX_A6000: 60000000000000.0}
+  # Provisional numerical anchors, NOT asserted manufacturer peak or measured rates.
+  # These reuse declared legacy hardware scalars, not its topology/workload.
+  effective_flops: {A10: 125000000000000.0, L20: 119500000000000.0, H20: 148000000000000.0}
   bandwidth_efficiency: 0.75
   tensor_parallel_speedup_2: 1.6
-  gpu_running_cost_per_s: {RTX4090: 1.0, RTX_A6000: 1.5}
+  gpu_running_cost_per_s: {A10: 1.0, L20: 2.0, H20: 4.0} # provisional relative rates
   loading_cost_to_rate_ratio_s: 0.1
   network_cost_per_mb: 0.00001
 engine:
@@ -34,8 +37,7 @@ engine:
   dtype: bfloat16
   gpu_memory_utilization: 0.92
   max_model_len: 32768
-  max_num_batched_tokens: 2048
-  max_num_seqs: 256
+  batch_defaults: per_gpu
   chunked_prefill: true
   prefix_cache: false
 simulation:
@@ -95,13 +97,13 @@ training:
 # Formal training must wait for an explicit parameter freeze. These are not
 # assertions that the corresponding implementation is absent.
 pending:
-  SC01_SC02_SC05_SC06: final scale points and common workload/load scan rule
+  SC01_SC02_SC05_SC06: final scale points; existing load is fixed, not capacity-normalized
   AG05_AG07_AG09_AG10_AG12: synthetic graph/control/binding distribution choices
   SC08_HW07: ingress sparsity and GPU inventory mixture
   HW03_HW08_HW09_HW10_LM16: resource variation and effective hardware assumptions
   LM11_LM17_LM21: fixed-chunk real engine and actual KV capacity validation
-  NT02_NT06_NT07_NT09: topology density, PHY boundary, time unit, bytes/token
-  AR01_AR02_AR03_AR04: load calibration and scan points
+  NT02_NT06_NT09: topology density, PHY boundary, bytes/token
+  AR03: optional future load scan; do not change current application rates or slot fluctuations
   SL02_SL03_SL04_SL05_SL06_QU01_QU02: SLO and synthetic quality contract
   CO01_CO02_CO03_CO04_NT11: price, amortization and accounting-window choices
   OB01_OB02_OB03_OB06: utility weights, safety targets and fixed references

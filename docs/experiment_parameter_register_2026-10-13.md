@@ -6,7 +6,9 @@
 - Origin Mode: parameter provenance audit / generator implementation
 - Origin Date: 2026-10-13
 - Verification Status: 固定工作负载、容量路由、训练轨迹评价与概率扩展生成器已实施；已完成合成池及接口验收，正式运行参数与性能校验仍待完成
-- Version Label: parameter-register-v7 / slot_joint_v7
+- Version Label: parameter-register-v8 / slot_joint_v7
+
+> **2026-10-14 本轮确定口径（优先于下方旧预实验）**：主仿真使用A10/L20/H20（H20固定96GB版），与真实4090/A6000校验分开；相同模型/配置/服务器允许多个实例候选，编号由`replica_index`区分，数量上界为服务器GPU数除以每实例卡数。每个候选仍采用二元启用动作，共享原有资源掩码；TP=2不是两个副本。A10/L20采用vLLM v0.31.0在线balanced默认2048 token/256序列，H20采用8192/1024，按单卡显存而非TP总显存判定。每跳传播时延明确为0.2–2ms。**现有负载保持不变，不按服务器数、GPU数或容量重新缩放；SLO之后再确定，本轮保留原占位值，不标定、不放宽。** GPU数量仍沿用0/1/2，三种类型等概率只是预实验占位；未擅自加四卡节点。旧的4090/A6000仿真设置和200–1000ms传播值仅作历史记录。
 
 > **2026-10-14 全参数接线更新**：本表继续作为参数依据，机器配置为`configs/experiment_settings.yaml`，图/工具分布为`configs/agent_generator.yaml`，准确模型结构及权重为`configs/qwen3_model_catalog.yaml`。用户确认候选只用于预实验、正式训练仍需确认，并选择固定种子的MST加边连通随机多跳网络替代Abilene。另确认预实验可采用GPU数量0/1/2等概率、4090/A6000等概率、每卡非KV占用2GiB、传播时延1时间单位=1秒，以及表中60/120 TFLOP/s、75%带宽、双卡1.6倍候选。上述均是明确声明的合成假设，不是实测或vLLM默认。SC06仍采用本表10–50台、默认20台候选，没有自动采用后续建议的40台主场景或128台扩展。正式模式会因未冻结参数而拒绝启动；所有参数行均进入审计清单，未自动检验的行保留人工/运行时核验状态。详见`docs/parameter_alignment_2026-10-14.md`。
 
@@ -112,12 +114,12 @@ Energy §3.1 明确将每个容器绑定到一个 CPU 核，并在其中部署�
 
 ### 2.6 vLLM 默认值固定版本和入口后核查 :codex-annotation{index="6"}
 
-用户已选择 v0.31.0 的 V1 CUDA 在线服务默认，前缀缓存明确关闭。对于本方案的 RTX 4090/A6000（单卡显存低于 70 GiB），且 `performance_mode=balanced`、不设置批处理覆盖值：
+用户已选择v0.31.0的V1 CUDA在线服务默认，前缀缓存明确关闭，balanced模式。当前仿真A10/L20/H20分别按单卡24/48/96GiB的配置档位解析，不按多卡合计显存选择分支：
 
 | 配置项 | v0.31.0 在线服务口径 | 与旧建议的区别 |
 |---|---|---|
-| `max_num_batched_tokens` | 2048 | 不是离线 `LLM(...)` 的 8192 |
-| `max_num_seqs` | 256 | 不是配置类测试用 fallback 的 128 |
+| `max_num_batched_tokens` | A10/L20为2048，H20为8192 | 使用在线入口；L20双卡仍按每卡48GiB，不变成8192 |
+| `max_num_seqs` | A10/L20为256，H20为1024 | 配置上限不等于KV实际可并发数 |
 | `enable_chunked_prefill` | 模型支持时启用；本方案密集模型采用启用 | 保留 chunked prefill |
 | 固定 `prefill_chunk_tokens` | 没有固定 512 的上游默认；按剩余 token 预算动态分块 | 删除“512 是 vLLM 默认”的表述 |
 | `long_prefill_token_threshold` | 0，不启用独立长 prefill 上限 | 不是固定 chunk 大小 |
@@ -289,11 +291,11 @@ Energy §5.2分别扫描服务数量、边缘服务器数量与平均请求到�
 | HW01 | 服务器CPU范围 | 8–64核可作边缘参考；具体节点值保存 | Energy §5.1 [S01] | 原文范围核实 |
 | HW02 | 可供工具的主存 | 16–80 GB可作参考，不当作已知真机总内存 | Energy §5.1 [S01] | 原文范围核实 |
 | HW03 | CPU/主存时隙可用比例 | 旧0.8–1.0是现有合成范围，不是数据统计值 | 当前SlotVariationSpec [S10] | 候选，正式范围待确认 |
-| HW04 | GPU类型 | 初始参考RTX4090与RTX A6000 | 用户真实硬件背景，规格由厂家提供 [S08] | 硬件来源明确 |
-| HW05 | 单卡显存/标称带宽 | 4090：24GB、1008 GB/s；A6000：48GB、768 GB/s | NVIDIA规格 [S08] | 原始规格核实 |
+| HW04 | GPU类型 | 主仿真A10/L20/H20；真机4090/A6000单独用于之后校验 | 本轮用户决定 [S08] | 用户确认；已实现 |
+| HW05 | 单卡显存/带宽档位 | A10：24GiB/600GB/s，L20：48GiB/864GB/s，H20：96GiB/4000GB/s；显存GiB为解析容量口径 | 公开显存档位；带宽数值沿用旧硬件目录锚点，非本轮实测 [S08] | 显式数值；后两项带宽资料仍需补核 |
 | HW06 | 每服务器GPU数量 | 合成库存可有0/1/2；主网络不是两台真机的简单复制 | 前一版提案，非前作采样统计 | 候选 |
-| HW07 | 节点GPU组成比例 | 预实验0/1/2张等概率；有卡节点4090/A6000等概率 | 用户本轮认可的合成假设；非真实资源统计 | 预实验允许；正式待确认 |
-| HW08 | 有效算力 | 旧60/120 TFLOP/s只是假设，不是NVIDIA峰值或实测 | 需要选定合成效率模型或独立性能profile | 待确认/标定 |
+| HW07 | 节点GPU组成比例 | 0/1/2张分布不变；三种GPU等概率作为预实验占位，不强制有限样本精确等比 | 类型为用户决定，比例未正式冻结 | 已接线；比例仍待确认 |
+| HW08 | 有效算力 | A10/L20/H20暂用125/119.5/148 TFLOP/s数值锚点；不是本轮核实的厂家有效性能或实测 | 复用旧硬件标量，不复用Abilene拓扑/工作负载；后续独立校验 | 预实验占位；待确认/标定 |
 | HW09 | 有效显存带宽 | 旧标称75%是假设，不能标为厂家参数 | 需要说明效率假设并做敏感性/实测验证 | 待确认/标定 |
 | HW10 | 双卡加速 | 不默认线性；旧1.6倍也不是测量值 | TP通信和运行配置影响效果 | 待确认/标定 |
 | HW11 | GPU故障/物理库存变化 | 主实验不引入故障，库存固定；另做故障需明确方案 | 既定第一版协议 | 当前边界 |
@@ -304,8 +306,8 @@ Energy §5.2分别扫描服务数量、边缘服务器数量与平均请求到�
 | LM05 | KV字节/token | 按层数、KV头数、头维度与精度推导 | [S09]与建模公式 | 推导 |
 | LM06 | 引擎版本 | vLLM v0.31.0 / V1 / CUDA / `vllm serve` | 用户选择；固定tag/commit [S07] | 用户确认 |
 | LM07 | 性能模式 | balanced | v0.31.0 VllmConfig默认 [S07] | 默认核实 |
-| LM08 | 每迭代token预算 | 2048，适用本方案单卡低于70GiB的在线入口 | EngineArgs实际分支，不是离线默认 [S07] | 默认核实 |
-| LM09 | 最大序列数 | 256；活动并发仍受KV约束 | EngineArgs在线默认，不取测试fallback128 [S07] | 默认核实 |
+| LM08 | 每迭代token预算 | A10/L20为2048，H20为8192；按每卡显存、线上入口及balanced解析 | EngineArgs.get_batch_defaults [S07] | 已按GPU接线与测试 |
+| LM09 | 最大序列数 | A10/L20为256，H20为1024；实际活动并发仍受KV约束 | EngineArgs在线默认 [S07] | 已按GPU接线与测试 |
 | LM10 | Chunked prefill | 对本方案支持该机制的密集模型启用 | v0.31.0模型支持检查 [S07] | 默认核实 |
 | LM11 | Chunk大小 | 用户选择真实引擎也固定chunk；解析示例上限512 | 本轮用户覆盖默认要求；[S07]普通阈值有单请求批次例外 | 解析保留；严格实机实现/验证待完成 |
 | LM12 | 长prefill独立阈值 | 0，默认不单独施加上限 | SchedulerConfig [S07] | 默认核实 |
@@ -314,8 +316,8 @@ Energy §5.2分别扫描服务数量、边缘服务器数量与平均请求到�
 | LM15 | 上下文配置 | 上限32,768；以支持窗口和启动后有效容量检查候选 | 用户预算，非模型原生上限 [S07][S09] | 用户确认上限；配置可行性待检查 |
 | LM16 | 非KV运行时显存 | 预实验显式近似每卡2GiB；不是vLLM默认，实际阶段另profile | 用户本轮认可的合成假设 [S07] | 预实验允许；正式待标定/确认 |
 | LM17 | KV token容量 | 由可用显存减权重和真实非KV占用后计算，记录实际块容量 | 公式与引擎有效配置 [S07][S09] | 推导/标定 |
-| LM18 | GPU分配 | 主候选整卡；大模型可用节点内TP，记录每候选卡数 | 当前模型与vLLM TP配置 [S07][S10] | 候选 |
-| LM19 | 候选实例集合 | 从模型、配置、服务器兼容性生成，容量不是另抽一个RPS | 当前部署变量与性能模型 [S10] | 推导 |
+| LM18 | GPU分配 | 主候选整卡，节点内TP；同配置多个实例共享卡数/显存掩码，不将TP当副本 | 用户允许重复实例 [S10] | 已实现 |
+| LM19 | 候选实例集合 | 每模型/配置/服务器生成floor(GPU数/每实例卡数)个独立候选，显式replica_index；容量按同配置推导 | 用户决定与资源边界 [S10] | 已实现；重新标号不计加载 |
 | LM20 | 量化/MoE/投机解码 | 本轮不引入，避免更改性能模型边界 | 既定工作范围 | 不设置 |
 | LM21 | 准入KV检查/水位 | v0.31.0默认检查完整输入是否可进入KV；watermark为0 | SchedulerConfig，不能直接当作解析模型稳定性证明 [S07] | 默认核实；解析兼容待检查 |
 | LM22 | 请求排队数量上限 | v0.31.0该入口不额外设API排队数量/输入token上限；运行中仍受资源和SLO限制 | SchedulerConfig的None默认 [S07] | 默认核实；不等于可服务无限请求 |
@@ -330,15 +332,15 @@ Energy §5.2分别扫描服务数量、边缘服务器数量与平均请求到�
 | NT04 | 时隙资源变化 | 旧0.7–1.0为现有合成比例，需记录为自设范围 | [S10] | 候选 |
 | NT05 | 信道带宽 | Energy报告20–400 MHz；不要与传输速率Mbps混用 | [S01] | 原文范围核实，使用方式待定 |
 | NT06 | 功率/噪声/信道增益 | Energy指向其引用[47]，未核对前不伪造0.1W/噪声数值来源 | [S01]；当前代码输入的是有效速率 | 物理参数待核查 |
-| NT07 | 传播时延 | 原文0.2–1时间单位；预实验显式1单位=1秒，即200–1000ms | [S01]范围；用户本轮允许的时间映射，不是原文秒制测量 | 预实验允许；正式待确认 |
+| NT07 | 传播时延 | 每跳0.2–2ms；配置直接保存毫秒，不再使用旧时间单位换算 | 用户本轮指定，不称为前作原数值 | 用户确认；已实现 |
 | NT08 | 非文本每请求传输量 | 2–10 MB作为前作参考；不能自动当作全部送入LLM的文本 | [S01] | 原文范围核实 |
 | NT09 | 文本字节/token | 旧4字节/token为近似，须由文本/tokenizer统计或明确假设 | [S10]不是经验测量 | 待确认/标定 |
 | NT10 | 时隙秒数 | 兼容元数据示例1秒，不进入通信时延、利用率或成本率；不是性能图自变量 | 用户选择的固定计量窗口与成本率 | 已修正；不解释为动作生效时长 |
 | NT11 | 通信时延时间因子 | 聚合业务率乘固定network_accounting_window_s；示例1秒，不乘物理时隙长度 | 本轮选择；Energy式(7)(8)，博士式(4-12)(4-13)的单位补充 | 已实现；值待正式冻结 |
 | NT12 | 网络费用时间因子 | Mbps转MB/s后乘单位MB价格，作为成本率；不乘slot_seconds | 本轮选择与秒制费率 | 已实现，原重复乘法已移除 |
-| AR01 | 应用相对负载权重 | 前作1–10仅作范围参考；现生成预实验每应用U(0.005,0.02)请求/s，规模增加不缩小旧应用总率 | 已声明生成器示例；不冒充前作LLM负载 [S01][S02] | 预实验明确；正式负载待定 |
-| AR02 | 总请求率 | 用固定、非学习参照定义场景承载基准 | 初始方案不借用旧无效容量值 | 方法候选 |
-| AR03 | 负载扫描点 | 0.4/0.6/0.8/1.0/1.2为原合成候选 | 非前作明确同义值 | 待确认 |
+| AR01 | 应用相对负载权重 | 保留每应用U(0.005,0.02)请求/s；已生成应用沿用其保存值，不因本轮硬件变化重新抽率 | 用户本轮要求负载先固定 | 当前固定；不按资源改动 |
+| AR02 | 总请求率 | 现有应用总率求和，不按GPU/服务器容量归一化；跨网络重映射保持每应用总率 | 用户明确不配合资源规模修改具体负载 | 已确定当前口径 |
+| AR03 | 负载扫描点 | 本轮不启用容量目标0.4/0.6/0.8/1.0/1.2等扫描或自动负载标定 | 原候选暂停，不作为本轮要求 | 后续另定 |
 | AR04 | 时隙到达率波动 | 旧基准乘0.6–1.4，轨迹生成后跨episode固定 | 当前采样范围 [S10] | 固定轨迹确认；幅度候选 |
 | AR05 | 入口零率 | 在固定支持集外为0；不要通过扩大入口数扩大总请求率 | 用户选择与守恒 | 用户确认 |
 | SL01 | SLO类型 | 流式/截止期/复合 | 当前建模，JITServe请求类型参考 [S03] | 类型已确定 |
@@ -473,7 +475,7 @@ JITServe 公开资料固定到 commit `84584a119b892cf90c65e2b3f5bac67250d39d27`
 - **S05：BurstGPT。** [作者项目](https://github.com/HPMLL/BurstGPT)。本地副本在 `data/raw/burstgpt_v2/`，是无失败版本；仅作补充通用长度/到达统计，不提供本文Agent图或Qwen质量。
 - **S06：Alibaba微服务数据。** [官方说明](https://github.com/alibaba/clusterdata/blob/master/cluster-trace-microservices-v2021/README.md)。有调用图与资源/调用统计；本轮没有重做原始数据拟合，不能将人工区间说成数据集测量。
 - **S07：vLLM v0.31.0，commit db9527a46873454610df6dbedf79a36d6bf1a7f6。** [EngineArgs入口解析](https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/engine/arg_utils.py) 中 `get_batch_defaults`、`_set_default_max_num_seqs_and_batched_tokens_args`、`_set_default_chunked_prefill_and_prefix_caching_args`；[调度配置](https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/config/scheduler.py)；[实际调度器](https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/v1/core/sched/scheduler.py)；[CacheConfig](https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/config/cache.py)；[性能模式](https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/config/vllm.py)。以线上入口最终解析值为准，不只读SchedulerConfig测试默认。
-- **S08：GPU厂家规格。** [RTX A6000](https://www.nvidia.com/content/dam/en-zz/Solutions/products/workstations/nvidia-rtx-a6000-datasheet.pdf)，[RTX4090架构白皮书](https://images.nvidia.cn/aem-dam/Solutions/Data-Center/l4/nvidia-ada-gpu-architecture-whitepaper-v2.1.pdf)。仅支撑物理显存和标称带宽等规格，不支撑60/120 TFLOP/s、75%效率或1.6倍TP的实测声明。
+- **S08：GPU资料与数值边界。** 主仿真为A10/L20/H20。[A10厂家规格](https://www.nvidia.com/en-us/data-center/products/a10-gpu/)支持24GB/600GB/s；[L20官方vGPU表](https://docs.nvidia.com/ai-enterprise-4.3/ai-enterprise/4.3/user-guide/index.html)与[H20 96GB官方表](https://docs.nvidia.com/ai-enterprise/release-4/4.10/infra-software/vgpu/reference/hopper.html)支持显存档位。L20/H20带宽864/4000GB/s及125/119.5/148 TFLOP/s算力当前作为旧硬件目录数值锚点，不将本轮未补全的原始规格核查冒充已验证有效性能；75%带宽效率、1.6倍TP和相对价格也不是实测。真实校验硬件仍为[RTX A6000](https://www.nvidia.com/content/dam/en-zz/Solutions/products/workstations/nvidia-rtx-a6000-datasheet.pdf)与[RTX4090](https://images.nvidia.cn/aem-dam/Solutions/Data-Center/l4/nvidia-ada-gpu-architecture-whitepaper-v2.1.pdf)，不再限制主仿真范围。
 - **S09：模型配置。** [Qwen3-4B](https://huggingface.co/Qwen/Qwen3-4B/blob/main/config.json)，[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B/blob/main/config.json)，[Qwen3-14B](https://huggingface.co/Qwen/Qwen3-14B/blob/main/config.json)，[Qwen3-32B](https://huggingface.co/Qwen/Qwen3-32B/blob/main/config.json)。正式清单仍须固定各模型revision，不能只记录可变的main。
 - **S10：当前代码/旧配置，仅作兼容性核查。** `scripts/run_slot_joint.py`、`src/agent_orch/agents/config.py`、`networks.py`、`envs/slot_joint_env.py`、`workload/slot_trajectory.py`、`performance/network.py`、`simulator/core.py`、`data/preconstructed_agent_workloads.yaml`。旧四类配置明确是人工预构建参考，不能当作原始JITServe或Agent数据实测。旧0.9/8192/128/512/四副本等不会因曾写入代码自动变成新实验依据。
 
