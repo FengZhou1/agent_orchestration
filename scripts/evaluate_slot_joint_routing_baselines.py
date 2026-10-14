@@ -19,6 +19,7 @@ from agent_orch.schema.loader import ScenarioLoader
 from run_slot_joint import (
     _evaluate_routing_baselines, _write_json, environment_options,
     load_training_trajectory, EVALUATION_PROTOCOL,
+    load_warmup_deployments,
 )
 
 
@@ -37,6 +38,7 @@ def main() -> None:
         raise ValueError("Scenario changed since training")
     scenario = ScenarioLoader.load(scenario_path)
     trajectory = load_training_trajectory(args.run, manifest)
+    options["warmup_deployments"] = load_warmup_deployments(args.run, manifest, scenario, trajectory)
     spec_fields = {field.name for field in fields(ObjectiveSpec)}
     objective = ObjectiveSpec(**{
         key: value for key, value in manifest["objective"].items()
@@ -56,6 +58,7 @@ def main() -> None:
         "physical_routing": options["routing_method"],
         "scenario_hash": manifest["scenario_hash"],
         "trajectory_digest": trajectory.digest(),
+        "warmup_deployment_digest": manifest.get("warmup_deployment_digest"),
         "evaluation_protocol": EVALUATION_PROTOCOL,
         "trajectory_seed": trajectory.seed,
         "mapping_samples": args.mapping_samples,

@@ -9,6 +9,8 @@
 | rebind_agent_tools.py | 已保存池的工具规模变体；须保持网络兼容 |
 | audit_registered_parameters.py | 登记表全行清单与数值/结构检查 |
 | calibrate_synthetic_slos.py | 固定8B/L20参照、一次性冻结SLO；不运行PPO、不改训练负载 |
+| build_warmup_deployments.py | 生成固定多槽轨迹及资源可行、多模型/容量/位置覆盖的预训部署，无教师动作 |
+| verify_warmup_deployments.py | 摘要/覆盖核验，可选完整确定性重生成与固定混合探针的工作流诊断；不筛选部署 |
 | run_slot_joint.py | 三阶段PPO与训练轨迹评价；正式参数冻结检查 |
 | evaluate_slot_joint_snapshot.py | 保存配置下的快照评价，不采另一轨迹 |
 | evaluate_slot_joint_routing_baselines.py | 同轨迹、同预训部署上下文的模型选择基线 |

@@ -1,0 +1,9 @@
+# Constructive pre-experiment contexts, NOT learned deployments or formal optima.
+# Separate from PPO seeds and from the registered physical/workload parameters.
+gpu_fractions: [0.35, 0.55, 0.75, 0.90]
+model_biases: [balanced, light, large]
+placements: [dispersed, ingress_near, concentrated, tool_near]
+tool_utilization_targets: [0.45, 0.70, 0.90]
+extra_tool_probabilities: [0.0, 0.20, 0.45]
+attempts_per_slot: 48
+repair_gpu_fraction: 0.95

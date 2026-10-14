@@ -10,6 +10,7 @@ import gymnasium as gym
 
 from agent_orch.baselines import GreedyPolicy
 from agent_orch.capacity import CapacityPlanner
+from agent_orch.deployment.warmup import FixedWarmupDeployments
 from agent_orch.objective import ObjectiveEvaluator
 from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.models import NodeType, Scenario
@@ -34,6 +35,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         *args: Any,
         routing_method: str = "capacity_proportional",
         replay_frozen_deployment_steps: bool = False,
+        warmup_deployments: FixedWarmupDeployments | None = None,
         **kwargs: Any,
     ) -> None:
         if scenario.id != trajectory.scenario_id or not trajectory.slots:
@@ -45,6 +47,10 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         if routing_method != "capacity_proportional":
             raise ValueError("Only capacity_proportional physical routing is supported")
         trajectory.validate_against(scenario)
+        if warmup_deployments is not None:
+            warmup_deployments.validate(scenario, trajectory)
+        self.warmup_deployments = warmup_deployments
+        self.warmup_digest = warmup_deployments.digest() if warmup_deployments else None
         self.routing_method = routing_method
         self.replay_frozen_deployment_steps = replay_frozen_deployment_steps
         self._slot_routers: dict[int, Any] = {}
@@ -92,6 +98,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def reward_state(self) -> dict[str, Any]:
         return {
             "trajectory_digest": self.trajectory.digest(),
+            "warmup_deployment_digest": self.warmup_digest,
             "routing_method": self.routing_method,
             "replay_frozen_deployment_steps": self.replay_frozen_deployment_steps,
             "previous_round": self._previous_round,
@@ -113,6 +120,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def restore_reward_state(self, state: dict[str, Any]) -> None:
         if state["trajectory_digest"] != self.trajectory.digest():
             raise ValueError("Checkpoint reward baseline belongs to a different trajectory")
+        if state.get("warmup_deployment_digest") != self.warmup_digest:
+            raise ValueError("Checkpoint reward baseline uses different warm-up deployments")
         if (state.get("routing_method") != self.routing_method
                 or state.get("replay_frozen_deployment_steps", True)
                 != self.replay_frozen_deployment_steps):
@@ -243,6 +252,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         observation, info = super().reset(seed=seed, options=options)
         self.trace_offset = 0
         info["trajectory_digest"] = self.trajectory.digest()
+        info["warmup_deployment_digest"] = self.warmup_digest
         return observation, info
 
     def _draw_trace_offset(self, seed: int | None) -> int:
@@ -338,6 +348,12 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def _sample_stage_deployment(self):
         """A feasible placement fixed per slot across routing warm-up episodes."""
         started = time.perf_counter()
+        if self.warmup_deployments is not None:
+            placement = self.warmup_deployments.deployment_at(self._period_index)
+            self._add_time("fixed_placement", time.perf_counter() - started)
+            return placement
+        # Historical toy/benchmark compatibility only. The main training entry
+        # always supplies a saved constructive bank for composition warm-up.
         placement = self.planner.initial_deployment()
         rng = np.random.default_rng(
             self.trajectory.seed + 7919 * self._period_index

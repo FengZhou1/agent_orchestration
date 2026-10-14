@@ -26,6 +26,7 @@ from run_slot_joint import (
     _evaluate, _evaluate_baselines, _evaluate_routing_baselines,
     _write_json, environment_options, load_training_trajectory, EVALUATION_PROTOCOL,
     checkpoint_trajectory_digest,
+    load_warmup_deployments,
 )
 
 
@@ -46,6 +47,8 @@ def main() -> None:
         raise ValueError("Scenario changed since training")
     scenario = ScenarioLoader.load(scenario_path)
     trajectory = load_training_trajectory(args.run, manifest)
+    warmup = load_warmup_deployments(args.run, manifest, scenario, trajectory)
+    options["warmup_deployments"] = warmup
     spec_fields = {field.name for field in fields(ObjectiveSpec)}
     objective = ObjectiveSpec(**{
         key: value for key, value in manifest["objective"].items()
@@ -66,6 +69,8 @@ def main() -> None:
         raise ValueError("Capacity-routing snapshot is missing its routing provenance")
     if checkpoint_trajectory_digest(checkpoint) != trajectory.digest():
         raise ValueError("Policy snapshot belongs to a different training trajectory")
+    if checkpoint.get("warmup_deployment_digest") != manifest.get("warmup_deployment_digest"):
+        raise ValueError("Policy snapshot belongs to different warm-up contexts")
     if (checkpoint.get("scenario_hash") is not None
             and checkpoint["scenario_hash"] != manifest["scenario_hash"]):
         raise ValueError("Policy snapshot belongs to a different scenario")
@@ -93,6 +98,7 @@ def main() -> None:
         "evaluation_protocol": EVALUATION_PROTOCOL,
         "trajectory_seed": trajectory.seed,
         "policy_source_trajectory_digest": checkpoint_trajectory_digest(checkpoint),
+        "warmup_deployment_digest": manifest.get("warmup_deployment_digest"),
         "mapping_samples": mapping_samples,
         "trajectory_digest": trajectory.digest(),
         "mean_utility": float(np.mean([row["utility"] for row in rows])),
@@ -126,6 +132,7 @@ def main() -> None:
         "policy_state_dict": checkpoint["policy_state_dict"],
         "trajectory_digest": trajectory.digest(),
         "scenario_hash": manifest["scenario_hash"],
+        "warmup_deployment_digest": manifest.get("warmup_deployment_digest"),
         "mapping_samples": mapping_samples,
     }, temporary_policy_output)
     temporary_policy_output.replace(policy_output)

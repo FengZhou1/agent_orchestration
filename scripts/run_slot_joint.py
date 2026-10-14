@@ -19,6 +19,8 @@ import torch
 from agent_orch.agents import StructuredActorCritic, TrainingProgressReporter, train_ppo
 from agent_orch.baselines import make_policy
 from agent_orch.envs import SlotSequentialJointEnv
+from agent_orch.deployment.warmup import (DEFAULT_CONFIG, FixedWarmupDeployments,
+    VERSION as WARMUP_PROTOCOL, WarmupSpec, coverage_report, generate_warmup_deployments)
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec
 from agent_orch.parameters import (
     DEFAULT_SETTINGS, audit_scenario, load_settings, make_ppo_config,
@@ -62,6 +64,21 @@ def checkpoint_trajectory_digest(checkpoint):
     return checkpoint.get("trajectory_digest") or checkpoint.get("environment_reward_state", {}).get("trajectory_digest")
 
 
+def load_warmup_deployments(run, manifest, scenario, trajectory):
+    digest = manifest.get("warmup_deployment_digest")
+    if digest is None:
+        if manifest.get("warmup_protocol") or (Path(run) / "warmup_deployments.json").exists():
+            raise ValueError("Warm-up provenance is missing from the manifest")
+        # Historical runs retain their historical context sampler when read.
+        return None
+    if manifest.get("warmup_protocol") != WARMUP_PROTOCOL:
+        raise ValueError("Unknown warm-up context protocol in manifest")
+    bank = FixedWarmupDeployments.load(Path(run) / "warmup_deployments.json", scenario, trajectory)
+    if bank.digest() != digest:
+        raise ValueError("Saved warm-up bank differs from training manifest")
+    return bank
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -72,12 +89,14 @@ def _evaluate(
     evaluation_phase: str = "joint",
     routing_method: str = PHYSICAL_ROUTING,
     replay_frozen_deployment_steps: bool = False,
+    warmup_deployments: FixedWarmupDeployments | None = None,
 ) -> list[dict[str, object]]:
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=mapping_samples,
         seed=trajectory.seed, objective=objective_spec,
         routing_method=routing_method,
         replay_frozen_deployment_steps=replay_frozen_deployment_steps,
+        warmup_deployments=warmup_deployments,
     )
     env.training_phase = evaluation_phase
     observation, _ = env.reset(seed=trajectory.seed)
@@ -175,6 +194,7 @@ def _evaluate_routing_baselines(
     objective_spec: ObjectiveSpec,
     routing_method: str = PHYSICAL_ROUTING,
     replay_frozen_deployment_steps: bool = False,
+    warmup_deployments: FixedWarmupDeployments | None = None,
 ) -> dict[str, object]:
     """Compare model shares under exactly the routing warm-up placements."""
     results = {}
@@ -184,6 +204,7 @@ def _evaluate_routing_baselines(
             seed=trajectory.seed, objective=objective_spec,
             routing_method=routing_method,
             replay_frozen_deployment_steps=replay_frozen_deployment_steps,
+            warmup_deployments=warmup_deployments,
         )
         env.training_phase = "composition"
         observation, _ = env.reset(seed=trajectory.seed)
@@ -249,6 +270,10 @@ def main() -> None:
                         help="Deployment-only updates; defaults to registered phase ratio")
     parser.add_argument("--seed", type=int, default=0, help="PPO random seed")
     parser.add_argument("--trajectory-seed", type=int, default=101)
+    parser.add_argument("--warmup-bundle", type=Path,
+                        help="Reuse both saved trajectory and deployment contexts, independent of PPO seed")
+    parser.add_argument("--warmup-config", default=str(DEFAULT_CONFIG))
+    parser.add_argument("--warmup-seed", type=int, default=20261014)
     parser.add_argument("--variation", help="JSON file with SlotVariationSpec fields")
     parser.add_argument("--mapping-samples", type=int)
     parser.add_argument("--device", default="cpu")
@@ -332,6 +357,7 @@ def main() -> None:
     # All four model objectives remain visible while SLO attainment is also an
     # explicit constraint.  Weights/target are placeholders pending calibration.
     objective_spec = ObjectiveSpec(**settings["objective"])
+    warmup_spec = WarmupSpec.load(args.warmup_config)
     if not args.smoke and asdict(variation) != asdict(SlotVariationSpec(**settings["variation"])):
         raise ValueError("Trajectory overrides require --smoke or an updated settings profile")
     output.mkdir(parents=True, exist_ok=True)
@@ -346,6 +372,16 @@ def main() -> None:
             raise ValueError(f"Resume requires {PROTOCOL}; use a new output directory")
         environment_options(manifest)
         trajectory = load_training_trajectory(output, manifest)
+        warmup = load_warmup_deployments(output, manifest, scenario, trajectory)
+        if route_updates and warmup is None:
+            raise ValueError("Old warm-up runs cannot resume with the new contexts; choose a new directory")
+        if warmup is not None and (warmup.seed != args.warmup_seed or
+                json.loads(json.dumps(warmup.spec)) != json.loads(json.dumps(asdict(warmup_spec)))):
+            raise ValueError("Warm-up generation settings differ from checkpoint")
+        if args.warmup_bundle:
+            requested = FixedWarmupDeployments.load(args.warmup_bundle / "warmup_deployments.json", scenario, trajectory)
+            if warmup is None or requested.digest() != warmup.digest():
+                raise ValueError("Requested warm-up bundle differs from saved run")
         if manifest["scenario_hash"] != scenario_hash or manifest["trajectory_digest"] != trajectory.digest():
             raise ValueError("Scenario or trajectory changed since the checkpoint")
         if len(trajectory) != args.slots or trajectory.seed != args.trajectory_seed:
@@ -358,17 +394,39 @@ def main() -> None:
         if (resume_state.get("protocol") != PROTOCOL
                 or resume_state.get("physical_routing") != PHYSICAL_ROUTING):
             raise ValueError("Checkpoint does not belong to the capacity-routing protocol")
+        if resume_state.get("warmup_deployment_digest") != (warmup.digest() if warmup else None):
+            raise ValueError("Checkpoint uses different warm-up deployments")
     else:
         if any(path.exists() for path in (trajectory_path, checkpoint_path, manifest_path)):
             raise FileExistsError("Output already contains a slot-joint run; choose a new directory or --resume")
-        trajectory = SlotTrajectory.sample(scenario, args.slots, args.trajectory_seed, variation)
+        if args.warmup_bundle:
+            trajectory = SlotTrajectory.from_dict(json.loads((args.warmup_bundle / "train_trajectory.json").read_text(encoding="utf-8")))
+            if (len(trajectory) != args.slots or trajectory.seed != args.trajectory_seed
+                    or json.loads(json.dumps(asdict(trajectory.variation))) != json.loads(json.dumps(asdict(variation)))):
+                raise ValueError("Warm-up bundle slot count/seed/variation differs from requested training")
+            warmup = FixedWarmupDeployments.load(args.warmup_bundle / "warmup_deployments.json", scenario, trajectory)
+            if warmup.seed != args.warmup_seed or json.loads(json.dumps(warmup.spec)) != json.loads(json.dumps(asdict(warmup_spec))):
+                raise ValueError("Warm-up bundle settings differ from request")
+        else:
+            trajectory = SlotTrajectory.sample(scenario, args.slots, args.trajectory_seed, variation)
+            warmup = None
+            if route_updates:
+                print("[init] generating fixed warm-up deployments (no PPO score filtering)", flush=True)
+                warmup = generate_warmup_deployments(scenario, trajectory, args.warmup_seed, warmup_spec,
+                    lambda e: print(f"[warmup] slot={e['slot']+1}/{len(trajectory)} models={len(e['active_models'])} "
+                        f"LLM={e['llm_instances']} capacity_risk={e['capacity_risk']}", flush=True))
         _write_json(trajectory_path, trajectory.to_dict())
+        if warmup:
+            warmup.save(output / "warmup_deployments.json")
+            _write_json(output / "warmup_coverage.json", coverage_report(warmup))
         resume_state = None
         _write_json(manifest_path, {
             "protocol": PROTOCOL,
             "scenario": str(scenario_path.resolve()),
             "scenario_hash": scenario_hash,
             "trajectory_digest": trajectory.digest(),
+            "warmup_deployment_digest": warmup.digest() if warmup else None,
+            "warmup_protocol": WARMUP_PROTOCOL if warmup else None,
             "trajectory_seed": trajectory.seed,
             "slots": len(trajectory),
             "variation": asdict(variation),
@@ -396,12 +454,14 @@ def main() -> None:
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=args.mapping_samples,
         seed=args.seed, objective=objective_spec,
+        warmup_deployments=warmup,
     )
 
     def checkpoint(state):
         state = {**state, "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
                  "evaluation_protocol": EVALUATION_PROTOCOL,
                  "scenario_hash": scenario_hash, "trajectory_digest": trajectory.digest(),
+                 "warmup_deployment_digest": warmup.digest() if warmup else None,
                  "ppo_config": config.to_dict()}
         state["parameter_receipt"] = settings_receipt(settings)
         temporary = checkpoint_path.with_suffix(".tmp.pt")
@@ -448,11 +508,13 @@ def main() -> None:
         scenario, evaluation_trace, policy, args.mapping_samples,
         args.device, objective_spec,
         evaluation_phase=("composition" if phase_schedule[-1][0] == "composition" else "joint"),
+        warmup_deployments=warmup,
     )
     _write_json(output / "evaluation.json", {
         "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
         "evaluation_protocol": EVALUATION_PROTOCOL,
         "trajectory_digest": evaluation_trace.digest(),
+        "warmup_deployment_digest": warmup.digest() if warmup else None,
         "evaluation_phase": ("composition" if phase_schedule[-1][0] == "composition" else "joint"),
         "slots": rows,
         "mean_utility": float(np.mean([row["utility"] for row in rows])),
@@ -474,8 +536,10 @@ def main() -> None:
             "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
             "evaluation_protocol": EVALUATION_PROTOCOL,
             "trajectory_digest": evaluation_trace.digest(),
+            "warmup_deployment_digest": warmup.digest() if warmup else None,
             "policies": _evaluate_routing_baselines(
-                scenario, evaluation_trace, args.mapping_samples, objective_spec
+                scenario, evaluation_trace, args.mapping_samples, objective_spec,
+                warmup_deployments=warmup,
             ),
         })
     print(f"Completed {args.updates} PPO updates; trajectory {trajectory.digest()[:12]}; output {output}")

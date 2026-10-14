@@ -73,6 +73,27 @@ python scripts/rebind_agent_tools.py `
 
 ## 4. 预实验训练
 
+模型选择预训现采用[固定多样部署生成器](docs/warmup_deployments_2026-10-14.md)。先保存一条多槽轨迹及对应部署；训练各回合、各PPO种子复用同一份。不是每轮重新抽部署，也不是在同一贪心部署上只增加实例。
+
+```powershell
+python scripts/build_warmup_deployments.py `
+  --scenario results/slo_calibrated_main_20261014/servers_20_applications_50.yaml `
+  --slots 32 --trajectory-seed 101 --deployment-seed 20261014 `
+  --output results/my_warmup_n20_a50
+
+# 示例预算500轮，只训练模型选择，不自动进入部署/联合阶段。
+python scripts/run_slot_joint.py `
+  --scenario results/slo_calibrated_main_20261014/servers_20_applications_50.yaml `
+  --warmup-bundle results/my_warmup_n20_a50 `
+  --output results/my_composition_n20_a50_s0 `
+  --slots 32 --trajectory-seed 101 --warmup-seed 20261014 `
+  --updates 500 --route-updates 500 --deploy-updates 0 --seed 0 --device cpu
+```
+
+生成器的GPU占用档、模型偏置、位置及工具冗余档位见`configs/warmup_deployments.yaml`，均为明示的预实验设计，不是文献推荐值或最优部署。省略`--warmup-bundle`时，含composition阶段的新运行会在训练前自动生成并保存同类部署。批量PPO种子建议显式复用bundle。两种后续训练阶段仍由部署actor决定，不从库里选部署。
+
+**本轮已生成的20台/50应用文件位于`results/warmup_n20_a50_32slots_final_20261014/`。**无需再生成即可将该路径传给`--warmup-bundle`。它是训练输入，不是策略训练结果。32槽的部署/联合阶段仍有大rollout观测缓存开销，以上仅给模型选择入口；不建议未经内存验收直接启动整套长训。
+
 以下是功能试跑，不是正式收敛预算：
 
 ```powershell
@@ -115,7 +136,7 @@ Get-Content results/single_slot_n20_a50_s0/training_status.json -Raw
 Get-Content results/single_slot_n20_a50_s0/training_history.jsonl -Tail 3
 ```
 
-原2000轮单槽任务中断后，用原命令原参数加`--resume`，不覆盖场景或改变阶段预算。新日志记录后续轮次，旧轮次仍保留在原`history.json`，实际恢复以检查点为准。缓存与等价性核验见[运行时优化记录](docs/runtime_exact_cache_2026-10-14.md)；这些改动降低重复计算，不包含最大规模PPO整轮缓存的存储压缩。
+新多槽部署与原2000轮单槽任务不兼容，须新目录、随机初始化，不能用原checkpoint续训新上下文。原结果未覆盖；历史无部署摘要的warm-up运行由本版入口拒绝恢复，读取历史评价仍保留原采样器。新运行恢复要求部署摘要也一致。缓存与等价性核验见[运行时优化记录](docs/runtime_exact_cache_2026-10-14.md)；这些改动降低重复计算，不包含最大规模PPO整轮缓存的存储压缩。
 
 工作流评价现默认采用[整数索引与样本批量计算](docs/indexed_workflow_2026-10-14.md)：保留同一采样器，每个映射独立求关键路径/判断SLO，再按原样本顺序汇总。`benchmark_slot_runtime.py --scalar-workflow`仅用于与保留的标量实现对照，不是另一种训练算法。原训练命令无需新增开关。
 

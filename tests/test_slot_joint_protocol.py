@@ -110,6 +110,12 @@ def test_main_evaluates_training_trace_without_another_sampling_call(tmp_path, m
     evaluation = json.loads((tmp_path / "evaluation.json").read_text(encoding="utf-8"))
     baselines = json.loads((tmp_path / "baselines.json").read_text(encoding="utf-8"))
     assert manifest["trajectory_digest"] == evaluation["trajectory_digest"] == baselines["trajectory_digest"]
+    assert manifest["warmup_deployment_digest"] == evaluation["warmup_deployment_digest"]
+    from run_slot_joint import load_warmup_deployments
+    from agent_orch.schema.loader import ScenarioLoader
+    saved_bank = load_warmup_deployments(tmp_path, manifest, ScenarioLoader.load("configs/toy.yaml"),
+                                      run_slot_joint.load_training_trajectory(tmp_path, manifest))
+    assert saved_bank is not None
     assert evaluation["evaluation_protocol"] == run_slot_joint.EVALUATION_PROTOCOL
     assert not (tmp_path / "evaluation_trajectory.json").exists()
 
