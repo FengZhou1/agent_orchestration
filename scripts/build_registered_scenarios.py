@@ -15,12 +15,14 @@ import yaml
 from agent_orch.parameters import (
     DEFAULT_SETTINGS, audit_scenario, load_settings, require_consistent,
     require_formal_ready, settings_receipt,
+    configured_contracts,
 )
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload.agent_pool import (
     GeneratorConfig, digest, generate_pool, pool_from_mapping, scenario_mapping,
 )
 from agent_orch.workload.infrastructure import build_infrastructure, remap_pool_payload
+from agent_orch.workload.slo_calibration import apply_contracts
 
 
 def main():
@@ -34,9 +36,11 @@ def main():
     parser.add_argument("--tool-types", type=int)
     parser.add_argument("--calibration-passes", type=int, help="Explicit generation diagnostic override")
     parser.add_argument("--formal", action="store_true", help="Require an author-frozen parameter profile")
+    parser.add_argument("--slo-variant", choices=("main", "tight"), default="main")
     args = parser.parse_args()
     settings = load_settings(args.settings)
     source_receipt = settings_receipt(settings)
+    contracts = configured_contracts(settings)
     if args.formal:
         require_formal_ready(settings)
     if args.output.exists():
@@ -78,6 +82,8 @@ def main():
             # in the scenario ID too, so trajectories cannot cross networks.
             from dataclasses import replace
             scene = replace(scene, id=f"{scene.id}-n{n}")
+            if contracts is not None:
+                scene = apply_contracts(scene, contracts, args.slo_variant)
             report = audit_scenario(scene, settings)
             require_consistent(report)
             scenes.append((n, a, scene, report))
@@ -90,6 +96,8 @@ def main():
                 "receipt": source_receipt, "pending": settings["pending"],
                 "pool_digest": digest(payload), "source_pool": str(args.pool) if args.pool else None,
                 "generator_config": payload["config"], "scenarios": {}}
+    manifest["slo_calibration"] = ({"contract_digest": contracts["contract_digest"],
+                                   "variant": args.slo_variant} if contracts is not None else None)
     for n, network in networks.items():
         (args.output / f"infrastructure_n{n}.yaml").write_text(
             yaml.safe_dump(scenario_mapping(network), sort_keys=False), encoding="utf-8")

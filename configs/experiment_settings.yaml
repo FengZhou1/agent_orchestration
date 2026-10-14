@@ -7,6 +7,7 @@ application_counts: [20, 50, 100, 200]
 tool_counts: [20, 50, 100, 200]
 generator: configs/agent_generator.yaml
 model_catalog: configs/qwen3_model_catalog.yaml
+slo_contracts: data/catalogs/slo_reference_20261014/contracts.json
 infrastructure:
   seed: 20261014
   server_count: 20
@@ -104,7 +105,7 @@ pending:
   LM11_LM17_LM21: fixed-chunk real engine and actual KV capacity validation
   NT02_NT06_NT09: topology density, PHY boundary, bytes/token
   AR03: optional future load scan; do not change current application rates or slot fluctuations
-  SL02_SL03_SL04_SL05_SL06_QU01_QU02: SLO and synthetic quality contract
+  SL02_QU01_QU02: SLO type mixture and synthetic quality choices; latency contracts are now reference-calibrated
   CO01_CO02_CO03_CO04_NT11: price, amortization and accounting-window choices
   OB01_OB02_OB03_OB06: utility weights, safety targets and fixed references
   RL02_RL05_RL06_RL10_RL13_RL16_RL17_RL18_RL21_RL22_RL28_RL29: learning and evaluation budget

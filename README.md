@@ -4,7 +4,9 @@
 
 用户允许候选用于预实验，正式训练仍须确认。未冻结项由`pending`列出，`--formal`会拒绝启动。新网络、GPU效率、非KV显存、价格、传播时间映射均是显式合成假设，不是实测数据。接线与验收边界见[全参数核对记录](docs/parameter_alignment_2026-10-14.md)。
 
-本轮更新：主仿真A10/L20/H20，真机4090/A6000只留之后校验。A10/L20批预算/序列上限为2048/256，H20（96GiB档）为8192/1024，来自固定v0.31.0在线默认。相同配置允许多个实例候选，`replica_index`区分副本，GPU/显存仍共享原掩码；TP=2不是两个副本。每跳传播为0.2–2ms。**负载不按资源规模缩放，已有池的应用总率不重抽；SLO稍后确定，原占位值不改、不标定。**详情见[GPU与副本改动记录](docs/datacenter_gpu_update_2026-10-14.md)。
+主仿真A10/L20/H20，真机4090/A6000只留之后校验。A10/L20批预算/序列上限为2048/256，H20（96GiB档）为8192/1024，来自固定v0.31.0在线默认。相同配置允许多个实例候选，`replica_index`区分副本，GPU/显存仍共享原掩码；TP=2不是两个副本。每跳传播为0.2–2ms。**负载不按资源规模缩放，已有池的应用总率不重抽。**详情见[GPU与副本改动记录](docs/datacenter_gpu_update_2026-10-14.md)。
+
+随后SLO已按用户确认完成[固定参照标定](docs/slo_calibration_2026-10-14.md)：8B＋单L20，pattern加权参考q95的TTFT/完整时延乘1.5、TBT乘1.25；tight为main的0.8倍。合同由`configs/experiment_settings.yaml`的`slo_contracts`引用，生成场景自动应用并校验；同一逻辑请求跨资源规模不重标。原pool.json仍保存原始生成参数/占位合同，实际训练以生成场景和独立冻结合同为准。训练负载未改。
 
 ## 1. 训练与评价
 
@@ -43,6 +45,11 @@ python -m pytest @taskTests
 python scripts/build_registered_scenarios.py `
   --servers 10,20,30,40,50 --subsets 20,50,100,200 `
   --output results/registered_scenarios
+
+# 同一冻结合同的紧档敏感性场景，不是重新标定。
+python scripts/build_registered_scenarios.py `
+  --pool results/registered_scenarios/pool.json --servers 20 `
+  --subsets 20,50,100,200 --slo-variant tight --output results/registered_slos_tight
 
 python scripts/audit_registered_parameters.py `
   --scenario results/registered_scenarios/servers_20_applications_50.yaml
@@ -110,7 +117,10 @@ manifest记录完整PPO/目标/阶段设置、参数表/配置/模型清单摘�
 | src/agent_orch/envs/slot_joint_env.py | 槽内顺序部署和模型选择、同槽反馈 |
 | src/agent_orch/routing/capacity.py | 唯一物理路由 |
 | src/agent_orch/agents/ | 两分支PPO、critic与乘子更新 |
+| configs/slo_calibration.yaml | 已声明的固定参照、q95与倍率 |
+| data/catalogs/slo_reference_20261014/ | 冻结阈值及1171条pattern参考记录 |
+| src/agent_orch/workload/slo_calibration.py | 参考工作流、条件阶段分位数及固定合同校验 |
 
-`configs/benchmarks/`、旧矩阵/蒸馏/内层求解器脚本及旧结果仅为历史资产，不是参数依据或主训练流程。未删除它们，也未把旧结果重标为新协议结果。单网络生成器只有显式`--legacy-smoke`才允许不符合登记表的旧基础模板。固定chunk实机、实际KV、SLO、质量、价格和正式预算仍待确认/校验，未声称已经完成真实服务器实验。
+`configs/benchmarks/`、旧矩阵/蒸馏/内层求解器脚本及旧结果仅为历史资产，不是参数依据或主训练流程。未删除它们，也未把旧结果重标为新协议结果。单网络生成器只有显式`--legacy-smoke`才允许不符合登记表的旧基础模板。固定chunk实机、实际KV、质量、价格和正式预算仍待确认/校验；合成SLO已标定，但不代表真实服务器SLA已经验证。
 
 旧console接口`agent-orch-sim`也必须显式`--legacy-smoke`，防止误跑旧环境/奖励；当前各脚本角色见[scripts/README](scripts/README.md)。

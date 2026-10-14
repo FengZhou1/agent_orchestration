@@ -10,8 +10,9 @@ from pathlib import Path
 import yaml
 
 from agent_orch.schema.loader import ScenarioLoader
-from agent_orch.parameters import DEFAULT_SETTINGS, load_settings, audit_scenario, require_consistent, settings_receipt
+from agent_orch.parameters import DEFAULT_SETTINGS, load_settings, audit_scenario, require_consistent, settings_receipt, configured_contracts
 from agent_orch.workload.infrastructure import build_infrastructure
+from agent_orch.workload.slo_calibration import apply_contracts
 from agent_orch.workload.agent_pool import (
     GeneratorConfig, generate_pool, digest, pool_statistics, scenario_mapping,
 )
@@ -31,6 +32,7 @@ def main():
     parser.add_argument("--seed", type=int)
     parser.add_argument("--subsets", default="20,50,100,200")
     parser.add_argument("--calibration-passes", type=int)
+    parser.add_argument("--slo-variant", choices=("main", "tight"), default="main")
     args = parser.parse_args()
     raw = yaml.safe_load(args.config.read_text(encoding="utf-8")) or {}
     unknown = set(raw) - {f.name for f in fields(GeneratorConfig)}
@@ -46,6 +48,7 @@ def main():
     if args.output.exists():
         raise FileExistsError("Choose a new output directory; generated data is not overwritten")
     settings = load_settings(args.settings)
+    contracts = configured_contracts(settings) if not args.legacy_smoke else None
     template = (ScenarioLoader.load(args.infrastructure) if args.infrastructure
                 else build_infrastructure(settings))
     if not args.legacy_smoke:
@@ -65,6 +68,8 @@ def main():
     scenarios = {}
     for n in subset_counts:
         scene = pool.scenario(template, n)
+        if contracts is not None:
+            scene = apply_contracts(scene, contracts, args.slo_variant)
         path = args.output / f"applications_{n}.yaml"
         path.write_text(yaml.safe_dump(scenario_mapping(scene), sort_keys=False, allow_unicode=True), encoding="utf-8")
         # Verify the actual on-disk file through the production loader.

@@ -108,6 +108,7 @@ def calibrated_slos(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--legacy-smoke", action="store_true")
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--policy", default="greedy")
     parser.add_argument(
@@ -135,6 +136,9 @@ def main() -> int:
         help="Scenarios that reuse the frozen SLOs of the calibrated source scenario",
     )
     args = parser.parse_args()
+    if not args.legacy_smoke:
+        parser.error("Retired calibration rescales load and overwrites files. Use calibrate_synthetic_slos.py "
+                     "for fixed-reference contracts; this entry requires explicit --legacy-smoke.")
 
     scenario_path = Path(args.scenario).resolve()
     raw = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))

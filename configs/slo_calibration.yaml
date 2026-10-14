@@ -1,0 +1,13 @@
+# Author-approved fixed reference and main multipliers. Not a real-server SLA.
+model: qwen3-8b
+gpu_type: L20
+tensor_parallel: 1
+quantile: 0.95
+probe_arrival_rps: 0.000001 # reference only; no training arrival is changed
+maximum_reference_utilization: 0.01
+link_capacity_mbps: 100.0
+propagation_ms: 1.0
+ttft_multiplier: 1.5
+tbt_multiplier: 1.25
+deadline_multiplier: 1.5
+tight_scale: 0.8 # predeclared tighter contrast: 1.2/1.0/1.2 times reference q95

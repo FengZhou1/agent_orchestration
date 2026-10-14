@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml
 
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.parameters import DEFAULT_SETTINGS, load_settings, configured_contracts
+from agent_orch.workload.slo_calibration import apply_contracts
 from agent_orch.workload.agent_pool import (
     pool_from_mapping, rebind_pool, scenario_mapping, digest,
 )
@@ -20,10 +22,13 @@ def main():
     parser.add_argument("--tool-counts", required=True, help="e.g. 20,50,100,200")
     parser.add_argument("--shared-fraction", type=float)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
+    parser.add_argument("--slo-variant", choices=("main", "tight"), default="main")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
     template = ScenarioLoader.load(args.infrastructure)
+    contracts = configured_contracts(load_settings(args.settings))
     raw = json.loads(args.pool.read_text(encoding="utf-8"))
     pool = pool_from_mapping(raw, template)
     counts = sorted({int(x) for x in args.tool_counts.split(",")})
@@ -33,6 +38,8 @@ def main():
     for n, variant in zip(counts, variants):
         path = args.output / f"tools_{n}.yaml"
         scene = variant.scenario(template)
+        if contracts is not None:
+            scene = apply_contracts(scene, contracts, args.slo_variant)
         path.write_text(yaml.safe_dump(scenario_mapping(scene), sort_keys=False, allow_unicode=True), encoding="utf-8")
         loaded = ScenarioLoader.load(path)
         assert len(loaded.tools) == n

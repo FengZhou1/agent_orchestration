@@ -91,7 +91,7 @@ def test_pool_remapping_preserves_workload_and_total_demand(settings, fixed_pool
     old, pool = fixed_pool
     new = build_infrastructure(settings, 50)
     mapped = pool_from_mapping(remap_pool_payload(pool.to_dict(), new), new)
-    require_consistent(audit_scenario(mapped.scenario(new), settings))
+    require_consistent(audit_scenario(mapped.scenario(new), settings, check_slo=False))
     for a, b in zip(pool.applications, mapped.applications):
         assert a.graph == b.graph and a.lengths == b.lengths
         assert a.spec.nodes == b.spec.nodes
@@ -108,7 +108,7 @@ def test_pool_remapping_preserves_workload_and_total_demand(settings, fixed_pool
 
 def test_audit_inventory_covers_every_register_row_without_claiming_all_verified(settings, fixed_pool):
     base, pool = fixed_pool
-    report = audit_scenario(pool.scenario(base), settings)
+    report = audit_scenario(pool.scenario(base), settings, check_slo=False)
     require_consistent(report)
     ids = [row["id"] for row in report["register_rows"]]
     assert len(ids) >= 150 and len(ids) == len(set(ids))

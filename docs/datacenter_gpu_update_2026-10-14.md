@@ -1,5 +1,7 @@
 # A10/L20/H20、多实例候选及毫秒传播时延
 
+> 本页为硬件改动时的历史记录。随后用户请求SLO标定并确认固定8B/L20参照与倍率；已完成的合同和新场景见[slo_calibration_2026-10-14.md](slo_calibration_2026-10-14.md)，不继续把占位阈值当作当前主合同。
+
 ## Material Passport
 
 - Origin Skill: academic-research-suite / experiment-agent

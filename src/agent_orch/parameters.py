@@ -28,7 +28,7 @@ def load_settings(path=DEFAULT_SETTINGS):
     settings = yaml.safe_load(path.read_text(encoding="utf-8"))
     expected = {"register", "status", "protocol", "server_counts", "application_counts",
                 "tool_counts", "generator", "model_catalog", "infrastructure", "engine",
-                "simulation", "variation", "objective", "ppo", "training", "pending"}
+                "simulation", "variation", "objective", "ppo", "training", "pending", "slo_contracts"}
     if set(settings) != expected:
         raise ValueError(f"Settings sections differ: {sorted(set(settings) ^ expected)}")
     if settings["protocol"] != "slot_joint_v7":
@@ -38,6 +38,10 @@ def load_settings(path=DEFAULT_SETTINGS):
         if not Path(settings[name]).is_file():
             raise FileNotFoundError(settings[name])
     settings["_path"] = str(path)
+    if settings["slo_contracts"] is not None:
+        settings["slo_contracts"] = str((ROOT / settings["slo_contracts"]).resolve())
+        if not Path(settings["slo_contracts"]).is_file():
+            raise FileNotFoundError(settings["slo_contracts"])
     if settings["status"] not in ("provisional", "frozen"):
         raise ValueError("Parameter status must be provisional or frozen")
     ratio = settings["training"]["phase_ratio"]
@@ -55,7 +59,19 @@ def settings_receipt(settings):
             "settings_sha256": file_sha256(settings["_path"]),
             "register_sha256": file_sha256(settings["register"]),
             "generator_sha256": file_sha256(settings["generator"]),
-            "model_catalog_sha256": file_sha256(settings["model_catalog"])}
+            "model_catalog_sha256": file_sha256(settings["model_catalog"]),
+            "slo_contracts_sha256": (file_sha256(settings["slo_contracts"])
+                                     if settings["slo_contracts"] else None)}
+
+
+def configured_contracts(settings):
+    import json
+    from agent_orch.workload.slo_calibration import validate_contracts
+    if not settings["slo_contracts"]:
+        return None
+    payload = json.loads(Path(settings["slo_contracts"]).read_text(encoding="utf-8"))
+    validate_contracts(payload)
+    return payload
 
 
 def require_formal_ready(settings):
@@ -93,7 +109,7 @@ def ppo_config_from_manifest(manifest):
         manifest["training_settings"].get("shared_model_head", False)))
 
 
-def audit_scenario(scenario, settings, *, infrastructure_only=False):
+def audit_scenario(scenario, settings, *, infrastructure_only=False, check_slo=True):
     """Check enforceable numeric/structural contracts and disclose remaining scope."""
     checks = []
     def check(ids, name, valid, observed):
@@ -189,6 +205,11 @@ def audit_scenario(scenario, settings, *, infrastructure_only=False):
           all(getattr(scenario.simulation, k) == v for k, v in settings["simulation"].items()),
           {k: getattr(scenario.simulation, k) for k in settings["simulation"]})
     if not infrastructure_only:
+        if check_slo and settings["slo_contracts"]:
+            from agent_orch.workload.slo_calibration import matches_contracts
+            payload = configured_contracts(settings)
+            check("SL01 SL05 SL06 SL07", "fixed reference SLO contract and workload signatures",
+                  matches_contracts(scenario, payload), scenario.metadata.get("slo_calibration"))
         check("SC02", "application count is a registered nested-subset point",
               len(scenario.applications) in settings["application_counts"], len(scenario.applications))
         check("SC04", "catalogue contains exactly positive-probability used tools",
