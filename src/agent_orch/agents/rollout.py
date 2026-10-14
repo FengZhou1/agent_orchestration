@@ -58,6 +58,7 @@ class RolloutBatch:
     rnd_losses: list[float] = field(default_factory=list)
     icm_losses: list[float] = field(default_factory=list)
     optimization_time_s: float = 0.0
+    timings_s: dict[str, float] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -117,6 +118,9 @@ def collect_rollout(
         max(1, int(rollout_periods)) if rollout_periods is not None else None
     )
     collection_started = time.perf_counter()
+    timers = {"policy_act": 0.0, "env_step": 0.0, "env_reset": 0.0}
+    snapshot = getattr(env, "timing_snapshot", lambda: {})
+    before_timings = snapshot()
     while True:
         phase = int(observation["action_type"])
         active_phase = (
@@ -130,12 +134,16 @@ def collect_rollout(
                 and phase == AgentOrchestrationEnv.COMPOSITION
             )
         )
+        timed = time.perf_counter()
         action, log_prob, value = policy.act(
             observation,
             deterministic=not active_phase,
             device=device,
         )
+        timers["policy_act"] += time.perf_counter() - timed
+        timed = time.perf_counter()
         next_observation, raw_reward, terminated, truncated, info = env.step(action)
+        timers["env_step"] += time.perf_counter() - timed
         is_composition = phase == AgentOrchestrationEnv.COMPOSITION
         constraint_vector = np.asarray(
             info.get("constraint_vector", [0.0, 0.0]), dtype=np.float64
@@ -216,7 +224,9 @@ def collect_rollout(
             completed_periods += 1
         if terminated or truncated:
             episode_counter += 1
+            timed = time.perf_counter()
             observation, reset_info = env.reset(seed=seed + episode_counter)
+            timers["env_reset"] += time.perf_counter() - timed
             episode_seeds.append(seed + episode_counter)
             if on_episode is not None:
                 on_episode(
@@ -243,6 +253,8 @@ def collect_rollout(
             break
 
     collection_time_s = time.perf_counter() - collection_started
+    timers.update({key: value - before_timings.get(key, 0.0)
+                   for key, value in snapshot().items()})
 
     intrinsic_raw = np.zeros(len(records), dtype=np.float32)
     intrinsic_normalized = np.zeros(len(records), dtype=np.float32)
@@ -328,6 +340,7 @@ def collect_rollout(
         next_icm_states=next_icm_states,
         icm_actions=icm_actions,
         model_share_samples=model_share_samples,
+        timings_s=timers,
     )
 
 

@@ -565,6 +565,8 @@ class BaseOrchestrationEnv(gym.Env):
 
     def _feature_vector(self) -> np.ndarray:
         features: list[float] = []
+        # Build the unchanged arrival table once, not once per ingress entry.
+        arrival_rates = self.simulator.current_arrival_rates()
         features.extend(
             float(self.current_deployment.llm_active.get(cid, 0))
             for cid in self.layout.candidates
@@ -576,7 +578,7 @@ class BaseOrchestrationEnv(gym.Env):
             for server in self.layout.servers
         )
         features.extend(
-            self.simulator.current_arrival_rates().get((app.id, ingress), rate)
+            arrival_rates.get((app.id, ingress), rate)
             / self.arrival_scale
             for app in self.scenario.applications.values()
             for ingress, rate in app.ingress_rates.items()

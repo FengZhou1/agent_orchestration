@@ -507,6 +507,7 @@ def build_update_record(
         "transition_steps": float(len(records)),
         "collection_time_s": float(batch.collection_time_s),
         "optimization_time_s": float(batch.optimization_time_s),
+        **{f"timing_{key}_s": float(value) for key, value in batch.timings_s.items()},
         "exploration_weight": float(batch.exploration_weight),
         "last_approx_kl": float(getattr(batch, "last_approx_kl", 0.0)),
         # Same accounting as the training objective: the cumulative quantities

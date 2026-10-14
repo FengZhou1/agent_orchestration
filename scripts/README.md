@@ -13,6 +13,7 @@
 | evaluate_slot_joint_snapshot.py | 保存配置下的快照评价，不采另一轨迹 |
 | evaluate_slot_joint_routing_baselines.py | 同轨迹、同预训部署上下文的模型选择基线 |
 | profile_capacity_routing.py | 显式指定场景的路由计算开销诊断 |
+| benchmark_slot_runtime.py | 同场景/已保存轨迹的一次rollout计时与数值摘要，不更新PPO；可选cProfile |
 
 旧build_benchmark_scenarios、export_reference_catalogs、矩阵训练、蒸馏、内层求解器、
 reactivity与旧组成探针等不是当前主实验接口。它们保留为历史/回归工具，不应按默认

@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from agent_orch.agents import StructuredActorCritic, train_ppo
+from agent_orch.agents import StructuredActorCritic, TrainingProgressReporter, train_ppo
 from agent_orch.baselines import make_policy
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec
@@ -260,6 +260,7 @@ def main() -> None:
     parser.add_argument("--shared-model-head", action="store_true",
                         help="Share one model-selection head across (application, ingress) groups")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--progress-bar", action="store_true", help="Optional dynamic bar in addition to per-update lines")
     args = parser.parse_args()
     settings = load_settings(args.settings)
     if args.formal:
@@ -390,6 +391,8 @@ def main() -> None:
             "frozen_deployment_substeps": 0,
         })
         _write_json(output / "parameter_audit.json", parameter_audit)
+    print(f"[init] building environment: {len(scenario.servers)} servers, "
+          f"{len(scenario.applications)} applications, {len(trajectory)} slot(s)", flush=True)
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=args.mapping_samples,
         seed=args.seed, objective=objective_spec,
@@ -406,12 +409,33 @@ def main() -> None:
         temporary.replace(checkpoint_path)
         _write_json(output / "history.json", state["history"])
 
-    policy, history = train_ppo(
-        env, updates=args.updates, rollout_steps=1,
-        rollout_periods=len(trajectory), seed=args.seed, config=config,
-        device=args.device, resume_state=resume_state, on_checkpoint=checkpoint,
-        phase_schedule=phase_schedule,
-    )
+    def decision_progress():
+        return {"training_phase": env.training_phase, "slot_index": env._period_index,
+                "deployment_target_index": env._deployment_target_index,
+                "deployment_targets": len(env._deployment_targets),
+                "model_group_index": env._model_group,
+                "model_groups": len(env.layout.model_groups)}
+
+    with TrainingProgressReporter(
+        run_id=output.name, output_dir=output, updates=args.updates,
+        rollout_steps=len(trajectory), rollout_unit="slot",
+        update_epochs=config.update_epochs, minibatch_size=config.minibatch_size,
+        device=args.device, initial_update=int(resume_state.get("next_update", 0)) if resume_state else 0,
+        append_history=args.resume, print_updates=True, details=decision_progress,
+        show_progress=args.progress_bar,
+    ) as progress:
+        progress.on_phase(int(resume_state.get("next_update", 0)) if resume_state else 0,
+                          "initializing_policy_and_fixed_baseline")
+        env.on_evaluation_phase = progress.on_evaluation_phase
+        policy, history = train_ppo(
+            env, updates=args.updates, rollout_steps=1,
+            rollout_periods=len(trajectory), seed=args.seed, config=config,
+            device=args.device, resume_state=resume_state, on_checkpoint=checkpoint,
+            phase_schedule=phase_schedule, on_phase=progress.on_phase,
+            on_rollout_step=progress.on_rollout_step,
+            on_optimization_step=progress.on_optimization_step, on_update=progress.on_update,
+        )
+    env.on_evaluation_phase = None
     torch.save(policy.state_dict(), output / "policy.pt")
     _write_json(output / "history.json", history)
     _write_json(output / "fixed_baseline.json", env.baseline_report())
@@ -419,6 +443,7 @@ def main() -> None:
         manifest_path.read_text(encoding="utf-8")
     ))
     policy.eval()
+    print("[evaluation] replaying the saved training trajectory", flush=True)
     rows = _evaluate(
         scenario, evaluation_trace, policy, args.mapping_samples,
         args.device, objective_spec,
@@ -433,6 +458,7 @@ def main() -> None:
         "mean_utility": float(np.mean([row["utility"] for row in rows])),
         "total_utility": float(sum(row["utility"] for row in rows)),
     })
+    print("[evaluation] evaluating fixed baselines on the same trajectory", flush=True)
     baselines = _evaluate_baselines(
         scenario, evaluation_trace, args.mapping_samples,
         env.objective.spec, env.objective.references,

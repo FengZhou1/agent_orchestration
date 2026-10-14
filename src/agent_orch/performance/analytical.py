@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 import math
 
@@ -517,6 +517,28 @@ def _reference_llm_capacity_cached(model, config, classes, weights, chunk_tokens
 
 
 def evaluate_llm_instance(
+    model: ModelSpec,
+    config: LLMConfigSpec,
+    classes: list[tuple[float, float]],
+    weights: list[float],
+    arrival_rate_rps: float,
+    chunk_tokens: int,
+    composition_mode: str = "resident",
+) -> tuple[LLMInstancePerformance, list[LLMClassPerformance]]:
+    """Reuse identical inputs only; return fresh mutable class records."""
+    instance, per_class = _llm_instance_cached(model, config, tuple(tuple(c) for c in classes),
+        tuple(weights), arrival_rate_rps, chunk_tokens, composition_mode)
+    return instance, [replace(item) for item in per_class]
+
+
+@lru_cache(maxsize=256)
+def _llm_instance_cached(model, config, classes, weights, arrival_rate_rps, chunk_tokens, composition_mode):
+    instance, per_class = _evaluate_llm_instance_uncached(model, config, list(classes), list(weights),
+        arrival_rate_rps, chunk_tokens, composition_mode)
+    return instance, tuple(per_class)
+
+
+def _evaluate_llm_instance_uncached(
     model: ModelSpec,
     config: LLMConfigSpec,
     classes: list[tuple[float, float]],

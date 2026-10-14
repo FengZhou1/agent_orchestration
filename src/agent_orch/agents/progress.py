@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import time
 from types import TracebackType
-from typing import TextIO
+from typing import Callable, TextIO
 
 from tqdm.auto import tqdm
 
@@ -31,6 +31,9 @@ class TrainingProgressReporter:
         append_history: bool = False,
         status_filename: str = "training_status.json",
         history_filename: str = "training_history.jsonl",
+        print_updates: bool = False,
+        details: Callable[[], dict] | None = None,
+        heartbeat_s: float = 10.0,
     ) -> None:
         self.run_id = run_id
         self.output_dir = Path(output_dir)
@@ -47,11 +50,17 @@ class TrainingProgressReporter:
         self.show_progress = show_progress
         self.initial_update = min(max(0, initial_update), updates)
         self.append_history = append_history
+        self.print_updates = print_updates
+        self.details = details
+        self.heartbeat_s = heartbeat_s
+        self._last_status_time = 0.0
         self.status_path = self.output_dir / status_filename
         self.history_path = self.output_dir / history_filename
 
         self._started = 0.0
         self._completed_units = self.initial_update * self.units_per_update
+        self._initial_completed_units = self._completed_units
+        self._completed_updates = self.initial_update
         self._update = self.initial_update
         self._rollout_step = 0
         self._optimizer_step = 0
@@ -89,8 +98,9 @@ class TrainingProgressReporter:
             self._phase = "completed"
             self._write_status("completed")
         else:
-            self._phase = "failed"
-            self._write_status("failed", error=repr(exc_value))
+            status = "interrupted" if isinstance(exc_value, KeyboardInterrupt) else "failed"
+            self._phase = status
+            self._write_status(status, error=repr(exc_value))
         if self._bar is not None:
             self._bar.close()
         if self._history_handle is not None:
@@ -99,7 +109,7 @@ class TrainingProgressReporter:
         return False
 
     def on_phase(self, update: int, phase: str) -> None:
-        self._update = update + 1
+        self._update = min(update + 1, self.updates)
         self._phase = phase
         if phase == "collecting":
             self._rollout_step = 0
@@ -108,10 +118,12 @@ class TrainingProgressReporter:
             self._optimizer_step = 0
         if self._bar is not None:
             self._bar.set_description_str(
-                f"{self.run_id} | {phase} {update + 1}/{self.updates}",
+                f"{self.run_id} | {phase} {self._update}/{self.updates}",
                 refresh=True,
             )
         self._write_status("running")
+        if self.print_updates:
+            tqdm.write(f"[{self.run_id}] update {self._update}/{self.updates}: {phase}")
 
     def on_rollout_step(self, update: int, rollout_step: int) -> None:
         self._update = update + 1
@@ -119,6 +131,9 @@ class TrainingProgressReporter:
         self._rollout_step = rollout_step
         target = update * self.units_per_update + rollout_step
         self._advance(target)
+
+    def on_evaluation_phase(self, phase: str) -> None:
+        self.on_phase(max(0, self._update - 1), phase)
 
     def on_optimization_step(
         self, update: int, optimization_step: int, total_steps: int
@@ -139,6 +154,7 @@ class TrainingProgressReporter:
 
     def on_update(self, record: dict[str, float]) -> None:
         self._latest_metrics = dict(record)
+        self._completed_updates = int(record["update"]) + 1
         persisted = {
             **record,
             "elapsed_time_s": self._elapsed(),
@@ -151,6 +167,16 @@ class TrainingProgressReporter:
         )
         self._history_handle.flush()
         self._phase = "update_completed"
+        if self.print_updates:
+            timings = " ".join(f"{name}={record[key]:.2f}s" for name, key in (
+                ("collect", "collection_time_s"), ("optimize", "optimization_time_s"),
+                ("route", "timing_physical_routing_s"), ("analytical", "timing_analytical_s"),
+                ("workflow", "timing_workflow_s"), ("obs", "timing_observation_s"),
+                ("reset", "timing_env_reset_s")) if key in record)
+            tqdm.write(f"[{record.get('training_phase', 'PPO')}] update "
+                f"{int(record['update']) + 1}/{self.updates} "
+                f"utility={record.get('mean_utility', 0.):.6f} "
+                f"constraint={record.get('mean_constraint_cost', 0.):.6f} {timings}")
         if self._bar is not None:
             self._bar.set_postfix(
                 reward=f"{record.get('mean_reward', 0.0):.3f}",
@@ -168,14 +194,17 @@ class TrainingProgressReporter:
         if self._bar is not None and delta:
             self._bar.update(delta)
         if (
-            self._completed_units % self.status_interval_steps == 0
+            (delta > 0 and self._completed_units % self.status_interval_steps == 0)
             or self._completed_units == self.total_units
+            or time.perf_counter() - self._last_status_time >= self.heartbeat_s
         ):
             self._write_status("running")
 
     def _write_status(self, status: str, error: str | None = None) -> None:
+        self._last_status_time = time.perf_counter()
         elapsed = self._elapsed()
-        rate = self._completed_units / elapsed if elapsed > 0.0 else 0.0
+        # Resumed work predates this process's clock and must not inflate rate.
+        rate = max(0, self._completed_units - self._initial_completed_units) / elapsed if elapsed > 0.0 else 0.0
         remaining = max(0, self.total_units - self._completed_units)
         eta = remaining / rate if rate > 0.0 else None
         payload = {
@@ -185,6 +214,7 @@ class TrainingProgressReporter:
             "device": self.device,
             "update": self._update,
             "updates_total": self.updates,
+            "completed_updates": self._completed_updates,
             "rollout_step": self._rollout_step,
             "rollout_steps_per_update": self.rollout_steps,
             "rollout_unit": self.rollout_unit,
@@ -199,11 +229,14 @@ class TrainingProgressReporter:
             ),
             "elapsed_time_s": elapsed,
             "eta_seconds": eta,
+            "eta_basis": "current-process work-unit rate; approximate across training stages",
             "latest_metrics": self._latest_metrics,
             "updated_at_utc": self._timestamp(),
         }
         if error is not None:
             payload["error"] = error
+        if self.details is not None:
+            payload["decision_progress"] = self.details()
         serialized = json.dumps(
             payload, ensure_ascii=False, indent=2, sort_keys=True
         )

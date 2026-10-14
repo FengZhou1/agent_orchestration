@@ -106,6 +106,17 @@ python scripts/evaluate_slot_joint_routing_baselines.py --run results/registered
 
 manifest记录完整PPO/目标/阶段设置、参数表/配置/模型清单摘要、场景和轨迹摘要；`parameter_audit.json`记录检查及待定项，`checkpoint.pt`仅供同场景恢复，`policy.pt`是最终权重。结果与权重被Git忽略，只有checkpoint不代表训练完成。旧v6及更旧协议不续训、不重评分。
 
+### 运行进度与分项耗时
+
+主入口默认逐轮打印阶段、效用、约束和采集/优化、物理路由、解析计算、工作流评价、观测及reset耗时。`training_status.json`保存当前阶段和槽/部署目标/模型组位置，`training_history.jsonl`逐轮追加，原`history.json`与`checkpoint.pt`继续保存。需要动态进度条时加`--progress-bar`，不影响训练参数。PPO完成后仍会打印同轨迹评价和固定基线的执行提示；训练状态完成不代表后续基线评价已经结束。
+
+```powershell
+Get-Content results/single_slot_n20_a50_s0/training_status.json -Raw
+Get-Content results/single_slot_n20_a50_s0/training_history.jsonl -Tail 3
+```
+
+原2000轮单槽任务中断后，用原命令原参数加`--resume`，不覆盖场景或改变阶段预算。新日志记录后续轮次，旧轮次仍保留在原`history.json`，实际恢复以检查点为准。缓存与等价性核验见[运行时优化记录](docs/runtime_exact_cache_2026-10-14.md)；这些改动降低重复计算，不包含最大规模PPO整轮缓存的存储压缩。
+
 ## 6. 主代码与历史边界
 
 | 文件 | 职责 |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import time
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,8 @@ class Simulator:
         self.previous_deployment = self._empty_deployment()
         self.last_metrics: SlotMetrics | None = None
         self.arrival_trace: ArrivalTrace | None = None
+        self.last_timings: dict[str, float] = {}
+        self.on_phase = None
 
     def _empty_deployment(self) -> DeploymentDecision:
         return DeploymentDecision(
@@ -75,18 +78,27 @@ class Simulator:
         deployment: DeploymentDecision,
         routing: RoutingDecision,
     ) -> Transition:
+        started = time.perf_counter()
         self.decoder.validate_deployment(deployment)
         self.decoder.validate_routing(deployment, routing, allow_unserved=True)
         arrival_rates = self.current_arrival_rates()
+        validated = time.perf_counter()
+        if self.on_phase:
+            self.on_phase("analytical")
         analytical = self.backend.evaluate(deployment, routing, arrival_rates)
+        analyzed = time.perf_counter()
         analytical.violations.extend(
             self._routing_unserved_violations(
                 deployment, routing, arrival_rates, analytical.node_server_distribution
             )
         )
+        checked = time.perf_counter()
+        if self.on_phase:
+            self.on_phase("workflow")
         workflow = self.workflow.evaluate(
             deployment, routing, analytical, arrival_rates
         )
+        evaluated = time.perf_counter()
         cost = self._cost(deployment, analytical.link_load_mbps)
         violations = len(set(analytical.violations))
         attainment = (
@@ -145,11 +157,15 @@ class Simulator:
         self.previous_deployment = deployment.copy()
         self.last_metrics = metrics
         self.slot += 1
-        return Transition(
+        transition = Transition(
             observation=self.observation(deployment, analytical),
             reward_components=reward_components,
             metrics=metrics,
         )
+        self.last_timings = {"validation": validated - started,
+            "analytical": analyzed - validated, "unserved_check": checked - analyzed,
+            "workflow": evaluated - checked, "metrics": time.perf_counter() - evaluated}
+        return transition
 
     # Compatibility alias for non-RL baselines.  The environment invokes
     # evaluate_period once after composition and never advances a physical

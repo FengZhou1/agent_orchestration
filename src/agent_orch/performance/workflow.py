@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 import hashlib
 import itertools
 import math
@@ -15,6 +16,18 @@ from agent_orch.schema.models import (
 )
 
 from .analytical import AnalyticalBackend, AnalyticalResult
+
+
+@lru_cache(maxsize=4096)
+def _workflow_topology(nodes: tuple[str, ...], edges: tuple[tuple[str, str], ...]):
+    """Cache graph facts only, preserving NetworkX's exact traversal orders."""
+    graph = nx.DiGraph()
+    graph.add_nodes_from(nodes)
+    graph.add_edges_from(edges)
+    order = tuple(nx.lexicographical_topological_sort(graph))
+    parents = tuple((node, tuple(graph.predecessors(node))) for node in order)
+    roots = tuple(node for node in graph if graph.in_degree(node) == 0)
+    return parents, roots
 
 
 @dataclass
@@ -46,6 +59,7 @@ class WorkflowEvaluator:
         self._path_delay_cache: dict[tuple[str, str], float] = {}
         self._first_token_delay_cache: dict[tuple[str, str, float], float] = {}
         self._completion_probability = {}
+        self._path_feasible_cache: dict[tuple[str, str], bool] = {}
 
     def evaluate(
         self,
@@ -58,6 +72,8 @@ class WorkflowEvaluator:
         self._path_delay_cache = {}
         self._first_token_delay_cache = {}
         self._completion_probability = {}
+        # Feasibility depends on this evaluation's link loads, not just topology.
+        self._path_feasible_cache = {}
         app_latency: dict[str, float] = {}
         app_quality: dict[str, float] = {}
         flow_metrics: dict[str, dict[str, float]] = {}
@@ -218,17 +234,22 @@ class WorkflowEvaluator:
                 if (pool not in result.tool_delay or not math.isfinite(result.tool_delay[pool])
                         or result.tool_utilization.get(pool, 0) >= 1):
                     return False
-        graph = nx.DiGraph()
-        graph.add_nodes_from(flow.nodes)
-        graph.add_edges_from(flow.edges)
-        transfers = [(ingress, mapping[n][0]) for n in graph if graph.in_degree(n) == 0]
+        _, roots = _workflow_topology(tuple(flow.nodes), tuple(flow.edges))
+        transfers = [(ingress, mapping[n][0]) for n in roots]
         transfers += [(mapping[u][0], mapping[v][0]) for u, v in flow.edges]
         transfers.append((mapping[flow.final_node][0], ingress))
-        try:
-            return all(result.link_load_mbps.get(edge, 0) < self.backend.network.links[edge].capacity_mbps
-                       for u, v in transfers for edge in self.backend.network.path(u, v))
-        except ValueError:
-            return False
+        return all(self._path_feasible(u, v, result) for u, v in transfers)
+
+    def _path_feasible(self, source, target, result):
+        key = (source, target)
+        if key not in self._path_feasible_cache:
+            try:
+                self._path_feasible_cache[key] = all(
+                    result.link_load_mbps.get(edge, 0) < self.backend.network.links[edge].capacity_mbps
+                    for edge in self.backend.network.path(source, target))
+            except ValueError:
+                self._path_feasible_cache[key] = False
+        return self._path_feasible_cache[key]
 
     def _physical_mapping_outcomes(
         self,
@@ -301,11 +322,14 @@ class WorkflowEvaluator:
         seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:8], "big")
         import numpy as np
         rng = np.random.default_rng(seed)
+        prepared = []
+        for node_choices in choices:
+            probabilities = np.asarray([item[2] for item in node_choices], dtype=float)
+            probabilities /= probabilities.sum()
+            prepared.append((node_choices, probabilities))
         for _ in range(self.max_mapping_samples):
             mapping = {}
-            for node_choices in choices:
-                probabilities = np.asarray([item[2] for item in node_choices], dtype=float)
-                probabilities /= probabilities.sum()
+            for node_choices, probabilities in prepared:
                 index = int(rng.choice(len(node_choices), p=probabilities))
                 node_id, location, _ = node_choices[index]
                 mapping[node_id] = location
@@ -341,14 +365,11 @@ class WorkflowEvaluator:
                 return perf.response_s if perf is not None else overload
             return result.tool_delay.get((node.tool or "", server), overload)
 
-        graph = nx.DiGraph()
-        graph.add_nodes_from(flow.nodes)
-        graph.add_edges_from(flow.edges)
+        ordered_parents, _ = _workflow_topology(tuple(flow.nodes), tuple(flow.edges))
         starts = {}
         completions = {}
-        for node_id in nx.lexicographical_topological_sort(graph):
+        for node_id, parents in ordered_parents:
             destination = location(node_id)
-            parents = list(graph.predecessors(node_id))
             if not parents:
                 starts[node_id] = overload if not destination else self._path_delay(ingress, destination, result)
             else:

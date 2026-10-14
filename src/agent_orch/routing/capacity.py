@@ -9,6 +9,7 @@ Empty support stays empty; Simulator reports unserved requests as violations.
 from __future__ import annotations
 
 import math
+import time
 from typing import Mapping
 
 from agent_orch.performance.analytical import reference_llm_capacity
@@ -22,6 +23,7 @@ class CapacityProportionalRouter:
         self.network = NetworkBackend(scenario.links)
         self.reference_capacities: dict[str, float] = {}
         self._reachability: dict[tuple[str, str], bool] = {}
+        self.last_duration_s = 0.0
 
     def _reachable(self, source: str, target: str) -> bool:
         key = (source, target)
@@ -41,6 +43,7 @@ class CapacityProportionalRouter:
         previous_metrics: SlotMetrics | None = None,
         arrival_rates: Mapping[tuple[str, str], float] | None = None,
     ) -> RoutingDecision:
+        started = time.perf_counter()
         scenario = self.scenario
         active: dict[str, list[str]] = {}
         for cid, candidate in scenario.candidates.items():
@@ -118,7 +121,9 @@ class CapacityProportionalRouter:
                         })
                     for v, probability in service_conditional[key].items():
                         service_route[(app.id, source, target, u, v)] = probability
-        return RoutingDecision(dict(model_share), llm_share, service_route)
+        result = RoutingDecision(dict(model_share), llm_share, service_route)
+        self.last_duration_s = time.perf_counter() - started
+        return result
 
 
 def _capacity_distribution(values: Mapping[str, float]) -> dict[str, float]:

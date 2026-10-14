@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import time
 
 import numpy as np
 import gymnasium as gym
@@ -38,6 +39,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         if scenario.id != trajectory.scenario_id or not trajectory.slots:
             raise ValueError("A nonempty trajectory for this scenario is required")
         self.base_scenario = scenario
+        self._timing_totals: dict[str, float] = {}
+        self.on_evaluation_phase = None
         self.trajectory = trajectory
         if routing_method != "capacity_proportional":
             raise ValueError("Only capacity_proportional physical routing is supported")
@@ -94,6 +97,13 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             "previous_round": self._previous_round,
             "completed_once": sorted(self._completed_once),
         }
+
+    def timing_snapshot(self) -> dict[str, float]:
+        """Cumulative diagnostic timers, deliberately absent from reward state."""
+        return dict(self._timing_totals)
+
+    def _add_time(self, key: str, seconds: float) -> None:
+        self._timing_totals[key] = self._timing_totals.get(key, 0.0) + seconds
 
     def baseline_report(self) -> dict[int, dict[str, float]]:
         if self._baseline is None:
@@ -274,9 +284,16 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
                 "reward_components": {},
             }
         slot = self._period_index
+        simulator, router = self.simulator, self.physical_router
+        simulator.on_phase = self.on_evaluation_phase
+        if self.on_evaluation_phase:
+            self.on_evaluation_phase("physical_routing")
         observation, _, terminated, truncated, info = self._step_composition(
             {"deploy": 0, "model": self._working_share.reshape(-1).copy()}
         )
+        self._add_time("physical_routing", router.last_duration_s)
+        for name, seconds in simulator.last_timings.items():
+            self._add_time(name, seconds)
         current = {
             **{key: float(info["reward_components"][key]) for key in _COMPONENTS},
             "utility": float(info["utility"]),
@@ -308,14 +325,19 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         return observation, delta["utility"], terminated, truncated, info
 
     def _observation(self):
-        observation = super()._observation()
+        started = time.perf_counter()
+        masks = self.action_masks()
+        features = self._feature_vector()
+        observation = {"features": features, "action_type": self.phase, **masks}
         observation["model_group"] = self._model_group
-        observation["deployment_features"] = self._deployment_features()
-        observation["routing_features"] = self._routing_features()
+        observation["deployment_features"] = self._deployment_features(features)
+        observation["routing_features"] = self._routing_features(features)
+        self._add_time("observation", time.perf_counter() - started)
         return observation
 
     def _sample_stage_deployment(self):
         """A feasible placement fixed per slot across routing warm-up episodes."""
+        started = time.perf_counter()
         placement = self.planner.initial_deployment()
         rng = np.random.default_rng(
             self.trajectory.seed + 7919 * self._period_index
@@ -328,6 +350,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         for tool, server in rng.permutation(pools):
             if rng.random() < 0.20 and self.planner.feasible_tool_replica(placement, tool, server):
                 placement.tool_replicas[(tool, server)] = placement.tool_replicas.get((tool, server), 0) + 1
+        self._add_time("fixed_placement", time.perf_counter() - started)
         return placement
 
     def _deploy_mask(self) -> np.ndarray:
@@ -387,7 +410,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             "reward_components": {"utility": 0.0},
         }
 
-    def _deployment_features(self) -> np.ndarray:
+    def _deployment_features(self, features: np.ndarray | None = None) -> np.ndarray:
         previous = self.simulator.previous_deployment
         extras = [
             float(previous.llm_active.get(candidate, 0)) if previous else 0.0
@@ -399,9 +422,10 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             if previous else 0.0
             for tool in self.layout.tools for server in self.layout.servers
         )
-        return np.concatenate((self._feature_vector(), np.asarray(extras, dtype=np.float32)))
+        return np.concatenate((self._feature_vector() if features is None else features,
+                               np.asarray(extras, dtype=np.float32)))
 
-    def _routing_features(self) -> np.ndarray:
+    def _routing_features(self, features: np.ndarray | None = None) -> np.ndarray:
         app_id, ingress = self.layout.model_groups[self._model_group]
         app = self.scenario.applications[app_id]
         slo = app.slo
@@ -425,7 +449,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
                 sum(node.output_tokens[model] for node in llm_nodes) / 1024.0,
                 len(active) / max(1, len(self.layout.candidates)),
             ))
-        return np.clip(np.concatenate((self._feature_vector(), np.asarray(local, dtype=np.float32))), -10.0, 10.0)
+        return np.clip(np.concatenate((self._feature_vector() if features is None else features,
+                                      np.asarray(local, dtype=np.float32))), -10.0, 10.0)
 
     def _feature_vector(self) -> np.ndarray:
         base = super()._feature_vector()
