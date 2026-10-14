@@ -1,10 +1,7 @@
-"""Metric scales used to normalise the objective.
+"""Fixed scales from feasible placements, not extrema of impossible deployments.
 
-The cost range is taken from the feasible deployment library whenever one is
-available.  Deriving it from the catalogue of *candidates* instead makes the
-range far wider than any deployment the system can actually reach, which
-collapses the normalised cost onto a near-constant and removes cost from the
-objective entirely.
+Historical cost_min/cost_max field names encode 0 and a positive reference
+cost rate. Cost ratios may exceed one; they are never clipped to that scale.
 """
 
 from __future__ import annotations
@@ -61,52 +58,21 @@ def arrival_weighted_latency_reference(scenario: Scenario) -> float:
 
 
 def _theoretical_cost_bounds(scenario: Scenario) -> tuple[float, float]:
-    slot_seconds = scenario.simulation.slot_seconds
-    minimum_llm = min(
-        scenario.llm_configs[candidate.config].running_cost_per_slot * slot_seconds
-        for candidate in scenario.candidates.values()
-    )
-    minimum_services = sum(
-        tool.running_cost_per_slot * slot_seconds for tool in scenario.tools.values()
-    )
-    maximum = sum(
-        scenario.llm_configs[candidate.config].running_cost_per_slot * slot_seconds
-        for candidate in scenario.candidates.values()
-    )
-    maximum += sum(
-        scenario.simulation.max_tool_replicas_per_server
-        * tool.running_cost_per_slot
-        * slot_seconds
-        for tool in scenario.tools.values()
-        for _ in scenario.servers
-    )
-    minimum = float(minimum_llm + minimum_services)
-    return minimum, float(max(maximum, minimum + 1.0))
+    from agent_orch.capacity import CapacityPlanner
+    from agent_orch.cost import operating_cost_rate
+    placement = CapacityPlanner(scenario).initial_deployment()
+    return 0.0, max(operating_cost_rate(scenario, placement), 1e-9)
 
 
 def _library_cost_bounds(
     scenario: Scenario, library: "DeploymentLibrary"
 ) -> tuple[float, float]:
-    """Operating-cost range over feasible deployments, per slot.
-
-    Deliberately excludes the switch-on charges (``load_cost`` for an LLM
-    candidate, ``start_cost`` for a replica).  Those are one-off transients that
-    a freshly changed deployment pays in a single slot, and they are an order of
-    magnitude larger than a slot's operating cost -- ``load_cost`` is roughly one
-    minute of running cost.  Folding them into the range lets an event that most
-    slots never see dominate the scale, which compresses every real cost
-    difference toward zero: measured, the cost term's influence fell from 30.4%
-    to 1.0% when the range was widened that way.  A slot that does pay a
-    switch-on charge simply clips at the top of the range, and
-    ``cost_clip_high`` in the objective diagnostics counts how often that happens.
-    """
-
-    steady = [float(entry.cost_per_slot) for entry in library.entries]
+    """Fixed scale from feasible placements, never an upper bound or clip."""
+    from agent_orch.cost import operating_cost_rate
+    steady = [operating_cost_rate(scenario, entry.to_deployment()) for entry in library.entries]
     if not steady:
         return _theoretical_cost_bounds(scenario)
-    minimum = float(min(steady))
-    maximum = float(max(steady))
-    return minimum, float(max(maximum, minimum + 1.0e-9))
+    return 0.0, max(float(np.median(steady)), 1e-9)
 
 
 @dataclass(frozen=True)
@@ -135,10 +101,10 @@ class ReferenceScales:
         spec = spec or ObjectiveSpec.legacy()
         if spec.cost_bounds == "library" and library is not None and len(library) > 0:
             cost_min, cost_max = _library_cost_bounds(scenario, library)
-            source = "library-operating-cost"
+            source = "fixed-feasible-library-median-rate"
         else:
             cost_min, cost_max = _theoretical_cost_bounds(scenario)
-            source = "theoretical"
+            source = "fixed-greedy-operating-rate"
         return ReferenceScales(
             cost_min=cost_min,
             cost_max=cost_max,

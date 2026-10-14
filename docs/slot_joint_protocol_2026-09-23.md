@@ -1,6 +1,6 @@
 # 单时隙联合编排实验协议
 
-> 当前版本：**slot_joint_v6（2026-10-13）**。只使用容量比例物理路由；token及pattern概率跨时隙固定；策略与基线评价直接读取保存的训练轨迹。旧v3–v5协议不续训、不按新口径重新评分。历史数值保留为历史。
+> 当前版本：**slot_joint_v7（2026-10-14）**。保留容量比例路由、固定工作负载和训练轨迹重放；通信采用固定计量窗口，成本为率，时延仅统计完成请求并按应用等权平均。旧v3–v6协议不续训、不按新口径重新评分。历史数值保留为历史。详细来源与变化见`docs/metric_conventions_2026-10-14.md`。
 
 ## 1. 时间轴与三阶段训练
 
@@ -38,6 +38,14 @@ Softmin实现及专用诊断已删除，通用环境与旧内层求解器的物�
 
 四项归一化指标为成本、时延、达标比例和质量，当前入口各权重0.25；请求级goodput仍单独报告为速率。效用为四项加权和，本轮同槽效用减上一回合同槽效用；首轮采用同轨迹固定贪心参照。
 
+网络业务率为Mbps，固定计量窗口默认1秒，聚合传输近似为窗口业务量/链路速率加传播时延；窗口不是物理时隙长度。成本按每秒运行/通信费率加新增部署费用/固定摊销时长计算，摊销示例为60秒；两项常数是本研究可配置示例，不是前作文献数值。`slot_seconds`不再影响这些计算。`running_cost_per_slot`、部署库`cost_per_slot`等历史字段名按成本率解释，不能称为实际每槽账单。
+
+只有完整、稳定、可达的物理映射计入完成。已完成但SLO不达标仍计入时延，未完成请求不计入均值，且goodput为零。记录`completed_rps`、`failed_rps`和逐应用完成率；无完成请求的应用不出现在`app_latency_s`，整个时隙无完成请求时`mean_latency_s=null`。系统时延为有效应用等权平均，轨迹汇总先在应用内部按完成量合并，再按应用等权平均。训练中缺失应用使用独立归一化评价值1，不将其称为实际时延，观测与奖励保持有限。
+
+成本归一化改为固定可行参照成本率：有部署库时使用其稳态费率中位数，否则使用固定贪心可行部署；不使用全部候选的物理不可达上界，也不截断超参照成本。各回合及同场景各方法共用冻结尺度。时延默认仍为原clip映射；smooth可用但本轮没有擅自切换默认。
+
+工具池的副本上限仅由CPU/内存推导。部署类别头宽度由整条轨迹的最大物理上限固定，逐步资源掩码处理共享占用；旧配置中每池上限4的字段读取时忽略，源码与当前配置不再使用它。
+
 奖励再减当前绝对违约量乘拉格朗日乘子。四维约束依次为LLM、工具、网络及总体SLO；故障/不可服务标记与最大利用率超额取较大值，总体达标缺口取正部。目前利用率和总体达标目标为0.9占位值，后续冻结。没有逐应用约束保证。
 
 中间子步奖励为零，时隙末共同反馈通过槽内折扣1与GAE回传；跨槽折扣取配置gamma。日志及乘子更新只统计完成物理时隙的记录，避免零奖励中间步稀释指标。保留当前分支冻结、奖励参照与优化器阶段切换行为。
@@ -51,8 +59,8 @@ manifest记录evaluation_protocol=training_trajectory_replay及physical_routing=
 ```powershell
 conda activate agent-orch
 $env:PYTHONPATH='src'
-python scripts/run_slot_joint.py --scenario configs/toy.yaml --output results/slot_joint_v6_toy --slots 2 --updates 2 --route-updates 1 --deploy-updates 0
-python scripts/evaluate_slot_joint_snapshot.py --run results/slot_joint_v6_toy --mapping-samples 128 --baselines
+python scripts/run_slot_joint.py --scenario configs/toy.yaml --output results/slot_joint_v7_toy --slots 2 --updates 2 --route-updates 1 --deploy-updates 0
+python scripts/evaluate_slot_joint_snapshot.py --run results/slot_joint_v7_toy --mapping-samples 128 --baselines
 ```
 
 输出包括manifest、单条训练轨迹、固定基线、检查点、最终权重、训练history和评价/基线JSON。只完成短功能验证不代表正式模型选择、部署或联合性能已经验证。
@@ -61,6 +69,6 @@ python scripts/evaluate_slot_joint_snapshot.py --run results/slot_joint_v6_toy -
 
 - 概率扩展应用池、工具绑定及联合长度生成器已实现；正式使用的池规模/分布与各压力配置仍需选定，见docs/agent_generator.md。
 - 规模扫描的负载口径、GPU有效性能、质量、SLO、价格与正式PPO预算冻结。
-- 网络请求载荷与聚合业务率分离；网络费用只乘一次时隙长度。本轮仅方案，未改公式。
-- vLLM默认动态chunk与固定chunk解析的兼容验证。
+- 固定网络窗口、成本率及摊销时长的正式参数冻结与敏感性分析；不恢复物理时隙秒数乘法。
+- 用户选择真实引擎也采用固定chunk设置；严格分块实现与实机验证待完成，不再以默认动态chunk兼容作为仿真长训的必需前置。
 - 多种子、各场景独立训练，使用公共训练轨迹的配对评价。

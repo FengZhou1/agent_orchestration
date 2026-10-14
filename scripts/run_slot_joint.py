@@ -26,7 +26,7 @@ from agent_orch.simulator import Simulator
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
 
-PROTOCOL = "slot_joint_v6"
+PROTOCOL = "slot_joint_v7"
 PHYSICAL_ROUTING = "capacity_proportional"
 EVALUATION_PROTOCOL = "training_trajectory_replay"
 
@@ -87,6 +87,11 @@ def _evaluate(
             "goodput_rps": metrics.goodput_rps,
             "quality": metrics.quality,
             "slo_attainment": metrics.slo_attainment,
+            "total_arrival_rps": metrics.total_arrival_rps,
+            "completed_rps": metrics.completed_rps,
+            "failed_rps": metrics.failed_rps,
+            "app_latency_s": metrics.app_latency_s,
+            "app_completed_rps": metrics.app_completed_rps,
             "violations": metrics.violations,
             "utility": info["utility"],
             "constraint_vector": info["constraint_vector"],
@@ -134,7 +139,12 @@ def _evaluate_baselines(
                 "slot": slot,
                 "utility": float(value.utility),
                 "cost": float(metrics.cost),
-                "mean_latency_s": float(metrics.mean_latency_s),
+                "mean_latency_s": metrics.mean_latency_s,
+                "completed_rps": metrics.completed_rps,
+                "failed_rps": metrics.failed_rps,
+                "total_arrival_rps": metrics.total_arrival_rps,
+                "app_latency_s": metrics.app_latency_s,
+                "app_completed_rps": metrics.app_completed_rps,
                 "goodput_rps": float(metrics.goodput_rps),
                 "quality": float(metrics.quality),
                 "slo_attainment": float(metrics.slo_attainment),
@@ -191,6 +201,16 @@ def _evaluate_routing_baselines(
                 rows.append({
                     "slot": info["physical_slot"],
                     "utility": float(info["utility"]),
+                    "cost": metrics.cost,
+                    "mean_latency_s": metrics.mean_latency_s,
+                    "goodput_rps": metrics.goodput_rps,
+                    "quality": metrics.quality,
+                    "total_arrival_rps": metrics.total_arrival_rps,
+                    "completed_rps": metrics.completed_rps,
+                    "failed_rps": metrics.failed_rps,
+                    "app_latency_s": metrics.app_latency_s,
+                    "app_completed_rps": metrics.app_completed_rps,
+                    "violations": metrics.violations,
                     "slo_attainment": float(metrics.slo_attainment),
                     "constraint_vector": list(info["constraint_vector"]),
                 })

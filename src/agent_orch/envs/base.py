@@ -206,17 +206,14 @@ class BaseOrchestrationEnv(gym.Env):
     def _deployment_steady_cost(self, deployment: DeploymentDecision) -> float:
         """Steady running cost of a deployment, excluding switch-on surcharges."""
 
-        slot_seconds = self.scenario.simulation.slot_seconds
         llm_cost = sum(
             self.scenario.llm_configs[self.scenario.candidates[candidate_id].config].running_cost_per_slot
-            * slot_seconds
             for candidate_id, active in deployment.llm_active.items()
             if active
         )
         service_cost = sum(
             replicas
             * self.scenario.tools[tool_id].running_cost_per_slot
-            * slot_seconds
             for (tool_id, _), replicas in deployment.tool_replicas.items()
         )
         return max(float(llm_cost + service_cost), 1.0e-12)
@@ -268,6 +265,7 @@ class BaseOrchestrationEnv(gym.Env):
         self._episode_utility_sum = 0.0
         self._episode_cost_sum = 0.0
         self._episode_latency_sum = 0.0
+        self._episode_latency_slots = 0
         self._episode_slots = 0
         self.current_deployment = self.planner.initial_deployment()
         self._base_deployment = self.current_deployment.copy()
@@ -344,7 +342,9 @@ class BaseOrchestrationEnv(gym.Env):
         # reactive policy from a fixed one through the accumulated total.
         self._episode_utility_sum += float(value.utility)
         self._episode_cost_sum += float(metrics.cost)
-        self._episode_latency_sum += float(metrics.mean_latency_s)
+        if metrics.mean_latency_s is not None:
+            self._episode_latency_sum += metrics.mean_latency_s
+            self._episode_latency_slots += 1
         self._episode_slots += 1
         self._planning_model_share = dict(routing.model_share)
         self._period_index += 1
@@ -371,6 +371,7 @@ class BaseOrchestrationEnv(gym.Env):
             "episode_utility_sum": self._episode_utility_sum,
             "episode_cost_sum": self._episode_cost_sum,
             "episode_latency_sum": self._episode_latency_sum,
+            "episode_latency_valid_slots": self._episode_latency_slots,
             "trace_offset": self.trace_offset,
         }
         reward = float(value.utility)
@@ -570,7 +571,7 @@ class BaseOrchestrationEnv(gym.Env):
         )
         features.extend(
             self.current_deployment.tool_replicas.get((tool, server), 0)
-            / max(1, self.scenario.simulation.max_tool_replicas_per_server)
+            / max(1, self.scenario.tool_replica_limit(tool, server))
             for tool in self.layout.tools
             for server in self.layout.servers
         )
@@ -584,7 +585,8 @@ class BaseOrchestrationEnv(gym.Env):
         features.extend(
             [
                 metrics.cost / self.cost_reference if metrics else 0.0,
-                metrics.mean_latency_s / self.latency_reference if metrics else 0.0,
+                (metrics.mean_latency_s / self.latency_reference
+                 if metrics and metrics.mean_latency_s is not None else 1.0),
                 metrics.slo_attainment if metrics else 0.0,
                 metrics.quality if metrics else 0.0,
                 *self._last_constraint_vector.tolist(),

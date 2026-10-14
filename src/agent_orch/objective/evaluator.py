@@ -101,7 +101,7 @@ class ObjectiveEvaluator:
         references = self.references
 
         cost_normalized = float(
-            np.clip((cost - references.cost_min) / references.cost_span, 0.0, 1.0)
+            max(0.0, (cost - references.cost_min) / references.cost_span)
         )
         latency_normalized, saturation_fraction = self._latency_term(
             mean_latency=mean_latency,
@@ -124,7 +124,8 @@ class ObjectiveEvaluator:
         components["utility"] = float(utility)
 
         constraints = self._constraint_vector(
-            attainment=attainment,
+            attainment=(attainment if sum(arrival_rates.values()) > 0
+                        else (spec.attainment_target or 0.0)),
             llm_utilization=llm_utilization or {},
             tool_utilization=tool_utilization or {},
             link_utilization=link_utilization or {},
@@ -132,12 +133,17 @@ class ObjectiveEvaluator:
         )
         diagnostics = {
             "cost": float(cost),
-            "mean_latency_s": float(mean_latency),
+            "mean_latency_s": mean_latency,
             "slo_attainment": float(attainment),
             "quality": float(quality),
             "latency_saturation_fraction": float(saturation_fraction),
-            "cost_clip_high": float(cost >= references.cost_max),
-            "cost_clip_low": float(cost <= references.cost_min),
+            "latency_missing_applications": sum(
+                any(arrival_rates.get((a.id, g), 0) > 0 for g in a.ingress_rates)
+                and a.id not in app_latency for a in self.scenario.applications.values()),
+            "completed_latency_saturation_fraction": (
+                sum(v >= references.app_latency_reference(a) for a, v in app_latency.items())
+                / len(app_latency) if app_latency else None),
+            "cost_above_reference": float(cost >= references.cost_max),
         }
         for index, name in enumerate(self.constraint_names):
             diagnostics[f"constraint_{name}"] = float(constraints[index])
@@ -187,13 +193,14 @@ class ObjectiveEvaluator:
                 continue
             share = weight / total_rate
             quality = float(app_quality.get(app.id, 0.0))
-            ratio = app_latency.get(app.id, 0.0) / max(
+            ratio = app_latency.get(app.id, references.app_latency_reference(app.id)) / max(
                 references.app_latency_reference(app.id), 1.0e-12
             )
-            contributions[app.id] = share * (
-                spec.quality_weight * quality
-                - spec.latency_weight * self._saturate(ratio)
-            )
+            active = sum(any(arrival_rates.get((a.id, g), 0) > 0 for g in a.ingress_rates)
+                         for a in self.scenario.applications.values())
+            latency_score = self._saturate(ratio) if app.id in app_latency else 1.0
+            contributions[app.id] = (share * spec.quality_weight * quality
+                                    - spec.latency_weight * latency_score / max(1, active))
         return contributions
 
     def _latency_term(
@@ -205,7 +212,9 @@ class ObjectiveEvaluator:
     ) -> tuple[float, float]:
         references = self.references
         total_rate = sum(max(0.0, float(rate)) for rate in arrival_rates.values())
-        if total_rate > 0.0 and app_latency:
+        if total_rate <= 0:
+            return 0.0, 0.0
+        if total_rate > 0.0:
             numerator = 0.0
             saturated_weight = 0.0
             for app in self.scenario.applications.values():
@@ -215,19 +224,21 @@ class ObjectiveEvaluator:
                 )
                 if weight <= 0.0:
                     continue
-                ratio = app_latency.get(app.id, mean_latency) / references.app_latency_reference(
+                ratio = app_latency.get(app.id, references.app_latency_reference(app.id)) / references.app_latency_reference(
                     app.id
                 )
-                numerator += weight * self._saturate(ratio)
+                numerator += self._saturate(ratio) if app.id in app_latency else 1.0
                 if ratio >= 1.0:
-                    saturated_weight += weight
-            return numerator / total_rate, saturated_weight / total_rate
+                    saturated_weight += 1
+            active_apps = sum(any(arrival_rates.get((a.id, g), 0) > 0
+                                  for g in a.ingress_rates) for a in self.scenario.applications.values())
+            return numerator / max(1, active_apps), saturated_weight / max(1, active_apps)
         mean_reference = float(
             np.mean(list(references.app_latency.values()))
             if references.app_latency
             else references.latency_reference
         )
-        ratio = mean_latency / max(mean_reference, 1.0e-12)
+        ratio = (mean_latency if mean_latency is not None else mean_reference) / max(mean_reference, 1.0e-12)
         return self._saturate(ratio), float(ratio >= 1.0)
 
     def _saturate(self, ratio: float) -> float:

@@ -56,7 +56,7 @@ def test_slot_metrics_handle_zero_arrival_horizon():
         ]
     )
 
-    assert summary["mean_latency_s"] == 0.0
+    assert summary["mean_latency_s"] is None
     assert summary["mean_quality"] == 0.0
     assert summary["mean_slo_attainment"] == 0.0
     assert summary["violation_slot_fraction"] == 0.0

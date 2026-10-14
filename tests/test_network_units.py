@@ -36,9 +36,9 @@ def test_saturated_link_returns_overload_delay():
     assert network.path_delay("a", "b", {("a", "b"): 100.0}) == pytest.approx(60.0)
 
 
-def test_network_traffic_cost_converts_mbps_to_mb_per_slot():
+def test_network_traffic_cost_is_a_rate_independent_of_slot_seconds():
     links = (
         LinkSpec("a", "b", capacity_mbps=100.0, propagation_ms=1.0, cost_per_mb=0.5),
     )
     network = NetworkBackend(links, slot_seconds=10.0)
-    assert network.traffic_cost({("a", "b"): 16.0}) == pytest.approx(10.0)
+    assert network.traffic_cost({("a", "b"): 16.0}) == pytest.approx(1.0)

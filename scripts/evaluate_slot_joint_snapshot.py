@@ -96,7 +96,8 @@ def main() -> None:
         "mapping_samples": mapping_samples,
         "trajectory_digest": trajectory.digest(),
         "mean_utility": float(np.mean([row["utility"] for row in rows])),
-        "mean_slo_attainment": float(np.mean([row["slo_attainment"] for row in rows])),
+        "mean_slo_attainment": (sum(row["goodput_rps"] for row in rows)
+                                / max(sum(row["total_arrival_rps"] for row in rows), 1e-12)),
         "mean_constraint_vector": np.mean(
             [row["constraint_vector"] for row in rows], axis=0
         ).tolist(),

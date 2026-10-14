@@ -18,9 +18,13 @@ class NetworkBackend:
         links: tuple[LinkSpec, ...],
         slot_seconds: float = 1.0,
         overload_delay_s: float = 60.0,
+        accounting_window_s: float = 1.0,
     ):
         self.links = {(link.source, link.target): link for link in links}
         self.slot_seconds = slot_seconds
+        if accounting_window_s <= 0:
+            raise ValueError("accounting_window_s must be positive")
+        self.accounting_window_s = accounting_window_s
         self.overload_delay_s = overload_delay_s
         self.adjacency: dict[str, list[tuple[str, float]]] = defaultdict(list)
         for link in links:
@@ -71,8 +75,9 @@ class NetworkBackend:
         delay = 0.0
         for edge in self.path(source, target):
             link = self.links[edge]
-            offered_mbit = loads_mbps.get(edge, 0.0) * self.slot_seconds
-            if offered_mbit >= link.capacity_mbps * self.slot_seconds:
+            rate = loads_mbps.get(edge, 0.0)
+            offered_mbit = rate * self.accounting_window_s
+            if rate >= link.capacity_mbps:
                 return self.overload_delay_s
             delay += link.propagation_ms / 1000.0
             delay += offered_mbit / link.capacity_mbps
@@ -100,7 +105,6 @@ class NetworkBackend:
     def traffic_cost(self, loads_mbps: dict[Edge, float]) -> float:
         return sum(
             loads_mbps.get(edge, 0.0)
-            * self.slot_seconds
             / 8.0
             * link.cost_per_mb
             for edge, link in self.links.items()

@@ -128,25 +128,23 @@ def test_violation_labels_charge_the_matching_constraint(scenario):
     assert tool_bad.constraints[1] == pytest.approx(1.0)
 
 
-def test_library_cost_bounds_are_tighter_than_theoretical(scenario, library):
+def test_cost_scale_uses_fixed_feasible_reference_not_impossible_upper_bound(scenario, library):
     spec = ObjectiveSpec.legacy()
     theoretical = ReferenceScales.from_scenario(scenario, spec, None)
     bounded = ReferenceScales.from_scenario(scenario, spec, library)
-    assert bounded.cost_source == "library-operating-cost"
+    assert bounded.cost_source == "fixed-feasible-library-median-rate"
     # The switch-on surcharge is a one-off transient and must stay out of the
     # range: including it compresses every real cost difference toward zero.
-    largest_steady = max(entry.cost_per_slot for entry in library.entries)
-    assert bounded.cost_max == pytest.approx(largest_steady)
-    assert theoretical.cost_source == "theoretical"
-    assert bounded.cost_max < theoretical.cost_max
+    assert theoretical.cost_source == "fixed-greedy-operating-rate"
     steady = [entry.cost_per_slot for entry in library.entries]
-    assert bounded.cost_min == pytest.approx(min(steady))
+    assert bounded.cost_max == pytest.approx(np.median(steady))
+    assert bounded.cost_min == 0.0
 
 
 def test_cost_bounds_fall_back_when_cost_bounds_is_theoretical(scenario, library):
     spec = ObjectiveSpec(profile="legacy", cost_bounds="theoretical")
     references = ReferenceScales.from_scenario(scenario, spec, library)
-    assert references.cost_source == "theoretical"
+    assert references.cost_source == "fixed-greedy-operating-rate"
 
 
 def test_smooth_latency_map_never_saturates(scenario):

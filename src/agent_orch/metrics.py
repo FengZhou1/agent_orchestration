@@ -30,19 +30,31 @@ def summarize_slot_metrics(
     )
 
     if total_arrival > 0.0:
-        mean_latency = sum(
-            weight
-            * float(row["total_arrival_rps"])
-            * float(row["mean_latency_s"])
-            for row, weight in zip(rows, weights)
-        ) / total_arrival
+        # Pool completed requests within each application, then give each
+        # application one vote. Unfinished requests never enter this mean.
+        app_totals, app_mass = {}, {}
+        for row, weight in zip(rows, weights):
+            for app, latency in row.get("app_latency_s", {}).items():
+                mass = weight * row.get("app_completed_rps", {}).get(app, 0.0)
+                app_totals[app] = app_totals.get(app, 0.0) + mass * latency
+                app_mass[app] = app_mass.get(app, 0.0) + mass
+        means = [app_totals[a] / mass for a, mass in app_mass.items() if mass > 0]
+        if means:
+            mean_latency = sum(means) / len(means)
+        else:
+            valid = [(row, weight * row.get("completed_rps", row["total_arrival_rps"]))
+                     for row, weight in zip(rows, weights)
+                     if row.get("mean_latency_s") is not None]
+            mass = sum(w for _, w in valid)
+            mean_latency = (sum(w * row["mean_latency_s"] for row, w in valid) / mass
+                            if mass > 0 else None)
         mean_quality = sum(
             weight * float(row["total_arrival_rps"]) * float(row["quality"])
             for row, weight in zip(rows, weights)
         ) / total_arrival
         slo_attainment = total_goodput / total_arrival
     else:
-        mean_latency = 0.0
+        mean_latency = None
         mean_quality = 0.0
         slo_attainment = 0.0
 
@@ -55,6 +67,9 @@ def summarize_slot_metrics(
             weight * float(row["cost"]) for row, weight in zip(rows, weights)
         ) / slots,
         "mean_latency_s": mean_latency,
+        "completion_fraction": sum(w * r.get("completed_rps", r["total_arrival_rps"])
+                                   for r, w in zip(rows, weights)) / total_arrival
+                               if total_arrival > 0 else None,
         "mean_goodput_rps": total_goodput / slots,
         "mean_quality": mean_quality,
         "mean_slo_attainment": slo_attainment,

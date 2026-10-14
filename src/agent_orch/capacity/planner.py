@@ -139,7 +139,7 @@ class CapacityPlanner:
         self, deployment: DeploymentDecision, tool_id: str, server_id: str
     ) -> bool:
         current = deployment.tool_replicas.get((tool_id, server_id), 0)
-        if current >= self.scenario.simulation.max_tool_replicas_per_server:
+        if current >= self.scenario.tool_replica_limit(tool_id, server_id):
             return False
         proposed = deployment.copy()
         proposed.tool_replicas[(tool_id, server_id)] = current + 1
@@ -250,8 +250,12 @@ class CapacityPlanner:
                     deployment.llm_active[candidate.id] = 1
                     break
         for tool_id in self.scenario.tools:
+            feasible_servers = [server for server in self.scenario.servers
+                                if self.feasible_tool_replica(deployment, tool_id, server)]
+            if not feasible_servers:
+                raise ValueError(f"Insufficient CPU/memory for reference coverage of {tool_id}")
             best_server = max(
-                self.scenario.servers,
+                feasible_servers,
                 key=lambda server_id: self.scenario.tools[tool_id].service_rate[server_id],
             )
             deployment.tool_replicas[(tool_id, best_server)] = 1
@@ -339,10 +343,8 @@ class CapacityPlanner:
                 )
             ),
         )
-        maximum = (
-            len(self.scenario.servers)
-            * self.scenario.simulation.max_tool_replicas_per_server
-        )
+        maximum = sum(self.scenario.tool_replica_limit(tool_id, server)
+                      for server in self.scenario.servers)
         replicas = min(initial, maximum)
         while replicas < maximum:
             current = self._tool_objective(tool_id, arrival_rate, replicas)

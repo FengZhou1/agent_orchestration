@@ -39,7 +39,7 @@ def test_library_entries_are_feasible_and_distinct(library, scenario, planner):
         assert entry.n_models == len(entry.active_models(scenario))
         assert entry.cost_per_slot > 0.0
         for (tool_id, _server_id), replicas in entry.tool_replicas.items():
-            assert 0 <= replicas <= scenario.simulation.max_tool_replicas_per_server
+            assert 0 <= replicas <= scenario.tool_replica_limit(tool_id, _server_id)
             assert tool_id in scenario.tools
         expected_gpu = sum(
             scenario.llm_configs[scenario.candidates[candidate_id].config].gpu_count

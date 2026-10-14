@@ -76,14 +76,9 @@ def test_analytical_backend_never_returns_nonfinite_metrics(scenario):
     assert _all_finite(metrics.__dict__)
 
 
-def test_system_latency_is_request_rate_weighted(scenario):
+def test_system_latency_is_application_equal_over_completed_requests(scenario):
     policy = GreedyPolicy(scenario, seed=3)
     deployment, routing = policy.decide()
     metrics = Simulator(scenario).step(deployment, routing).metrics
-    weighted = sum(
-        sum(app.ingress_rates.values()) * metrics.app_latency_s[app.id]
-        for app in scenario.applications.values()
-    ) / sum(
-        sum(app.ingress_rates.values()) for app in scenario.applications.values()
-    )
+    weighted = sum(metrics.app_latency_s.values()) / len(metrics.app_latency_s)
     assert metrics.mean_latency_s == pytest.approx(weighted)

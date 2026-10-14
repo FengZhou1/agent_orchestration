@@ -223,7 +223,7 @@ def test_deployment_uses_one_masked_count_action_per_pool():
         scenario, SlotTrajectory.sample(scenario, 1, 41), mapping_samples=8
     )
     observation, _ = env.reset(seed=1)
-    width = max(2, scenario.simulation.max_tool_replicas_per_server + 1)
+    width = env._deployment_action_width
     assert env.action_space["deploy"].n == width
     assert observation["deploy_mask"].shape == (width,)
     for _ in scenario.candidates:

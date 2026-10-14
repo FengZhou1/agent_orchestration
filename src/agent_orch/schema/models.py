@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 from typing import Any
 
 
@@ -164,9 +165,10 @@ class CandidateInstance:
 @dataclass(frozen=True)
 class SimulationSpec:
     slot_seconds: float = 1.0
+    network_accounting_window_s: float = 1.0
+    switch_amortization_s: float = 60.0
     prefill_chunk_tokens: int = 512
     overload_delay_s: float = 60.0
-    max_tool_replicas_per_server: int = 4
     # The slot is the decision step and the only clock: arrival intensity may vary
     # per slot, cost accrues per slot, and deployment is re-decided per slot (or
     # held by T^dep). There is no separate orchestration period.
@@ -194,6 +196,18 @@ class Scenario:
     metadata: dict[str, Any] = field(default_factory=dict)
     simulation: SimulationSpec = field(default_factory=SimulationSpec)
     reward: RewardSpec = field(default_factory=RewardSpec)
+
+    def tool_replica_limit(self, tool_id: str, server_id: str) -> int:
+        """Individual pool bound implied by CPU and memory, before sharing."""
+        tool, server = self.tools[tool_id], self.servers[server_id]
+        cpu = math.floor((server.cpu_cores + 1e-9) / tool.cpu_cores)
+        memory = (math.floor((server.memory_gb + 1e-9) / tool.memory_gb)
+                  if tool.memory_gb > 0 else cpu)
+        return max(0, min(cpu, memory))
+
+    def max_tool_replica_limit(self) -> int:
+        return max((self.tool_replica_limit(h, n)
+                    for h in self.tools for n in self.servers), default=0)
 
 
 @dataclass
@@ -226,7 +240,7 @@ class LLMClassPerformance:
 class SlotMetrics:
     slot: int
     cost: float
-    mean_latency_s: float
+    mean_latency_s: float | None
     goodput_rps: float
     quality: float
     total_arrival_rps: float
@@ -238,6 +252,9 @@ class SlotMetrics:
     tool_utilization: dict[str, float] = field(default_factory=dict)
     link_utilization: dict[str, float] = field(default_factory=dict)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    completed_rps: float = 0.0
+    failed_rps: float = 0.0
+    app_completed_rps: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

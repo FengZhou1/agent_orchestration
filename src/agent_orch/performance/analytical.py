@@ -776,6 +776,7 @@ class AnalyticalBackend:
             scenario.links,
             scenario.simulation.slot_seconds,
             scenario.simulation.overload_delay_s,
+            accounting_window_s=scenario.simulation.network_accounting_window_s,
         )
 
     def evaluate(

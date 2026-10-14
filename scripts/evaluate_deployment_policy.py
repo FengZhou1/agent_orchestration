@@ -214,7 +214,8 @@ def main() -> int:
                         utilities.append(float(info["utility"]))
                         attainment.append(float(metrics.slo_attainment))
                         costs.append(float(metrics.cost))
-                        latencies.append(float(metrics.mean_latency_s))
+                        if metrics.mean_latency_s is not None:
+                            latencies.append(metrics.mean_latency_s)
                 if terminated or truncated:
                     break
             rows.append(

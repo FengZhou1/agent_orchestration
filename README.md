@@ -1,6 +1,6 @@
 # Agentic 应用的边缘 LLM–无状态服务联合编排实验
 
-当前主线为 **slot_joint_v6**：仅容量比例物理路由、token与分支概率跨时隙固定、评价重放保存的训练轨迹。入口为 [run_slot_joint.py](scripts/run_slot_joint.py)，流程见[时隙协议](docs/slot_joint_protocol_2026-09-23.md)，参数来源与待办见[参数登记表](docs/experiment_parameter_register_2026-10-13.md)。
+当前主线为 **slot_joint_v7**：容量比例路由、固定工作负载、训练轨迹重放；固定网络计量窗口、成本率、仅完成请求的应用等权时延。入口为 [run_slot_joint.py](scripts/run_slot_joint.py)，流程见[时隙协议](docs/slot_joint_protocol_2026-09-23.md)，来源与修正见[计算口径记录](docs/metric_conventions_2026-10-14.md)。旧v6权重不续训或重评分。
 
 > 2026-10-13：Softmin实现和专用槽跳变诊断已删除；旧v3–v5检查点不能续接或重新评分。概率扩展式应用池和联合token生成器现已实现，支持紧凑DAG与固定嵌套子集，详见[生成器说明](docs/agent_generator.md)。现有生成与接口检查不代表正式PPO或真实服务效果。
 
@@ -43,7 +43,7 @@ python -m pytest @taskTests
 
 ```powershell
 python scripts/run_slot_joint.py `
-  --scenario configs/toy.yaml --output results/slot_joint_v6_toy_01 `
+  --scenario configs/toy.yaml --output results/slot_joint_v7_toy_01 `
   --slots 2 --updates 2 --route-updates 1 --deploy-updates 0 `
   --trajectory-seed 101 --seed 0 --mapping-samples 2 --device cpu
 ```
@@ -53,7 +53,7 @@ python scripts/run_slot_joint.py `
 ```powershell
 python scripts/run_slot_joint.py `
   --scenario configs/benchmarks/main_abilene.yaml `
-  --output results/slot_joint_v6_capacity_s0 `
+  --output results/slot_joint_v7_capacity_s0 `
   --slots 8 --updates 120 --route-updates 120 --deploy-updates 0 `
   --trajectory-seed 101 --seed 0 --mapping-samples 8 `
   --update-epochs 3 --minibatch-size 128 `
@@ -89,7 +89,7 @@ python scripts/evaluate_slot_joint_routing_baselines.py `
 
 运行目录只有一条train_trajectory.json。manifest记录协议、场景/轨迹摘要、PPO种子、训练设置和evaluation_protocol=training_trajectory_replay。checkpoint.pt供恢复，policy.pt为最终权重，history及评价/基线JSON记录实际过程；仅有checkpoint不表示训练完成。结果、原始数据、权重被Git忽略。
 
-随机应用池、工具文本与历史/预算联合生成已实现；正式参数冻结、网络时间单位修正与vLLM动态chunk解析兼容仍待完成。slot_seconds=1是旧占位值，不是1秒完成部署的声明。生成器示例继承指定基础场景的硬件/模型配置，不能当作新的真实profile。
+随机应用池、联合长度生成与本轮计算口径修正已实现；正式参数冻结及固定chunk实机实现/验证仍待完成。slot_seconds不影响通信或成本率，也不是动作生效时长。生成器示例继承基础场景的硬件/模型配置，不能当作新的真实profile。
 
 ## 6. 生成固定应用池
 

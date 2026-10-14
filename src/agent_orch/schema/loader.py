@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import Any
 
 import networkx as nx
@@ -110,6 +111,9 @@ class ScenarioLoader:
         # files still carry it; the slot is now the only clock, so it is dropped
         # rather than honoured.
         simulation_payload.pop("orchestration_period_s", None)
+        # Retired artificial per-pool cap. Legacy files are readable, but the
+        # value is never used; physical CPU/memory determine the action domain.
+        simulation_payload.pop("max_tool_replicas_per_server", None)
         simulation = SimulationSpec(**simulation_payload)
         reward = RewardSpec(**raw.get("reward", {}))
         scenario = Scenario(
@@ -132,6 +136,10 @@ class ScenarioLoader:
     def validate(scenario: Scenario) -> None:
         if scenario.simulation.slot_seconds <= 0.0:
             raise ValueError("slot_seconds must be positive")
+        if any(not math.isfinite(v) or v <= 0 for v in (
+                scenario.simulation.network_accounting_window_s,
+                scenario.simulation.switch_amortization_s)):
+            raise ValueError("Fixed accounting and amortization durations must be positive")
 
         for link in scenario.links:
             if link.source not in scenario.servers or link.target not in scenario.servers:

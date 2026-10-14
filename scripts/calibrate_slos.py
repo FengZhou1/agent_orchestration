@@ -57,8 +57,8 @@ def collect_reference_metrics(
         metrics = simulator.step(deployment, routing).metrics
         for key, values in metrics.diagnostics["flow_metrics"].items():
             app_id = key.split(":", 1)[0]
-            if float(values["weight_rps"]) > 0.0:
-                records[app_id].append(values)
+            if values.get("completed_rps", 0.0) > 0.0:
+                records[app_id].append({**values, "weight_rps": values["completed_rps"]})
     return records
 
 

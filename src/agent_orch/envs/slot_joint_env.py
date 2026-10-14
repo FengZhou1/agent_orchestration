@@ -46,6 +46,11 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         self.replay_frozen_deployment_steps = replay_frozen_deployment_steps
         self._slot_routers: dict[int, Any] = {}
         self._model_group = 0
+        # Keep the categorical head shape fixed over the entire trajectory,
+        # even when available resources exceed the base-scenario resources.
+        self._deployment_action_width = max(2, 1 + max(
+            snapshot.apply(scenario).max_tool_replica_limit()
+            for snapshot in trajectory.slots))
         self._working_share = np.zeros(
             (sum(len(app.ingress_rates) for app in scenario.applications.values()),
              len(scenario.models)), dtype=np.float64
@@ -66,7 +71,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         )
         # A shared categorical head represents a binary LLM switch or the
         # replica count of one (tool, server) pool, depending on the target.
-        deployment_width = max(2, scenario.simulation.max_tool_replicas_per_server + 1)
+        deployment_width = self._deployment_action_width
         self.action_space.spaces["deploy"] = gym.spaces.Discrete(deployment_width)
         self.observation_space.spaces["deploy_mask"] = gym.spaces.MultiBinary(
             deployment_width
@@ -202,7 +207,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
                 **{key: float(value.components[key]) for key in _COMPONENTS},
                 "utility": float(value.utility),
                 "cost_raw": float(metrics.cost),
-                "latency_raw": float(metrics.mean_latency_s),
+                "latency_raw": metrics.mean_latency_s,
                 "goodput_raw": float(metrics.goodput_rps),
                 "quality_raw": float(metrics.quality),
                 "slo_attainment_raw": float(metrics.slo_attainment),
@@ -276,7 +281,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             **{key: float(info["reward_components"][key]) for key in _COMPONENTS},
             "utility": float(info["utility"]),
             "cost_raw": float(info["metrics"].cost),
-            "latency_raw": float(info["metrics"].mean_latency_s),
+            "latency_raw": info["metrics"].mean_latency_s,
             "goodput_raw": float(info["metrics"].goodput_rps),
             "quality_raw": float(info["metrics"].quality),
             "slo_attainment_raw": float(info["metrics"].slo_attainment),
@@ -287,7 +292,9 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         }
         assert self._baseline is not None
         previous = self._previous_round.get(slot, self._baseline[slot])
-        delta = {key: current[key] - previous[key] for key in current}
+        delta = {key: (current[key] - previous[key]
+                       if current[key] is not None and previous.get(key) is not None else None)
+                 for key in current}
         self._previous_round[slot] = current
         info["reward_components"] = {**current, **{f"delta_{k}": v for k, v in delta.items()}}
         info["learning_utility"] = delta["utility"]
@@ -324,7 +331,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         return placement
 
     def _deploy_mask(self) -> np.ndarray:
-        width = max(2, self.scenario.simulation.max_tool_replicas_per_server + 1)
+        width = self._deployment_action_width
         mask = np.zeros(width, dtype=np.int8)
         if self._current_demand is None:
             return mask
@@ -347,8 +354,6 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         current = int(self.current_deployment.tool_replicas.get((target, server), 0))
         tool = self.scenario.tools[target]
         for count in range(1, width):
-            if count > self.scenario.simulation.max_tool_replicas_per_server:
-                break
             cpu = used_cpu + (count - current) * tool.cpu_cores
             memory = used_memory + (count - current) * tool.memory_gb
             mask[count] = int(
@@ -390,7 +395,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         ]
         extras.extend(
             previous.tool_replicas.get((tool, server), 0)
-            / max(1, self.scenario.simulation.max_tool_replicas_per_server)
+            / max(1, self.base_scenario.tool_replica_limit(tool, server))
             if previous else 0.0
             for tool in self.layout.tools for server in self.layout.servers
         )

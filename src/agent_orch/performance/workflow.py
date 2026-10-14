@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import itertools
+import math
 import networkx as nx
 
 from agent_orch.schema.models import (
@@ -19,12 +20,14 @@ from .analytical import AnalyticalBackend, AnalyticalResult
 @dataclass
 class WorkflowResult:
     app_latency_s: dict[str, float]
-    mean_latency_s: float
+    mean_latency_s: float | None
     goodput_rps: float
     quality: float
     total_arrival_rps: float
     flow_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
     app_quality: dict[str, float] = field(default_factory=dict)
+    completed_rps: float = 0.0
+    app_completed_rps: dict[str, float] = field(default_factory=dict)
 
 
 class WorkflowEvaluator:
@@ -42,6 +45,7 @@ class WorkflowEvaluator:
         self._mapping_cache: dict[tuple[str, str, str, str], list[tuple[dict[str, tuple[str, str | None]], float]]] = {}
         self._path_delay_cache: dict[tuple[str, str], float] = {}
         self._first_token_delay_cache: dict[tuple[str, str, float], float] = {}
+        self._completion_probability = {}
 
     def evaluate(
         self,
@@ -53,6 +57,7 @@ class WorkflowEvaluator:
         self._mapping_cache = {}
         self._path_delay_cache = {}
         self._first_token_delay_cache = {}
+        self._completion_probability = {}
         app_latency: dict[str, float] = {}
         app_quality: dict[str, float] = {}
         flow_metrics: dict[str, dict[str, float]] = {}
@@ -60,6 +65,7 @@ class WorkflowEvaluator:
         total_arrival = 0.0
         latency_numerator_system = 0.0
         quality_numerator = 0.0
+        app_completed = {}
 
         for app in self.scenario.applications.values():
             app_rate = sum(
@@ -69,6 +75,7 @@ class WorkflowEvaluator:
             total_arrival += app_rate
             latency_numerator = 0.0
             app_quality_numerator = 0.0
+            completed_rate = 0.0
             for ingress, base_rate in app.ingress_rates.items():
                 ingress_rate = (arrival_rates or {}).get((app.id, ingress), base_rate)
                 for model in self.scenario.models:
@@ -89,7 +96,10 @@ class WorkflowEvaluator:
                             routing,
                             analytical,
                         )
-                        latency_numerator += probability * e2e
+                        completion = self._completion_probability[(app.id, ingress, model, flow.id)]
+                        completed_rate += probability * completion
+                        if completion > 0:
+                            latency_numerator += probability * completion * e2e
                         goodput += probability * slo_probability
                         flow_metrics[f"{app.id}:{ingress}:{model}:{flow.id}"] = {
                             "e2e_s": e2e,
@@ -97,20 +107,23 @@ class WorkflowEvaluator:
                             "tbt_s": tbt,
                             "slo": float(slo_probability),
                             "weight_rps": probability,
+                            "completion_probability": completion,
+                            "completed_rps": probability * completion,
                             **{
                                 f"stage:{node_id}_s": value
                                 for node_id, value in stage_times.items()
                             },
                         }
-            app_latency[app.id] = latency_numerator / app_rate if app_rate > 0.0 else 0.0
+            app_completed[app.id] = completed_rate
+            if completed_rate > 0:
+                app_latency[app.id] = latency_numerator / completed_rate
             app_quality[app.id] = (
                 app_quality_numerator / app_rate if app_rate > 0.0 else 0.0
             )
             latency_numerator_system += latency_numerator
 
-        mean_latency = (
-            latency_numerator_system / total_arrival if total_arrival > 0.0 else 0.0
-        )
+        mean_latency = (sum(app_latency.values()) / len(app_latency)
+                        if app_latency else None)
         quality = quality_numerator / total_arrival if total_arrival > 0.0 else 0.0
         return WorkflowResult(
             app_latency,
@@ -120,6 +133,8 @@ class WorkflowEvaluator:
             total_arrival,
             flow_metrics,
             app_quality,
+            sum(app_completed.values()),
+            app_completed,
         )
 
     def _flow_latency(
@@ -151,17 +166,19 @@ class WorkflowEvaluator:
         outcomes = self._physical_mapping_outcomes(
             app_id, ingress, model, flow_id, routing, result
         )
-        if not outcomes:
-            delay = self.scenario.simulation.overload_delay_s
-            return delay, delay, delay, 0.0, {}
-
         e2e_sum = ttft_sum = tbt_sum = 0.0
         slo_sum = 0.0
+        completed = 0.0
         stage_sums: dict[str, float] = {}
         for mapping, probability in outcomes:
+            if not self._mapping_complete(app_id, ingress, flow, mapping, result):
+                continue
             e2e, ttft, tbt, stage_times = self._mapping_latency(
                 app_id, ingress, model, flow, mapping, result
             )
+            if not all(math.isfinite(v) for v in (e2e, ttft, tbt, *stage_times.values())):
+                continue
+            completed += probability
             stage_ok = all(
                 value <= float(app.nodes[node_id].stage_deadline_s)
                 for node_id, value in stage_times.items()
@@ -174,7 +191,44 @@ class WorkflowEvaluator:
                 slo_sum += probability
             for node_id, value in stage_times.items():
                 stage_sums[node_id] = stage_sums.get(node_id, 0.0) + probability * value
-        return e2e_sum, ttft_sum, tbt_sum, slo_sum, stage_sums
+        self._completion_probability[(app_id, ingress, model, flow_id)] = completed
+        if not completed:
+            return None, None, None, 0.0, {}
+        return (e2e_sum / completed, ttft_sum / completed, tbt_sum / completed,
+                slo_sum, {n: value / completed for n, value in stage_sums.items()})
+
+    def _mapping_complete(self, app_id, ingress, flow, mapping, result):
+        """Completion feasibility is separate from satisfying a latency SLO."""
+        app = self.scenario.applications[app_id]
+        for node_id in flow.nodes:
+            server, candidate = mapping.get(node_id, ("", None))
+            if not server:
+                return False
+            node = app.nodes[node_id]
+            if node.type is NodeType.LLM:
+                perf = result.llm_performance.get((app_id, node_id, candidate or ""))
+                instance = result.llm_instance_performance.get(candidate)
+                if (perf is None or not math.isfinite(perf.response_s)
+                        or result.llm_utilization.get(candidate, 0) >= 1
+                        or result.llm_kv_stable.get(candidate) is False
+                        or (instance is not None and not instance.stable)):
+                    return False
+            else:
+                pool = (node.tool or "", server)
+                if (pool not in result.tool_delay or not math.isfinite(result.tool_delay[pool])
+                        or result.tool_utilization.get(pool, 0) >= 1):
+                    return False
+        graph = nx.DiGraph()
+        graph.add_nodes_from(flow.nodes)
+        graph.add_edges_from(flow.edges)
+        transfers = [(ingress, mapping[n][0]) for n in graph if graph.in_degree(n) == 0]
+        transfers += [(mapping[u][0], mapping[v][0]) for u, v in flow.edges]
+        transfers.append((mapping[flow.final_node][0], ingress))
+        try:
+            return all(result.link_load_mbps.get(edge, 0) < self.backend.network.links[edge].capacity_mbps
+                       for u, v in transfers for edge in self.backend.network.path(u, v))
+        except ValueError:
+            return False
 
     def _physical_mapping_outcomes(
         self,

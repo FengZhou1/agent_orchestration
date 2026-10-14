@@ -31,7 +31,8 @@ class DeploymentLibraryBuilder:
 
     ``cost_per_slot`` counts steady-state serving cost only: active candidates and
     service replicas priced at ``running_cost_per_slot`` over
-    ``simulation.slot_seconds``. ``load_cost`` and ``start_cost`` are
+    a fixed cost-rate convention, independent of ``simulation.slot_seconds``.
+    ``load_cost`` and ``start_cost`` are
     switching costs and are deliberately excluded.
     """
 
@@ -116,8 +117,8 @@ class DeploymentLibraryBuilder:
             "extreme_skipped": list(self._extreme_skipped),
             "shortfall_reason": shortfall,
             "cost_definition": (
-                "sum(active running_cost_per_slot) * slot_seconds"
-                " + sum(replicas * tool running_cost_per_slot) * slot_seconds"
+                "operating cost rate; sum(active prices per second)"
+                " + sum(replicas * tool price per second); no slot multiplier"
             ),
         }
         return DeploymentLibrary(
@@ -195,7 +196,7 @@ class DeploymentLibraryBuilder:
         for replicas in self.REPLICA_LEVELS:
             effective = min(
                 replicas,
-                self.scenario.simulation.max_tool_replicas_per_server,
+                self.scenario.max_tool_replica_limit(),
                 len(self.scenario.servers),
             )
             for spread in self.REPLICA_SERVER_SPREADS:
@@ -383,15 +384,14 @@ class DeploymentLibraryBuilder:
         return total
 
     def _cost_per_slot(self, deployment: DeploymentDecision) -> float:
-        slot = self.scenario.simulation.slot_seconds
         cost = 0.0
         for candidate_id, active in deployment.llm_active.items():
             if not active:
                 continue
             config = self.scenario.llm_configs[self.scenario.candidates[candidate_id].config]
-            cost += config.running_cost_per_slot * slot
+            cost += config.running_cost_per_slot
         for (tool_id, _server_id), replicas in deployment.tool_replicas.items():
-            cost += replicas * self.scenario.tools[tool_id].running_cost_per_slot * slot
+            cost += replicas * self.scenario.tools[tool_id].running_cost_per_slot
         return cost
 
     def _candidate_gpu_total(self) -> int:

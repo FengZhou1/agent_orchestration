@@ -93,7 +93,8 @@ simulation:
   prefill_chunk_tokens: 512
   overload_delay_s: 600.0
   orchestration_period_s: 60.0
-  max_tool_replicas_per_server: 4
+  network_accounting_window_s: 1.0
+  switch_amortization_s: 60.0
 reward:
   cost_weight: 0.25
   latency_weight: 0.25

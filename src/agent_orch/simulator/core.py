@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from agent_orch.action_decoder import ActionDecoder
+from agent_orch.cost import operating_cost_rate, switching_charge
 from agent_orch.performance import AnalyticalBackend
 from agent_orch.performance.workflow import WorkflowEvaluator
 from agent_orch.schema.models import (
@@ -108,6 +109,10 @@ class Simulator:
             tool_utilization={f"{h}@{n}": value for (h, n), value in analytical.tool_utilization.items()},
             link_utilization=self.backend.network.utilization(analytical.link_load_mbps),
             diagnostics={
+                "operating_cost_rate": operating_cost_rate(self.scenario, deployment),
+                "network_cost_rate": self.backend.network.traffic_cost(analytical.link_load_mbps),
+                "switching_charge": switching_charge(self.scenario, deployment, self.previous_deployment),
+                "cost_unit": "relative currency per second",
                 "violation_labels": sorted(set(analytical.violations)),
                 "kv_stable": analytical.llm_kv_stable,
                 "flow_metrics": workflow.flow_metrics,
@@ -126,6 +131,9 @@ class Simulator:
                     for (app_id, ingress, model_id), share in routing.model_share.items()
                 },
             },
+            completed_rps=workflow.completed_rps,
+            failed_rps=max(0.0, workflow.total_arrival_rps - workflow.completed_rps),
+            app_completed_rps=workflow.app_completed_rps,
         )
         reward_components = {
             "cost_raw": cost,
@@ -162,6 +170,8 @@ class Simulator:
     ) -> list[str]:
         violations: list[str] = []
         for app in self.scenario.applications.values():
+            if sum(arrival_rates.get((app.id, g), 0.0) for g in app.ingress_rates) <= 0:
+                continue
             service_edges = {
                 edge
                 for flow in app.pattern_flows
@@ -276,24 +286,10 @@ class Simulator:
         deployment: DeploymentDecision,
         link_load_mbps: dict[tuple[str, str], float],
     ) -> float:
-        cost = 0.0
-        slot_seconds = self.scenario.simulation.slot_seconds
-        for candidate_id, active in deployment.llm_active.items():
-            if not active:
-                continue
-            candidate = self.scenario.candidates[candidate_id]
-            config = self.scenario.llm_configs[candidate.config]
-            cost += config.running_cost_per_slot * slot_seconds
-            if not self.previous_deployment.llm_active.get(candidate_id, 0):
-                cost += config.load_cost
-        for pool, replicas in deployment.tool_replicas.items():
-            tool_id, _ = pool
-            tool = self.scenario.tools[tool_id]
-            cost += replicas * tool.running_cost_per_slot * slot_seconds
-            started = max(0, replicas - self.previous_deployment.tool_replicas.get(pool, 0))
-            cost += started * tool.start_cost
-        cost += self.backend.network.traffic_cost(link_load_mbps) * slot_seconds
-        return cost
+        return (operating_cost_rate(self.scenario, deployment)
+                + self.backend.network.traffic_cost(link_load_mbps)
+                + switching_charge(self.scenario, deployment, self.previous_deployment)
+                / self.scenario.simulation.switch_amortization_s)
 
 
 def metrics_to_dict(metrics: SlotMetrics) -> dict[str, Any]:
