@@ -46,7 +46,7 @@ class UniformCache:
         return value
 
 
-def sample_mappings(identity, nodes, choices, samples, uniforms):
+def sample_mappings(identity, nodes, choices, samples, uniforms, cdf_cache=None):
     """choices: (server IDs, candidate IDs, once-normalized probabilities).
 
     Python sums and multiplication order are retained by the assembler/caller.
@@ -72,33 +72,43 @@ def sample_mappings(identity, nodes, choices, samples, uniforms):
     else:
         draws = uniforms.get(identity, nodes, samples)
         for col, (s, c, p) in enumerate(choices):
-            p = p.copy()
-            p /= p.sum()  # The reference performs this second normalization.
-            cumulative = p.cumsum()
-            cumulative /= cumulative[-1]  # Generator.choice implementation.
+            key = p.tobytes()
+            cumulative = None if cdf_cache is None else cdf_cache.get(key)
+            if cumulative is None:
+                p = p.copy()
+                p /= p.sum()  # The reference performs this second normalization.
+                cumulative = p.cumsum()
+                cumulative /= cumulative[-1]  # Generator.choice implementation.
+                if cdf_cache is not None:
+                    cdf_cache[key] = cumulative
             index = cumulative.searchsorted(draws[:, col], side='right')
             servers[:, col], candidates[:, col] = s[index], c[index]
         weights.fill(1.0 / samples)
     return MappingBatch(nodes, servers, candidates, weights), time.perf_counter() - started
 
 
+def _ordered_total(values):
+    """Native left-to-right addition, including the scalar's initial +0.0.
+
+    A reduction (sum/dot) may reorder additions. Prefix accumulation instead
+    calculates each original intermediate value; products are materialized
+    separately, so multiplication/addition cannot become a fused operation.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    return float(np.add.accumulate(np.concatenate((np.zeros(1, dtype=np.float64), values)))[-1])
+
+
 def summarize(batch, probabilities):
-    """Do not replace sequential float64 additions with a vector reduction."""
-    e2e = ttft = tbt = slo = completed = 0.0
-    stages = {}
-    for row, probability in enumerate(probabilities):
-        probability = float(probability)
-        if not batch.valid[row]:
-            continue
-        completed += probability
-        e2e += probability * float(batch.e2e[row])
-        ttft += probability * float(batch.ttft[row])
-        tbt += probability * float(batch.tbt[row])
-        if batch.slo[row]:
-            slo += probability
-        for name, column in batch.stages:
-            stages[name] = stages.get(name, 0.0) + probability * float(batch.completions[row, column])
-    value = ((e2e / completed, ttft / completed, tbt / completed, slo,
-              {n: v / completed for n, v in stages.items()}) if completed else
-             (None, None, None, 0.0, {}))
-    return value, completed
+    selected = np.flatnonzero(batch.valid)
+    probabilities = np.asarray(probabilities, dtype=np.float64)[selected]
+    with np.errstate(invalid='ignore', over='ignore'):
+        completed = _ordered_total(probabilities)
+        if not completed:
+            return (None, None, None, 0.0, {}), completed
+        e2e = _ordered_total(probabilities * batch.e2e[selected])
+        ttft = _ordered_total(probabilities * batch.ttft[selected])
+        tbt = _ordered_total(probabilities * batch.tbt[selected])
+        slo = _ordered_total(probabilities[batch.slo[selected]])
+        stages = {name: _ordered_total(probabilities * batch.completions[selected, column]) / completed
+                  for name, column in batch.stages}
+    return (e2e / completed, ttft / completed, tbt / completed, slo, stages), completed

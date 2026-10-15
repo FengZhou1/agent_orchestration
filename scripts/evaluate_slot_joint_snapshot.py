@@ -48,6 +48,7 @@ def _main(stack) -> None:
     options = environment_options(manifest)
     runtime_options = WorkflowOptions.resolve(manifest, args.workflow_engine, args.workflow_workers)
     options["workflow_runtime"] = stack.enter_context(WorkflowRuntime(runtime_options))
+    options["workflow_runtime"].fixed_reference.path = args.run / 'fixed_reference_cache.json'
     scenario_path = Path(manifest["scenario"])
     if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
         raise ValueError("Scenario changed since training")

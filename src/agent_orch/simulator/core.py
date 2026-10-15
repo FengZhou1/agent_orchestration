@@ -167,6 +167,9 @@ class Simulator:
             "workflow": evaluated - checked, "metrics": time.perf_counter() - evaluated}
         self.last_timings.update({f"workflow_{key}": value
             for key, value in self.workflow.runtime.last_timings.items()})
+        self.last_timings.update({f"analytical_{key}": value
+            for key, value in self.backend.last_timings.items()})
+        self.last_analytical_cache = dict(self.backend.last_cache_info)
         self.last_workflow_cache = dict(self.workflow.runtime.last_cache)
         return transition
 

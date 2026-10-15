@@ -10,6 +10,7 @@ import pickle
 import time
 
 from .workflow_mapping import UniformCache, sample_mappings, summarize
+from .fixed_reference import FixedReferenceCache
 
 
 @dataclass(frozen=True)
@@ -44,9 +45,10 @@ def _evaluate_application(task, uniforms=None):
         uniforms = _worker_uniforms
     app, context, requests, samples = task
     result = {}
+    cdf_cache = {}  # Only this application's current probabilities, never across evaluations.
     timers = {'sampling': 0.0, 'numeric': 0.0, 'aggregation': 0.0}
     for identity, nodes, choices, flow in requests:
-        mappings, elapsed = sample_mappings(identity, nodes, choices, samples, uniforms)
+        mappings, elapsed = sample_mappings(identity, nodes, choices, samples, uniforms, cdf_cache)
         timers['sampling'] += elapsed
         permutation = [nodes.index(node) for node in flow.nodes]
         started = time.perf_counter()
@@ -81,6 +83,7 @@ class WorkflowRuntime:
         self.last_timings = {}
         self.last_cache = {}
         self.worker_cache = {}
+        self.fixed_reference = FixedReferenceCache()
 
     def __enter__(self):
         return self

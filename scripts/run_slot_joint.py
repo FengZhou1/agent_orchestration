@@ -473,8 +473,10 @@ def _main(stack) -> None:
             "from": previous_runtime.to_dict(), "to": runtime_options.to_dict(),
         })
     runtime_manifest["workflow_runtime"] = runtime_options.to_dict()
+    runtime_manifest['pipeline_implementation'] = 'exact-pipeline-v1'
     _write_json(manifest_path, runtime_manifest)
     runtime = stack.enter_context(WorkflowRuntime(runtime_options))
+    runtime.fixed_reference.path = output / 'fixed_reference_cache.json'
     print(f"[init] workflow={runtime_options.engine} workers={runtime_options.workers}", flush=True)
     print(f"[init] building environment: {len(scenario.servers)} servers, "
           f"{len(scenario.applications)} applications, {len(trajectory)} slot(s)", flush=True)

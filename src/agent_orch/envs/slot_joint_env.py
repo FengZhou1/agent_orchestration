@@ -42,11 +42,22 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         if scenario.id != trajectory.scenario_id or not trajectory.slots:
             raise ValueError("A nonempty trajectory for this scenario is required")
         self.base_scenario = scenario
+        self._observation_cache_key = None
+        self._feature_template = None
+        self._deployment_extra = None
+        self._previous_feature_owner = None
+        self._routing_local = {}
+        self._routing_app_local = {}
+        self._routing_total_rate = None
+        self._model_mask_template = None
+        self._server_pool_keys = None
+        self._server_pool_placement = None
         from agent_orch.performance.workflow_runtime import WorkflowRuntime
         self.workflow_runtime = workflow_runtime or WorkflowRuntime()
         self._timing_totals: dict[str, float] = {}
         self.on_evaluation_phase = None
         self.trajectory = trajectory
+        self._slot_scenarios = {}
         if routing_method != "capacity_proportional":
             raise ValueError("Only capacity_proportional physical routing is supported")
         trajectory.validate_against(scenario)
@@ -61,8 +72,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         # Keep the categorical head shape fixed over the entire trajectory,
         # even when available resources exceed the base-scenario resources.
         self._deployment_action_width = max(2, 1 + max(
-            snapshot.apply(scenario).max_tool_replica_limit()
-            for snapshot in trajectory.slots))
+            self._scenario_at(slot).max_tool_replica_limit()
+            for slot in range(len(trajectory))))
         self._working_share = np.zeros(
             (sum(sum(rate > 0 for rate in app.ingress_rates.values()) for app in scenario.applications.values()),
              len(scenario.models)), dtype=np.float64
@@ -118,7 +129,13 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
 
     def baseline_report(self) -> dict[int, dict[str, float]]:
         if self._baseline is None:
-            self._baseline = self._fixed_baseline()
+            from agent_orch.performance.fixed_reference import reference_signature
+            started = time.perf_counter()
+            signature = reference_signature(self.base_scenario, self.trajectory.digest(),
+                self.objective.spec, self.objective.references,
+                self.simulator.workflow.max_mapping_samples, self.routing_method)
+            self._baseline = self.workflow_runtime.fixed_reference.get_or_compute(signature, self._fixed_baseline)
+            self._add_time('fixed_reference', time.perf_counter() - started)
         return self._baseline
 
     def restore_reward_state(self, state: dict[str, Any]) -> None:
@@ -136,8 +153,21 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         }
         self._completed_once = set(int(slot) for slot in state["completed_once"])
 
+    def _scenario_at(self, slot):
+        # These are immutable exogenous contexts, never Simulator/queue results.
+        if slot not in self._slot_scenarios:
+            self._slot_scenarios[slot] = self.trajectory.scenario_at(slot, self.base_scenario)
+        return self._slot_scenarios[slot]
+
     def _activate_slot(self) -> None:
-        slot_scenario = self.trajectory.scenario_at(self._period_index, self.base_scenario)
+        self._observation_cache_key = None
+        self._feature_template = None
+        self._deployment_extra = None
+        self._routing_local = {}
+        self._routing_app_local = {}
+        self._routing_total_rate = None
+        self._model_mask_template = None
+        slot_scenario = self._scenario_at(self._period_index)
         previous = self.simulator.previous_deployment
         last_metrics = self.simulator.last_metrics
         samples = self.simulator.workflow.max_mapping_samples
@@ -207,7 +237,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         previous = None
         last_metrics = None
         for slot in range(len(self.trajectory)):
-            scenario = self.trajectory.scenario_at(slot, self.base_scenario)
+            scenario = self._scenario_at(slot)
             policy = GreedyPolicy(scenario, seed=0)
             deployment = policy.deployment()
             simulator = Simulator(
@@ -247,7 +277,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         # The baseline is computed once and retained when PPO resets episodes.
         if self._baseline is None:
-            self._baseline = self._fixed_baseline()
+            self.baseline_report()
         self.scenario = self.base_scenario
         self.planner = CapacityPlanner(self.base_scenario)
         self.simulator = Simulator(
@@ -308,6 +338,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             {"deploy": 0, "model": self._working_share.reshape(-1).copy()}
         )
         self._add_time("physical_routing", router.last_duration_s)
+        for name, seconds in router.last_timings.items():
+            self._add_time(f'physical_routing_{name}', seconds)
         for name, seconds in simulator.last_timings.items():
             self._add_time(name, seconds)
         current = {
@@ -386,15 +418,18 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             mask[1] = int(self.planner.feasible_activation(self.current_deployment, target))
             return mask
         host = self.scenario.servers[server]
+        if self._server_pool_placement is not self.current_deployment:
+            self._server_pool_placement = self.current_deployment
+            self._server_pool_keys = {name: [] for name in self.scenario.servers}
+            for key in self.current_deployment.tool_replicas:
+                self._server_pool_keys[key[1]].append(key)
         used_cpu = sum(
-            self.scenario.tools[tool].cpu_cores * replicas
-            for (tool, host_id), replicas in self.current_deployment.tool_replicas.items()
-            if host_id == server
+            self.scenario.tools[key[0]].cpu_cores * self.current_deployment.tool_replicas[key]
+            for key in self._server_pool_keys[server]
         )
         used_memory = sum(
-            self.scenario.tools[tool].memory_gb * replicas
-            for (tool, host_id), replicas in self.current_deployment.tool_replicas.items()
-            if host_id == server
+            self.scenario.tools[key[0]].memory_gb * self.current_deployment.tool_replicas[key]
+            for key in self._server_pool_keys[server]
         )
         current = int(self.current_deployment.tool_replicas.get((target, server), 0))
         tool = self.scenario.tools[target]
@@ -432,7 +467,44 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             "reward_components": {"utility": 0.0},
         }
 
+    def _sync_observation_cache(self):
+        previous = self.simulator.previous_deployment
+        if self._previous_feature_owner is not previous:
+            self._previous_feature_owner = previous
+            self._deployment_extra = None
+        key = (id(self.scenario), id(self.simulator.last_metrics),
+               id(previous), self._last_constraint_vector.tobytes(),
+               self._period_index, self._deployment_target_index, self._current_demand,
+               tuple(self.current_deployment.llm_active.items()),
+               tuple(self.current_deployment.tool_replicas.items()))
+        if key != self._observation_cache_key:
+            self._observation_cache_key = key
+            self._feature_template = None
+            self._routing_local = {}
+            self._routing_app_local = {}
+            self._routing_total_rate = None
+            self._model_mask_template = None
+
+    def action_masks(self):
+        self._sync_observation_cache()
+        if self._model_mask_template is None:
+            active = self.active_models()
+            mask = np.zeros((len(self.layout.model_groups), len(self.layout.models)), dtype=np.int8)
+            for group in range(len(self.layout.model_groups)):
+                for index, model in enumerate(self.layout.models):
+                    mask[group, index] = int(model in active)
+            self._model_mask_template = mask.reshape(-1)
+        # Copies are deliberate: no saved rollout observation may be overwritten.
+        return {'deploy_mask': self._deploy_mask(), 'model_mask': self._model_mask_template.copy()}
+
     def _deployment_features(self, features: np.ndarray | None = None) -> np.ndarray:
+        self._sync_observation_cache()
+        if self._deployment_extra is None:
+            # Reuse exactly the original conversion and normalization sequence.
+            self._deployment_extra = self._deployment_features_uncached(np.empty(0, dtype=np.float32))
+        return np.concatenate((self._feature_vector() if features is None else features, self._deployment_extra))
+
+    def _deployment_features_uncached(self, features: np.ndarray | None = None) -> np.ndarray:
         previous = self.simulator.previous_deployment
         extras = [
             float(previous.llm_active.get(candidate, 0)) if previous else 0.0
@@ -448,6 +520,21 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
                                np.asarray(extras, dtype=np.float32)))
 
     def _routing_features(self, features: np.ndarray | None = None) -> np.ndarray:
+        self._sync_observation_cache()
+        if self._model_group not in self._routing_local:
+            app_id, ingress = self.layout.model_groups[self._model_group]
+            if app_id not in self._routing_app_local:
+                self._routing_app_local[app_id] = self._routing_features_uncached(np.empty(0, dtype=np.float32))
+            if self._routing_total_rate is None:
+                self._routing_total_rate = sum(sum(app.ingress_rates.values()) for app in self.scenario.applications.values())
+            local = self._routing_app_local[app_id].copy()
+            local[0] = np.clip(np.float32(self.scenario.applications[app_id].ingress_rates[ingress]
+                               / max(self._routing_total_rate, 1e-9)), -10.0, 10.0)
+            self._routing_local[self._model_group] = local
+        return np.clip(np.concatenate((self._feature_vector() if features is None else features,
+                                       self._routing_local[self._model_group])), -10.0, 10.0)
+
+    def _routing_features_uncached(self, features: np.ndarray | None = None) -> np.ndarray:
         app_id, ingress = self.layout.model_groups[self._model_group]
         app = self.scenario.applications[app_id]
         slo = app.slo
@@ -475,6 +562,18 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
                                       np.asarray(local, dtype=np.float32))), -10.0, 10.0)
 
     def _feature_vector(self) -> np.ndarray:
+        self._sync_observation_cache()
+        if self.phase != self.COMPOSITION:
+            return self._feature_vector_uncached()
+        if self._feature_template is None:
+            self._feature_template = self._feature_vector_uncached()
+        features = self._feature_template.copy()
+        count = self._working_share.size
+        features[-count-1] = self._model_group / max(1, len(self.layout.model_groups))
+        features[-count:] = np.clip(self._working_share.reshape(-1).astype(np.float32), -10.0, 10.0)
+        return features
+
+    def _feature_vector_uncached(self) -> np.ndarray:
         base = super()._feature_vector()
         scenario = self.scenario
         original = self.base_scenario

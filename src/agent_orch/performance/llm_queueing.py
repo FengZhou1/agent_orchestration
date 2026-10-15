@@ -475,6 +475,51 @@ def _workload_statistics(
     )
 
 
+@dataclass(frozen=True)
+class _PreparedWorkload:
+    """Evaluation-local invariants, with the original reduction/rounding order."""
+    statistics: tuple
+    normalized: np.ndarray
+    decode_context: float
+    chunks: tuple
+    chunk_mass: np.ndarray
+    total_chunk_mass: float
+    prefill_flops: np.ndarray
+    prefill_bytes: np.ndarray
+
+
+def _prepare_workload(model, classes, weights, chunk_tokens, *, include_prefill=True):
+    statistics = _workload_statistics(classes, weights, chunk_tokens)
+    normalized = _normalize(weights)
+    decode_weights = _decode_residency_weights(classes, normalized)
+    decode_context = _weighted_mean(
+        [max(1.0, float(p) + max(0.0, float(o) - 1.0) / 2.0) for p, o in classes],
+        decode_weights,
+    )
+    chunks, mass, flops, memory = [], [], [], []
+    total_mass = 0.0
+    unit = max(1, int(chunk_tokens))
+    for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
+        # Keep round(prompt) here: the fluid statistics above deliberately use
+        # the original noninteger representative prompt, as before.
+        prompt = max(1, int(round(prompt_tokens)))
+        for q in range(math.ceil(prompt / unit)):
+            context = float(q * unit)
+            new_tokens = float(min(unit, prompt - q * unit))
+            chunks.append((new_tokens, context, float(weight)))
+            total_mass += float(weight)
+            if include_prefill:
+                pre_flops, pre_bytes = _prefill_work(model, new_tokens, context)
+                flops.append(pre_flops)
+                memory.append(pre_bytes - model.weight_bytes)
+            mass.append(float(weight))
+    arrays = [np.asarray(values, dtype=float) for values in (mass, flops, memory)]
+    for array in arrays:
+        array.flags.writeable = False
+    return _PreparedWorkload(statistics, normalized, decode_context, tuple(chunks),
+                             arrays[0], total_mass, arrays[1], arrays[2])
+
+
 def _mean_prefill_chunk_time(
     model: ModelSpec,
     calibration: TwoModeCalibration,
@@ -483,10 +528,11 @@ def _mean_prefill_chunk_time(
     chunk_tokens: int,
     decode_concurrency: float,
     decode_context: float,
+    *, _prepared=None,
 ) -> float:
     """Mean mixed-iteration time for one arriving prefill chunk."""
 
-    normalized = _normalize(weights)
+    normalized = _prepared.normalized if _prepared is not None else _normalize(weights)
     if isinstance(calibration.mix, IterationCalibration):
         # All chunks share the resident decode work.  Evaluate the Roofline
         # expression in one vector operation instead of invoking the scalar
@@ -496,17 +542,21 @@ def _mean_prefill_chunk_time(
         chunk_bytes: list[float] = []
         chunk_weights: list[float] = []
         unit = max(1, int(chunk_tokens))
-        for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
-            prompt = max(1, int(round(prompt_tokens)))
-            chunks = math.ceil(prompt / unit)
-            for q in range(chunks):
-                context = float(q * unit)
-                new_tokens = float(min(unit, prompt - q * unit))
-                pre_flops, pre_bytes = _prefill_work(model, new_tokens, context)
-                chunk_flops.append(pre_flops)
-                chunk_bytes.append(pre_bytes - model.weight_bytes)
-                chunk_weights.append(float(weight))
-        if not chunk_flops:
+        if _prepared is None:
+            for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
+                prompt = max(1, int(round(prompt_tokens)))
+                chunks = math.ceil(prompt / unit)
+                for q in range(chunks):
+                    context = float(q * unit)
+                    new_tokens = float(min(unit, prompt - q * unit))
+                    pre_flops, pre_bytes = _prefill_work(model, new_tokens, context)
+                    chunk_flops.append(pre_flops)
+                    chunk_bytes.append(pre_bytes - model.weight_bytes)
+                    chunk_weights.append(float(weight))
+        else:
+            chunk_flops, chunk_bytes, chunk_weights = (
+                _prepared.prefill_flops, _prepared.prefill_bytes, _prepared.chunk_mass)
+        if len(chunk_flops) == 0:
             return 0.0
         nu = max(1.0, float(decode_concurrency))
         dec_flops, dec_bytes = _decode_work(model, max(0.0, float(decode_context)))
@@ -551,6 +601,7 @@ def _packed_prefill_chunks(
     weights: Sequence[float],
     chunk_tokens: int,
     token_budget: float,
+    *, _prepared=None,
 ) -> list[tuple[float, float]]:
     """Construct a deterministic representative packed prefill batch.
 
@@ -563,16 +614,20 @@ def _packed_prefill_chunks(
 
     unit = max(1, int(chunk_tokens))
     budget = max(1.0, float(token_budget))
-    normalized = _normalize(weights)
+    normalized = _prepared.normalized if _prepared is not None else _normalize(weights)
     candidates: list[tuple[float, float, float]] = []
     total_chunk_mass = 0.0
-    for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
-        prompt = max(1, int(round(prompt_tokens)))
-        chunks = math.ceil(prompt / unit)
-        for q in range(chunks):
-            u = float(min(unit, prompt - q * unit))
-            candidates.append((u, float(q * unit), float(weight)))
-            total_chunk_mass += float(weight)
+    if _prepared is None:
+        for (prompt_tokens, _), weight in zip(classes, normalized, strict=True):
+            prompt = max(1, int(round(prompt_tokens)))
+            chunks = math.ceil(prompt / unit)
+            for q in range(chunks):
+                u = float(min(unit, prompt - q * unit))
+                candidates.append((u, float(q * unit), float(weight)))
+                total_chunk_mass += float(weight)
+    else:
+        candidates = _prepared.chunks
+        total_chunk_mass = _prepared.total_chunk_mass
     if not candidates:
         return [(budget, 0.0)]
 
@@ -581,8 +636,10 @@ def _packed_prefill_chunks(
     deficits = np.zeros(len(candidates), dtype=float)
     selected: list[tuple[float, float]] = []
     remaining = budget
+    chunk_mass = (np.asarray([item[2] for item in candidates], dtype=float)
+                  if _prepared is None else _prepared.chunk_mass)
     while remaining > 1.0e-9:
-        deficits += np.asarray([item[2] for item in candidates], dtype=float)
+        deficits += chunk_mass
         index = int(np.argmax(deficits))
         u, context, _ = candidates[index]
         take = min(u, remaining)
@@ -601,10 +658,11 @@ def _packed_mixed_iteration_times(
     prefill_token_budget: float,
     decode_concurrency: float,
     decode_context: float,
+    *, _prepared=None,
 ) -> tuple[float, float]:
     """Return mixed/decode iteration times for a packed prefill batch."""
 
-    chunks = _packed_prefill_chunks(classes, weights, chunk_tokens, prefill_token_budget)
+    chunks = _packed_prefill_chunks(classes, weights, chunk_tokens, prefill_token_budget, _prepared=_prepared)
     return (
         _calibrated_packed_iteration_time(
             model, chunks, decode_concurrency, decode_context, calibration.mix
@@ -662,10 +720,12 @@ def two_mode_capacity(
 
     best_rate = 0.0
     best_nu = 1.0
+    prepared = _prepare_workload(model, classes, weights, chunk_tokens, include_prefill=False)
     for nu_i in range(1, max(1, int(resident_limit)) + 1):
         nu = float(nu_i)
         candidate = two_mode_capacity_at_concurrency(
-            model, calibration, classes, weights, chunk_tokens, token_budget, nu
+            model, calibration, classes, weights, chunk_tokens, token_budget, nu,
+            _prepared=prepared,
         )
         if candidate > best_rate:
             best_rate = candidate
@@ -681,16 +741,13 @@ def two_mode_capacity_at_concurrency(
     chunk_tokens: int,
     token_budget: int,
     decode_concurrency: float,
+    *, _prepared=None,
 ) -> float:
     """Return the token-flow request capacity at one resident population."""
 
-    p_mean, d_mean, _, _, _ = _workload_statistics(classes, weights, chunk_tokens)
-    arrival_weights = _normalize(weights)
-    decode_weights = _decode_residency_weights(classes, arrival_weights)
-    decode_context = _weighted_mean(
-        [max(1.0, float(p) + max(0.0, float(o) - 1.0) / 2.0) for p, o in classes],
-        decode_weights,
-    )
+    prepared = _prepared or _prepare_workload(model, classes, weights, chunk_tokens, include_prefill=False)
+    p_mean, d_mean, _, _, _ = prepared.statistics
+    decode_context = prepared.decode_context
     nu = max(1.0, float(decode_concurrency))
     available = max(1.0, float(token_budget) - nu)
     mixed_s, decode_s = _packed_mixed_iteration_times(
@@ -702,6 +759,7 @@ def two_mode_capacity_at_concurrency(
         available,
         nu,
         decode_context,
+        _prepared=prepared,
     )
     mixed_iterations_per_request = p_mean / available
     decode_iterations_per_request = d_mean / nu
@@ -726,15 +784,9 @@ def two_mode_operating_point(
 ) -> TwoModeSteadyState:
     """Solve a scalar fluid fixed point for the mixed/decode iteration server."""
 
-    p_mean, d_mean, chunk_mean, _, chunk_count = _workload_statistics(
-        classes, weights, chunk_tokens
-    )
-    normalized = _normalize(weights)
-    decode_weights = _decode_residency_weights(classes, normalized)
-    decode_context = _weighted_mean(
-        [max(1.0, float(p) + max(0.0, float(o) - 1.0) / 2.0) for p, o in classes],
-        decode_weights,
-    )
+    prepared = _prepare_workload(model, classes, weights, chunk_tokens)
+    p_mean, d_mean, chunk_mean, _, chunk_count = prepared.statistics
+    decode_context = prepared.decode_context
     capacity_rate, capacity_nu = (
         capacity_operating_point
         if capacity_operating_point is not None
@@ -764,11 +816,6 @@ def two_mode_operating_point(
     converged = False
     for _ in range(max_iterations):
         nu = min(float(resident_limit), max(1.0, nu))
-        decode_weights = _decode_residency_weights(classes, normalized)
-        decode_context = _weighted_mean(
-            [max(1.0, float(p) + max(0.0, float(o) - 1.0) / 2.0) for p, o in classes],
-            decode_weights,
-        )
         u_max = max(1.0, float(token_budget) - nu)
         # A waiting request is admitted in chunks.  If the mean chunk stream
         # would occupy the iteration server beyond one, waiting chunks build
@@ -776,7 +823,8 @@ def two_mode_operating_point(
         # switch follows the queue balance and does not introduce a fitted
         # composition-dependent threshold.
         single_mixed_s = _mean_prefill_chunk_time(
-            model, calibration, classes, weights, chunk_tokens, nu, decode_context
+            model, calibration, classes, weights, chunk_tokens, nu, decode_context,
+            _prepared=prepared,
         )
         single_prefill_load = arrival_rate * chunk_count * single_mixed_s
         if single_prefill_load < 1.0:
@@ -794,6 +842,7 @@ def two_mode_operating_point(
                 u,
                 nu,
                 decode_context,
+                _prepared=prepared,
             )
             mixed_rate = arrival_rate * p_mean / max(u, 1.0)
         _, decode_s = _two_mode_iteration_times(

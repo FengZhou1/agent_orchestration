@@ -83,7 +83,8 @@ def _main(stack):
         args.scenario, args.trajectory, Path('configs/experiment_settings.yaml'),
         *[Path('src/agent_orch') / p for p in ('envs/base.py', 'envs/slot_joint_env.py',
             'performance/analytical.py', 'performance/workflow.py', 'performance/workflow_batch.py',
-            'performance/workflow_mapping.py', 'performance/workflow_runtime.py', 'agents/rollout.py')])}
+            'performance/workflow_mapping.py', 'performance/workflow_runtime.py', 'performance/llm_queueing.py',
+            'performance/fixed_reference.py', 'routing/capacity.py', 'agents/networks.py', 'agents/rollout.py')])}
     settings = load_settings()
     scene = ScenarioLoader.load(args.scenario)
     if args.run:
@@ -182,6 +183,11 @@ def _main(stack):
         "profile_enabled": args.profile, "profile_top": top}
     report['memory'] = memory.report()
     report['workflow_cache'] = runtime.last_cache
+    # collect_rollout resets the env after its terminal slot; the new Simulator
+    # has no last-evaluation diagnostic. These counters are process-cumulative.
+    from agent_orch.performance.analytical import _reference_llm_capacity_cached, _llm_instance_cached
+    report['analytical_cache'] = {'reference_capacity': _reference_llm_capacity_cached.cache_info()._asdict(),
+                                 'instance': _llm_instance_cached.cache_info()._asdict()}
     report["workflow_evaluation"] = "scalar" if args.scalar_workflow else "indexed_batch"
     (args.output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     (args.output / "metrics.json").write_text(json.dumps(scientific, indent=2), encoding="utf-8")

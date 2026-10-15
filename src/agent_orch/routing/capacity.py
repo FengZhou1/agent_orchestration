@@ -24,6 +24,15 @@ class CapacityProportionalRouter:
         self.reference_capacities: dict[str, float] = {}
         self._reachability: dict[tuple[str, str], bool] = {}
         self.last_duration_s = 0.0
+        self.last_timings = {}
+        self._llm_nodes = {app.id: tuple(node for node in app.nodes.values() if node.type is NodeType.LLM)
+                           for app in scenario.applications.values()}
+        self._visits = {(app.id, node.id): app.visit_probability(node.id)
+                        for app in scenario.applications.values() for node in self._llm_nodes[app.id]}
+        self._tool_edges = {app.id: tuple(sorted({edge for flow in app.pattern_flows for edge in flow.edges
+                            if app.nodes[edge[1]].type is NodeType.TOOL})) for app in scenario.applications.values()}
+        self._service_signature = None
+        self._service_conditional = {}
 
     def _reachable(self, source: str, target: str) -> bool:
         key = (source, target)
@@ -59,10 +68,9 @@ class CapacityProportionalRouter:
                     * max(0.0, float(model_share.get((app.id, g, model), 0.0)))
                     for g, base in app.ingress_rates.items()
                 )
-                for node in app.nodes.values():
-                    if node.type is NodeType.LLM:
-                        classes.append((node.prompt_tokens[model], node.output_tokens[model]))
-                        weights.append(app.visit_probability(node.id) * rate)
+                for node in self._llm_nodes[app.id]:
+                    classes.append((node.prompt_tokens[model], node.output_tokens[model]))
+                    weights.append(self._visits[(app.id, node.id)] * rate)
             if not classes:
                 continue
             # Paper's explicit fallback: equal inference-flow weights when
@@ -82,6 +90,7 @@ class CapacityProportionalRouter:
                 )
                 capacities[cid] = capacity
         self.reference_capacities = capacities
+        capacity_done = time.perf_counter()
 
         llm_share = {}
         # One conditional distribution per (ingress, model), shared by all
@@ -99,30 +108,41 @@ class CapacityProportionalRouter:
                             cid: capacities.get(cid, 0.0) for cid in candidates
                             if self._reachable(ingress, scenario.candidates[cid].server)
                         })
-                    for node in app.nodes.values():
-                        if node.type is NodeType.LLM:
-                            for cid, probability in conditional[key].items():
-                                llm_share[(app.id, ingress, node.id, cid)] = share * probability
+                    for node in self._llm_nodes[app.id]:
+                        for cid, probability in conditional[key].items():
+                            llm_share[(app.id, ingress, node.id, cid)] = share * probability
 
-        service_route, service_conditional = {}, {}
+        llm_done = time.perf_counter()
+        signature = tuple(deployment.tool_replicas.items())
+        if signature != self._service_signature:
+            self._service_signature = signature
+            self._service_conditional = {}
+        service_route, service_conditional = {}, self._service_conditional
+        distributions = {}
         for app in scenario.applications.values():
-            edges = sorted({edge for flow in app.pattern_flows for edge in flow.edges
-                            if app.nodes[edge[1]].type is NodeType.TOOL})
+            edges = self._tool_edges[app.id]
             for source, target in edges:
                 service_id = app.nodes[target].tool or ""
                 service = scenario.tools[service_id]
                 for u in scenario.servers:
                     key = (service_id, u)
                     if key not in service_conditional:
-                        service_conditional[key] = _capacity_distribution({
+                        values = {
                             v: deployment.tool_replicas.get((service_id, v), 0)
                             * service.service_rate.get(v, 0.0)
                             for v in scenario.servers if self._reachable(u, v)
-                        })
+                        }
+                        support = tuple(values.items())
+                        if support not in distributions:
+                            distributions[support] = _capacity_distribution(values)
+                        service_conditional[key] = distributions[support]
                     for v, probability in service_conditional[key].items():
                         service_route[(app.id, source, target, u, v)] = probability
         result = RoutingDecision(dict(model_share), llm_share, service_route)
         self.last_duration_s = time.perf_counter() - started
+        self.last_timings = {'reference_capacity': capacity_done - started,
+                             'llm_assignment': llm_done - capacity_done,
+                             'service_assignment': time.perf_counter() - llm_done}
         return result
 
 

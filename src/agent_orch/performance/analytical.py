@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 import math
+import time
 
 import numpy as np
 
@@ -794,6 +795,15 @@ def _evaluate_llm_instance_uncached(
 class AnalyticalBackend:
     def __init__(self, scenario: Scenario):
         self.scenario = scenario
+        self._candidate_index = {name: i for i, name in enumerate(scenario.candidates)}
+        self._server_index = {name: i for i, name in enumerate(scenario.servers)}
+        self._llm_nodes = [(app, node, app.visit_probability(node.id))
+            for app in scenario.applications.values() for node in app.nodes.values()
+            if node.type is NodeType.LLM]
+        self._llm_keys = tuple((app.id, node.id, cid)
+            for app, node, _ in self._llm_nodes for cid in scenario.candidates)
+        self.last_timings = {}
+        self.last_cache_info = {}
         self.network = NetworkBackend(
             scenario.links,
             scenario.simulation.slot_seconds,
@@ -807,20 +817,37 @@ class AnalyticalBackend:
         routing: RoutingDecision,
         arrival_rates: dict[tuple[str, str], float] | None = None,
     ) -> AnalyticalResult:
+        started = time.perf_counter()
         llm_arrivals = self.llm_arrivals(routing, arrival_rates)
+        arrived = time.perf_counter()
         llm_perf, llm_util, kv_stable, violations = self._llm_performance(
             deployment, llm_arrivals
         )
+        inferred = time.perf_counter()
         distributions = self.node_distributions(deployment, routing)
+        distributed = time.perf_counter()
         tool_arrivals = self.tool_arrivals(routing, distributions, arrival_rates)
+        tools_arrived = time.perf_counter()
         tool_delay, tool_util, tool_violations = self._tool_performance(
             deployment, tool_arrivals
         )
         violations.extend(tool_violations)
+        tools_evaluated = time.perf_counter()
         link_loads = self.link_loads(routing, distributions, arrival_rates)
         for edge, utilization in self.network.utilization(link_loads).items():
             if utilization >= 1.0:
                 violations.append(f"link_overload:{edge}")
+        self.last_timings = {
+            'llm_arrivals': arrived - started, 'llm_performance': inferred - arrived,
+            'node_distributions': distributed - inferred,
+            'tool_arrivals': tools_arrived - distributed,
+            'tool_performance': tools_evaluated - tools_arrived,
+            'link_loads': time.perf_counter() - tools_evaluated,
+        }
+        self.last_cache_info = {
+            'reference_capacity': _reference_llm_capacity_cached.cache_info()._asdict(),
+            'instance': _llm_instance_cached.cache_info()._asdict(),
+        }
         instance_metrics = getattr(self, "_last_llm_instance_performance", {})
         return AnalyticalResult(
             llm_perf,
@@ -839,20 +866,20 @@ class AnalyticalBackend:
         routing: RoutingDecision,
         arrival_rates: dict[tuple[str, str], float] | None = None,
     ) -> dict[LLMClass, float]:
-        arrivals: dict[LLMClass, float] = defaultdict(float)
-        for app in self.scenario.applications.values():
-            for node in app.nodes.values():
-                if node.type is not NodeType.LLM:
-                    continue
-                visit = app.visit_probability(node.id)
-                for ingress, base_rate in app.ingress_rates.items():
-                    rate = (arrival_rates or {}).get((app.id, ingress), base_rate)
-                    for candidate_id in self.scenario.candidates:
-                        share = routing.llm_share.get(
-                            (app.id, ingress, node.id, candidate_id), 0.0
-                        )
-                        arrivals[(app.id, node.id, candidate_id)] += rate * visit * share
-        return dict(arrivals)
+        # Keep the reference dictionary order and its explicit zero entries.
+        arrivals = dict.fromkeys(self._llm_keys, 0.0)
+        supports = defaultdict(list)
+        for (app, ingress, node, candidate), share in routing.llm_share.items():
+            if share != 0.0 and candidate in self._candidate_index:
+                supports[(app, ingress, node)].append((candidate, share))
+        for values in supports.values():
+            values.sort(key=lambda item: self._candidate_index[item[0]])
+        for app, node, visit in self._llm_nodes:
+            for ingress, base_rate in app.ingress_rates.items():
+                rate = (arrival_rates or {}).get((app.id, ingress), base_rate)
+                for candidate, share in supports.get((app.id, ingress, node.id), ()):
+                    arrivals[(app.id, node.id, candidate)] += rate * visit * share
+        return arrivals
 
     def _llm_performance(
         self,
@@ -923,6 +950,8 @@ class AnalyticalBackend:
         routing: RoutingDecision,
     ) -> dict[tuple[str, str, str, str, str], dict[str, float]]:
         result: dict[tuple[str, str, str, str, str], dict[str, float]] = {}
+        llm_distributions = {}
+        tool_support = self._tool_routing_support(routing)
         for app in self.scenario.applications.values():
             for ingress in app.ingress_rates:
                 for model in self.scenario.models:
@@ -934,6 +963,10 @@ class AnalyticalBackend:
                             node = app.nodes[node_id]
                             key = (app.id, ingress, model, flow.id, node_id)
                             if node.type is NodeType.LLM:
+                                shared_key = (app.id, ingress, model, node_id)
+                                if shared_key in llm_distributions:
+                                    result[key] = llm_distributions[shared_key].copy()
+                                    continue
                                 dist: dict[str, float] = defaultdict(float)
                                 for candidate_id, candidate in self.scenario.candidates.items():
                                     if candidate.model != model:
@@ -944,6 +977,7 @@ class AnalyticalBackend:
                                     if absolute > 0.0:
                                         dist[candidate.server] += absolute / model_share
                                 result[key] = _normalize(dist)
+                                llm_distributions[shared_key] = result[key]
 
                         unresolved = [
                             edge
@@ -958,12 +992,10 @@ class AnalyticalBackend:
                                     next_unresolved.append((source, target))
                                     continue
                                 target_key = (app.id, ingress, model, flow.id, target)
-                                target_dist: dict[str, float] = defaultdict(float)
+                                # Preseed server order before omitting zero terms.
+                                target_dist = defaultdict(float, dict.fromkeys(self.scenario.servers, 0.0))
                                 for u, source_probability in result[source_key].items():
-                                    for v in self.scenario.servers:
-                                        probability = routing.tool_route.get(
-                                            (app.id, source, target, u, v), 0.0
-                                        )
+                                    for v, probability in tool_support.get((app.id, source, target, u), ()):
                                         target_dist[v] += source_probability * probability
                                 if target_key in result:
                                     for server, probability in result[target_key].items():
@@ -973,6 +1005,15 @@ class AnalyticalBackend:
                             if not unresolved:
                                 break
         return result
+
+    def _tool_routing_support(self, routing):
+        supports = defaultdict(list)
+        for (app, source, target, u, v), probability in routing.tool_route.items():
+            if probability > 0.0 and v in self._server_index:
+                supports[(app, source, target, u)].append((v, probability))
+        for values in supports.values():
+            values.sort(key=lambda item: self._server_index[item[0]])
+        return supports
 
     def tool_arrivals(
         self,
@@ -1031,6 +1072,7 @@ class AnalyticalBackend:
         arrival_rates: dict[tuple[str, str], float] | None = None,
     ) -> dict[Edge, float]:
         loads: dict[Edge, float] = {}
+        tool_support = self._tool_routing_support(routing)
         for app in self.scenario.applications.values():
             for ingress, base_rate in app.ingress_rates.items():
                 arrival_rate = (arrival_rates or {}).get((app.id, ingress), base_rate)
@@ -1070,6 +1112,7 @@ class AnalyticalBackend:
                                 target,
                                 routing,
                                 distributions,
+                                _tool_support=tool_support,
                             ):
                                 self.network.add_traffic(
                                     loads, u, v, rate * probability, data_mb
@@ -1086,6 +1129,7 @@ class AnalyticalBackend:
         target: str,
         routing: RoutingDecision,
         distributions: dict[tuple[str, str, str, str, str], dict[str, float]],
+        *, _tool_support=None,
     ) -> list[tuple[str, str, float]]:
         app = self.scenario.applications[app_id]
         source_dist = distributions.get((app_id, ingress, model, flow_id, source), {})
@@ -1093,8 +1137,9 @@ class AnalyticalBackend:
         pairs: list[tuple[str, str, float]] = []
         if app.nodes[target].type is NodeType.TOOL:
             for u, source_probability in source_dist.items():
-                for v in self.scenario.servers:
-                    p = routing.tool_route.get((app_id, source, target, u, v), 0.0)
+                choices = (_tool_support.get((app_id, source, target, u), ()) if _tool_support is not None else
+                           ((v, routing.tool_route.get((app_id, source, target, u, v), 0.0)) for v in self.scenario.servers))
+                for v, p in choices:
                     if p > 0.0:
                         pairs.append((u, v, source_probability * p))
         else:

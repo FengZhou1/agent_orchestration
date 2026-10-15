@@ -128,11 +128,18 @@ class StructuredActorCritic(nn.Module):
             routing_features = routing_features.unsqueeze(0)
         action_type = observation["action_type"].long().view(-1)
         phase = torch.nn.functional.one_hot(action_type, num_classes=3).float()
-        return (
-            self.deployment_encoder(torch.cat([deployment_features, phase], dim=-1)),
-            self.composition_encoder(torch.cat([routing_features, phase], dim=-1)),
-            action_type,
-        )
+        # A frozen, unselected branch has no output/gradient contribution.
+        # Never skip trainable branches in joint mode: Adam distinguishes a
+        # zero gradient from None, even if this minibatch has only one phase.
+        skip_deployment = (bool(torch.all(action_type >= AgentOrchestrationEnv.COMPOSITION))
+                           and not any(p.requires_grad for p in self.deployment_encoder.parameters()))
+        skip_composition = (bool(torch.all(action_type < AgentOrchestrationEnv.COMPOSITION))
+                            and not any(p.requires_grad for p in self.composition_encoder.parameters()))
+        deployment = (deployment_features.new_zeros((deployment_features.shape[0], self.config.hidden_size))
+                      if skip_deployment else self.deployment_encoder(torch.cat([deployment_features, phase], dim=-1)))
+        composition = (routing_features.new_zeros((routing_features.shape[0], self.config.hidden_size))
+                       if skip_composition else self.composition_encoder(torch.cat([routing_features, phase], dim=-1)))
+        return deployment, composition, action_type
 
     def set_training_phase(
         self, phase: Literal["joint", "deployment", "composition"]
