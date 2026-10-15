@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from agent_orch.envs import AgentOrchestrationEnv
+from .budget import validate_resume_schedule
 from .config import PPOConfig
 from .device import resolve_device
 from .icm import ICMModule
@@ -49,6 +50,7 @@ def train_ppo(
     on_checkpoint: CheckpointCallback | None = None,
     run_logger: Any | None = None,
     phase_schedule: tuple[tuple[str, int], ...] | None = None,
+    allow_budget_extension: bool = False,
 ) -> tuple[StructuredActorCritic, list[dict[str, float]]]:
     """Train the structured policy and return it with its per-update history.
 
@@ -65,6 +67,16 @@ def train_ppo(
             for phase, count in phase_schedule
         ) or sum(count for _, count in phase_schedule) != updates:
             raise ValueError("phase_schedule must contain positive phases totaling updates")
+    if resume_state is not None:
+        extended = validate_resume_schedule(
+            resume_state.get("phase_schedule"), phase_schedule,
+            allow_extension=allow_budget_extension,
+        )
+        if extended and config.exploration_mode != "none":
+            raise ValueError("Budget extension requires exploration_mode='none'; "
+                             "a budget-dependent exploration decay cannot be silently rescheduled")
+        if not 0 <= int(resume_state.get("next_update", 0)) <= updates:
+            raise ValueError("The PPO checkpoint has an invalid next_update value")
 
     def phase_at(update_index: int) -> str:
         if phase_schedule is None:
@@ -136,8 +148,6 @@ def train_ppo(
     start_update = 0
 
     if resume_state is not None:
-        if resume_state.get("phase_schedule") != phase_schedule:
-            raise ValueError("The checkpoint belongs to a different PPO phase schedule")
         if resume_state.get("environment_reward_state") is not None:
             env.restore_reward_state(resume_state["environment_reward_state"])
         policy.load_state_dict(resume_state["policy_state_dict"])

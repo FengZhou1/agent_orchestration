@@ -14,11 +14,13 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 import numpy as np
 import torch
 
 from agent_orch.agents import StructuredActorCritic, TrainingProgressReporter, train_ppo
+from agent_orch.agents.budget import canonical_schedule, validate_resume_schedule
 from agent_orch.baselines import make_policy
 from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.deployment.warmup import (DEFAULT_CONFIG, FixedWarmupDeployments,
@@ -272,7 +274,7 @@ def _main(stack) -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--slots", type=int)
     parser.add_argument("--updates", type=int, required=True,
-                        help="Explicit training budget; no unconfirmed formal episode default")
+                        help="Total target PPO updates, including completed updates on resume")
     parser.add_argument("--route-updates", type=int, default=None,
                         help="Model-selection warm-up updates; defaults to registered phase ratio")
     parser.add_argument("--deploy-updates", type=int, default=None,
@@ -294,10 +296,16 @@ def _main(stack) -> None:
     parser.add_argument("--shared-model-head", action="store_true",
                         help="Share one model-selection head across (application, ingress) groups")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--extend-budget", action="store_true",
+                        help="With --resume, only increase the final existing phase's total updates")
+    parser.add_argument("--check-resume", action="store_true",
+                        help="With --resume, validate continuation without training or writing run files")
     parser.add_argument("--workflow-engine", choices=("reference", "array"), default=None)
     parser.add_argument("--workflow-workers", type=int, choices=(1, 2, 4), default=None)
     parser.add_argument("--progress-bar", action="store_true", help="Optional dynamic bar in addition to per-update lines")
     args = parser.parse_args()
+    if (args.extend_budget or args.check_resume) and not args.resume:
+        raise ValueError("--extend-budget and --check-resume require --resume")
     settings = load_settings(args.settings)
     if args.formal:
         if args.smoke:
@@ -371,7 +379,8 @@ def _main(stack) -> None:
     warmup_spec = WarmupSpec.load(args.warmup_config)
     if not args.smoke and asdict(variation) != asdict(SlotVariationSpec(**settings["variation"])):
         raise ValueError("Trajectory overrides require --smoke or an updated settings profile")
-    output.mkdir(parents=True, exist_ok=True)
+    if not args.resume:
+        output.mkdir(parents=True, exist_ok=True)
     trajectory_path = output / "train_trajectory.json"
     checkpoint_path = output / "checkpoint.pt"
     manifest_path = output / "manifest.json"
@@ -399,14 +408,31 @@ def _main(stack) -> None:
             raise ValueError("Requested slot count or trajectory seed differs from checkpoint")
         if manifest["variation"] != json.loads(json.dumps(asdict(variation))) or manifest["ppo_seed"] != args.seed:
             raise ValueError("Variation or PPO seed differs from checkpoint")
-        if manifest["training_settings"] != training_settings:
+        old_settings = manifest["training_settings"]
+        if ({key: value for key, value in old_settings.items() if key != "phase_schedule"}
+                != {key: value for key, value in training_settings.items() if key != "phase_schedule"}):
             raise ValueError("Training settings differ from checkpoint")
+        budget_changed = validate_resume_schedule(
+            old_settings.get("phase_schedule"), phase_schedule,
+            allow_extension=args.extend_budget,
+        )
         resume_state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if (resume_state.get("protocol") != PROTOCOL
                 or resume_state.get("physical_routing") != PHYSICAL_ROUTING):
             raise ValueError("Checkpoint does not belong to the capacity-routing protocol")
         if resume_state.get("warmup_deployment_digest") != (warmup.digest() if warmup else None):
             raise ValueError("Checkpoint uses different warm-up deployments")
+        if (resume_state.get("scenario_hash") != scenario_hash
+                or checkpoint_trajectory_digest(resume_state) != trajectory.digest()):
+            raise ValueError("Checkpoint scenario or trajectory differs from saved run")
+        checkpoint_extended = validate_resume_schedule(
+            resume_state.get("phase_schedule"), phase_schedule,
+            allow_extension=args.extend_budget,
+        )
+        if not 0 <= int(resume_state.get("next_update", 0)) <= args.updates:
+            raise ValueError("The PPO checkpoint has an invalid next_update value")
+        if json.loads(json.dumps(resume_state.get("ppo_config"))) != training_settings["ppo_config"]:
+            raise ValueError("Checkpoint PPO configuration differs from requested training")
     else:
         if any(path.exists() for path in (trajectory_path, checkpoint_path, manifest_path)):
             raise FileExistsError("Output already contains a slot-joint run; choose a new directory or --resume")
@@ -466,6 +492,49 @@ def _main(stack) -> None:
         requested_engine = DEFAULT_NEW_WORKFLOW_ENGINE
     runtime_options = WorkflowOptions.resolve(runtime_manifest, requested_engine, args.workflow_workers)
     previous_runtime = WorkflowOptions.resolve(runtime_manifest)
+    if args.check_resume:
+        completed = int(resume_state["next_update"])
+        print(json.dumps({
+            "resume_check": "passed", "completed_updates": completed,
+            "next_update_number": completed + 1 if completed < args.updates else None,
+            "target_total_updates": args.updates, "remaining_updates": args.updates - completed,
+            "phase_schedule": manifest_phase_schedule,
+            "checkpoint_phase_schedule": resume_state.get("phase_schedule"),
+            "trajectory_digest": trajectory.digest(),
+            "warmup_deployment_digest": warmup.digest() if warmup else None,
+            "workflow_runtime": runtime_options.to_dict(), "run_files_modified": False,
+        }, ensure_ascii=False, indent=2), flush=True)
+        return
+    if args.resume and (budget_changed or checkpoint_extended):
+        # Copy the ignored state before changing metadata or taking another step.
+        # An interrupted extension before its first checkpoint can be retried
+        # with the same explicit flag; the original backup remains untouched.
+        events = runtime_manifest.setdefault("training_budget_extensions", [])
+        previous = events[-1] if events else None
+        old_checkpoint_schedule = [list(item) for item in canonical_schedule(resume_state["phase_schedule"])]
+        pending = (not budget_changed and previous is not None
+                   and previous["to"] == manifest_phase_schedule
+                   and previous["checkpoint_phase_schedule"] == old_checkpoint_schedule
+                   and previous["checkpoint_next_update"] == int(resume_state["next_update"]))
+        if not pending:
+            timestamp = datetime.now(timezone.utc)
+            backup = output / "budget_extensions" / timestamp.strftime("%Y%m%dT%H%M%S%fZ")
+            backup.mkdir(parents=True, exist_ok=False)
+            for name in ("checkpoint.pt", "manifest.json", "history.json"):
+                source = output / name
+                if source.exists():
+                    shutil.copy2(source, backup / name)
+            events.append({
+                "at": timestamp.isoformat(),
+                "checkpoint_next_update": int(resume_state["next_update"]),
+                "checkpoint_phase_schedule": old_checkpoint_schedule,
+                "from": old_settings["phase_schedule"], "to": manifest_phase_schedule,
+                "backup": str(backup.relative_to(output)),
+            })
+        runtime_manifest["training_settings"] = training_settings
+        print(f"[resume] budget extended to {args.updates} total updates; "
+              f"completed={resume_state['next_update']}; "
+              f"remaining={args.updates - int(resume_state['next_update'])}", flush=True)
     if args.resume and runtime_options != previous_runtime:
         runtime_manifest.setdefault("workflow_runtime_switches", []).append({
             "at": datetime.now(timezone.utc).isoformat(),
@@ -495,6 +564,7 @@ def _main(stack) -> None:
                  "ppo_config": config.to_dict()}
         state["workflow_runtime"] = runtime_options.to_dict()
         state["parameter_receipt"] = settings_receipt(settings)
+        state["training_budget_extensions"] = runtime_manifest.get("training_budget_extensions", [])
         temporary = checkpoint_path.with_suffix(".tmp.pt")
         torch.save(state, temporary)
         temporary.replace(checkpoint_path)
@@ -523,6 +593,7 @@ def _main(stack) -> None:
             rollout_periods=len(trajectory), seed=args.seed, config=config,
             device=args.device, resume_state=resume_state, on_checkpoint=checkpoint,
             phase_schedule=phase_schedule, on_phase=progress.on_phase,
+            allow_budget_extension=args.extend_budget,
             on_rollout_step=progress.on_rollout_step,
             on_optimization_step=progress.on_optimization_step, on_update=progress.on_update,
         )
