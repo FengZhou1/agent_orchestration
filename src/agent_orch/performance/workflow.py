@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import math
 import networkx as nx
+import numpy as np
 
 from agent_orch.schema.models import (
     DeploymentDecision,
@@ -17,6 +18,7 @@ from agent_orch.schema.models import (
 
 from .analytical import AnalyticalBackend, AnalyticalResult
 from .workflow_batch import IndexedWorkflowKernel
+from .workflow_runtime import WorkflowRuntime
 
 
 @lru_cache(maxsize=4096)
@@ -55,6 +57,7 @@ class WorkflowEvaluator:
         max_mapping_samples: int = _MAX_MAPPING_SAMPLES,
         *,
         batch_evaluation: bool | None = None,
+        runtime: WorkflowRuntime | None = None,
     ):
         self.scenario = scenario
         self.backend = backend
@@ -66,6 +69,9 @@ class WorkflowEvaluator:
         self._first_token_delay_cache: dict[tuple[str, str, float], float] = {}
         self._completion_probability = {}
         self._path_feasible_cache: dict[tuple[str, str], bool] = {}
+        self.runtime = runtime or WorkflowRuntime()
+        self._array_summaries = None
+        self._choice_cache = {}
 
     def evaluate(
         self,
@@ -81,6 +87,14 @@ class WorkflowEvaluator:
         self._completion_probability = {}
         # Feasibility depends on this evaluation's link loads, not just topology.
         self._path_feasible_cache = {}
+        self._choice_cache = {}
+        self._array_summaries = None
+        summaries = None
+        if self.runtime.options.engine == 'array':
+            if not self.batch_evaluation:
+                raise ValueError('Scalar workflow oracle requires the reference engine')
+            summaries = self.runtime.applications(self.scenario.applications.values(),
+                lambda app: self._prepare_application(app, routing, analytical))
         app_latency: dict[str, float] = {}
         app_quality: dict[str, float] = {}
         flow_metrics: dict[str, dict[str, float]] = {}
@@ -91,6 +105,8 @@ class WorkflowEvaluator:
         app_completed = {}
 
         for app in self.scenario.applications.values():
+            if summaries is not None:
+                self._array_summaries = next(summaries)
             app_rate = sum(
                 (arrival_rates or {}).get((app.id, ingress), base_rate)
                 for ingress, base_rate in app.ingress_rates.items()
@@ -145,6 +161,11 @@ class WorkflowEvaluator:
             )
             latency_numerator_system += latency_numerator
 
+        if summaries is not None:
+            # Consume the final yield so normal generator disposal cannot look
+            # like an aborted evaluation and close the run-owned process pool.
+            if next(summaries, None) is not None:
+                raise RuntimeError('Unexpected extra application result')
         mean_latency = (sum(app_latency.values()) / len(app_latency)
                         if app_latency else None)
         quality = quality_numerator / total_arrival if total_arrival > 0.0 else 0.0
@@ -160,7 +181,58 @@ class WorkflowEvaluator:
             app_completed,
         )
         self._batch_kernel = None
+        self._array_summaries = None
+        self._choice_cache = {}
         return workflow_result
+
+    def _prepare_application(self, app, routing, result):
+        if self._batch_kernel is None:
+            self._batch_kernel = IndexedWorkflowKernel(self, result)
+        kernel = self._batch_kernel
+        requests = []
+        # The cache is evaluation-local and bounded to the current application.
+        self._choice_cache = {}
+        llm_choices = {}
+        for ingress in app.ingress_rates:
+            for model in self.scenario.models:
+                share = routing.model_share.get((app.id, ingress, model), 0.0)
+                if share <= 0:
+                    continue
+                for flow in app.pattern_flows:
+                    nodes = tuple(sorted(flow.nodes))
+                    choices = []
+                    for name in nodes:
+                        node = app.nodes[name]
+                        key = (ingress, model, name)
+                        if node.type is NodeType.LLM and key in llm_choices:
+                            choices.append(llm_choices[key])
+                            continue
+                        raw = []
+                        if node.type is NodeType.LLM:
+                            for cid, candidate in self.scenario.candidates.items():
+                                if candidate.model == model:
+                                    p = routing.llm_share.get((app.id, ingress, name, cid), 0.0) / share
+                                    if p > 0.0:
+                                        raw.append((kernel.server_index.get(candidate.server, 0), kernel.candidate_index[cid], p))
+                        else:
+                            distribution = result.node_server_distribution.get((app.id, ingress, model, flow.id, name), {})
+                            raw = [(kernel.server_index.get(s, 0), 0, p) for s, p in distribution.items() if p > 0.0]
+                        if not raw:
+                            raw = [(0, 0, 1.0)]
+                        total = sum(item[2] for item in raw)
+                        normalized = tuple((s, c, p / total) for s, c, p in raw)
+                        if normalized not in self._choice_cache:
+                            self._choice_cache[normalized] = (
+                                np.asarray([v[0] for v in normalized], dtype=np.int32),
+                                np.asarray([v[1] for v in normalized], dtype=np.int32),
+                                np.asarray([v[2] for v in normalized], dtype=np.float64))
+                        choice = self._choice_cache[normalized]
+                        if node.type is NodeType.LLM:
+                            llm_choices[key] = choice
+                        choices.append(choice)
+                    requests.append(((app.id, ingress, model, flow.id), nodes, choices, flow))
+        context = kernel.compact(app, [(r[0][1], r[0][2], r[3]) for r in requests])
+        return app, context, requests, self.max_mapping_samples
 
     def _flow_latency(
         self,
@@ -177,6 +249,11 @@ class WorkflowEvaluator:
         return e2e, ttft, tbt, slo_probability >= 1.0 - 1.0e-8, stage_times
 
     def _flow_summary(self, app_id, ingress, model, flow_id, routing, result):
+        if self._array_summaries is not None:
+            key = (app_id, ingress, model, flow_id)
+            value, completed = self._array_summaries[key]
+            self._completion_probability[key] = completed
+            return value
         if not self.batch_evaluation:
             return self._flow_summary_scalar(app_id, ingress, model, flow_id, routing, result)
         app = self.scenario.applications[app_id]

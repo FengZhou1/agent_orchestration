@@ -8,6 +8,7 @@ the policy.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import hashlib
 from dataclasses import fields
@@ -21,6 +22,7 @@ from agent_orch.envs import SlotSequentialJointEnv
 from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.parameters import ppo_config_from_manifest
+from agent_orch.performance.workflow_runtime import WorkflowOptions, WorkflowRuntime
 
 from run_slot_joint import (
     _evaluate, _evaluate_baselines, _evaluate_routing_baselines,
@@ -30,10 +32,12 @@ from run_slot_joint import (
 )
 
 
-def main() -> None:
+def _main(stack) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--baselines", action="store_true")
+    parser.add_argument("--workflow-engine", choices=("reference", "array"))
+    parser.add_argument("--workflow-workers", choices=(1, 2, 4), type=int)
     parser.add_argument("--mapping-samples", type=int,
                         help="Evaluation fidelity; defaults to the training value")
     parser.add_argument("--policy-snapshot", type=Path,
@@ -42,6 +46,8 @@ def main() -> None:
 
     manifest = json.loads((args.run / "manifest.json").read_text(encoding="utf-8"))
     options = environment_options(manifest)
+    runtime_options = WorkflowOptions.resolve(manifest, args.workflow_engine, args.workflow_workers)
+    options["workflow_runtime"] = stack.enter_context(WorkflowRuntime(runtime_options))
     scenario_path = Path(manifest["scenario"])
     if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
         raise ValueError("Scenario changed since training")
@@ -91,6 +97,7 @@ def main() -> None:
     update = int(checkpoint["next_update"])
     report = {
         "protocol": manifest["protocol"],
+        "workflow_runtime": runtime_options.to_dict(),
         "physical_routing": options["routing_method"],
         "evaluation_phase": evaluation_phase,
         "checkpoint_next_update": update,
@@ -118,6 +125,7 @@ def main() -> None:
             report["baselines"] = _evaluate_baselines(
                 scenario, trajectory, mapping_samples, objective, env.objective.references,
                 routing_method=options["routing_method"],
+                workflow_runtime=options["workflow_runtime"],
             )
     output = args.run / (
         f"snapshot_update_{update:03d}_samples_{mapping_samples}.json"
@@ -139,6 +147,11 @@ def main() -> None:
     report["policy_snapshot"] = policy_output.name
     _write_json(output, report)
     print(f"update={update} mean_utility={report['mean_utility']:.6f} output={output}")
+
+
+def main():
+    with ExitStack() as stack:
+        return _main(stack)
 
 
 if __name__ == "__main__":

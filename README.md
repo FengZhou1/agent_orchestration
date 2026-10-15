@@ -4,6 +4,37 @@
 
 本文档重点介绍新生成器如何使用。当前实验协议是 `slot_joint_v7`，参数仍为允许用于预实验的候选设置，**生成成功不等于 SLO 全部可满足，也不等于训练已经收敛**。
 
+## 工作流运行加速（不改变实验参数）
+
+训练入口、快照评价和模型选择基线支持 `--workflow-engine reference|array` 与
+`--workflow-workers 1|2|4`。`reference` 保留原采样器与评价实现；`array`
+直接生成整数位置数组，仍按原顺序精确枚举或使用原来的固定样本，并在每个位置方案下先计算关键路径和判断 SLO。
+多进程仅可用于 `array`，全网负载先统一计算，再分配同槽的应用评价。
+新 `run_slot_joint.py` 训练默认 `array + 1进程`，保留 `reference` 回退。
+20/50应用的完整32槽回放从450.20/949.80秒降至105.18/271.75秒，指标和转移摘要完全一致。
+2/4进程在这两场景均未达到额外15%的端到端耗时下降门槛，因此不推荐设为默认。
+
+```powershell
+# 在原有训练指令末尾追加；其他科学参数不变
+# --workflow-engine array --workflow-workers 1
+
+# 绑定已有运行的真实检查点、轨迹及预训部署；不训练、不覆盖原运行
+python scripts/benchmark_slot_runtime.py `
+  --run results/composition_n20_a20_32slots_s0 `
+  --workflow-engine array --workflow-workers 1 `
+  --output results/runtime_probe_array1
+
+# 固定输入的五轮对照，包括 reference、array 1/2/4 进程
+python scripts/validate_workflow_runtime.py `
+  --run results/composition_n20_a20_32slots_s0 `
+  --output results/runtime_validation
+```
+
+无运行时记录的旧 manifest 按 `reference + 1进程` 解释。`--resume` 不指定这两个选项时沿用保存值；显式切换会记录运行时变更，保留轨迹、部署库、优化器及奖励参照。
+因此，恢复旧训练并启用加速时，在**原训练指令**后追加 `--resume --workflow-engine array --workflow-workers 1`，其余参数仍须与原 manifest 一致。
+这些选项不进入科学参数摘要、策略观测或奖励。验证探针的内存监测需要 `psutil`；结果目录必须是新目录。
+详细边界与验收结果见 [运行加速核验](docs/workflow_runtime_2026-10-15.md)。
+
 ## 1. 先区分四类数据
 
 | 对象 | 包含什么 | 如何变化 |

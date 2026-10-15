@@ -8,7 +8,9 @@ Old stage_a/formal_v* results and checkpoints are incompatible with this run.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from dataclasses import asdict
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -30,11 +32,13 @@ from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
+from agent_orch.performance.workflow_runtime import WorkflowOptions, WorkflowRuntime
 
 
 PROTOCOL = "slot_joint_v7"
 PHYSICAL_ROUTING = "capacity_proportional"
 EVALUATION_PROTOCOL = "training_trajectory_replay"
+DEFAULT_NEW_WORKFLOW_ENGINE = "array"  # Gates: docs/workflow_runtime_2026-10-15.md.
 
 
 def environment_options(manifest: dict) -> dict:
@@ -90,6 +94,7 @@ def _evaluate(
     routing_method: str = PHYSICAL_ROUTING,
     replay_frozen_deployment_steps: bool = False,
     warmup_deployments: FixedWarmupDeployments | None = None,
+    workflow_runtime=None,
 ) -> list[dict[str, object]]:
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=mapping_samples,
@@ -97,6 +102,7 @@ def _evaluate(
         routing_method=routing_method,
         replay_frozen_deployment_steps=replay_frozen_deployment_steps,
         warmup_deployments=warmup_deployments,
+        workflow_runtime=workflow_runtime,
     )
     env.training_phase = evaluation_phase
     observation, _ = env.reset(seed=trajectory.seed)
@@ -132,6 +138,7 @@ def _evaluate_baselines(
     scenario, trajectory: SlotTrajectory, mapping_samples: int,
     objective_spec, references,
     routing_method: str = PHYSICAL_ROUTING,
+    workflow_runtime=None,
 ) -> dict[str, object]:
     if routing_method != PHYSICAL_ROUTING:
         raise ValueError("Only capacity_proportional physical routing is supported")
@@ -143,7 +150,7 @@ def _evaluate_baselines(
         rows = []
         for slot in range(len(trajectory)):
             current = trajectory.scenario_at(slot, scenario)
-            simulator = Simulator(current, max_mapping_samples=mapping_samples)
+            simulator = Simulator(current, max_mapping_samples=mapping_samples, workflow_runtime=workflow_runtime)
             simulator.slot = slot
             if previous is not None:
                 simulator.previous_deployment = previous
@@ -195,6 +202,7 @@ def _evaluate_routing_baselines(
     routing_method: str = PHYSICAL_ROUTING,
     replay_frozen_deployment_steps: bool = False,
     warmup_deployments: FixedWarmupDeployments | None = None,
+    workflow_runtime=None,
 ) -> dict[str, object]:
     """Compare model shares under exactly the routing warm-up placements."""
     results = {}
@@ -205,6 +213,7 @@ def _evaluate_routing_baselines(
             routing_method=routing_method,
             replay_frozen_deployment_steps=replay_frozen_deployment_steps,
             warmup_deployments=warmup_deployments,
+            workflow_runtime=workflow_runtime,
         )
         env.training_phase = "composition"
         observation, _ = env.reset(seed=trajectory.seed)
@@ -252,7 +261,7 @@ def _evaluate_routing_baselines(
     return results
 
 
-def main() -> None:
+def _main(stack) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--settings", default=str(DEFAULT_SETTINGS))
@@ -285,6 +294,8 @@ def main() -> None:
     parser.add_argument("--shared-model-head", action="store_true",
                         help="Share one model-selection head across (application, ingress) groups")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--workflow-engine", choices=("reference", "array"), default=None)
+    parser.add_argument("--workflow-workers", type=int, choices=(1, 2, 4), default=None)
     parser.add_argument("--progress-bar", action="store_true", help="Optional dynamic bar in addition to per-update lines")
     args = parser.parse_args()
     settings = load_settings(args.settings)
@@ -449,12 +460,29 @@ def main() -> None:
             "frozen_deployment_substeps": 0,
         })
         _write_json(output / "parameter_audit.json", parameter_audit)
+    runtime_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    requested_engine = args.workflow_engine
+    if not args.resume and requested_engine is None:
+        requested_engine = DEFAULT_NEW_WORKFLOW_ENGINE
+    runtime_options = WorkflowOptions.resolve(runtime_manifest, requested_engine, args.workflow_workers)
+    previous_runtime = WorkflowOptions.resolve(runtime_manifest)
+    if args.resume and runtime_options != previous_runtime:
+        runtime_manifest.setdefault("workflow_runtime_switches", []).append({
+            "at": datetime.now(timezone.utc).isoformat(),
+            "checkpoint_next_update": int(resume_state.get("next_update", 0)) if resume_state else 0,
+            "from": previous_runtime.to_dict(), "to": runtime_options.to_dict(),
+        })
+    runtime_manifest["workflow_runtime"] = runtime_options.to_dict()
+    _write_json(manifest_path, runtime_manifest)
+    runtime = stack.enter_context(WorkflowRuntime(runtime_options))
+    print(f"[init] workflow={runtime_options.engine} workers={runtime_options.workers}", flush=True)
     print(f"[init] building environment: {len(scenario.servers)} servers, "
           f"{len(scenario.applications)} applications, {len(trajectory)} slot(s)", flush=True)
     env = SlotSequentialJointEnv(
         scenario, trajectory, mapping_samples=args.mapping_samples,
         seed=args.seed, objective=objective_spec,
         warmup_deployments=warmup,
+        workflow_runtime=runtime,
     )
 
     def checkpoint(state):
@@ -463,6 +491,7 @@ def main() -> None:
                  "scenario_hash": scenario_hash, "trajectory_digest": trajectory.digest(),
                  "warmup_deployment_digest": warmup.digest() if warmup else None,
                  "ppo_config": config.to_dict()}
+        state["workflow_runtime"] = runtime_options.to_dict()
         state["parameter_receipt"] = settings_receipt(settings)
         temporary = checkpoint_path.with_suffix(".tmp.pt")
         torch.save(state, temporary)
@@ -509,6 +538,7 @@ def main() -> None:
         args.device, objective_spec,
         evaluation_phase=("composition" if phase_schedule[-1][0] == "composition" else "joint"),
         warmup_deployments=warmup,
+        workflow_runtime=runtime,
     )
     _write_json(output / "evaluation.json", {
         "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
@@ -524,6 +554,7 @@ def main() -> None:
     baselines = _evaluate_baselines(
         scenario, evaluation_trace, args.mapping_samples,
         env.objective.spec, env.objective.references,
+        workflow_runtime=runtime,
     )
     _write_json(output / "baselines.json", {
         "protocol": PROTOCOL, "physical_routing": PHYSICAL_ROUTING,
@@ -540,9 +571,15 @@ def main() -> None:
             "policies": _evaluate_routing_baselines(
                 scenario, evaluation_trace, args.mapping_samples, objective_spec,
                 warmup_deployments=warmup,
+                workflow_runtime=runtime,
             ),
         })
     print(f"Completed {args.updates} PPO updates; trajectory {trajectory.digest()[:12]}; output {output}")
+
+
+def main():
+    with ExitStack() as stack:
+        return _main(stack)
 
 
 if __name__ == "__main__":

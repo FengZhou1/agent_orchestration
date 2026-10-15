@@ -14,6 +14,7 @@ import networkx as nx
 import numpy as np
 
 from agent_orch.schema.models import NodeType, SLOType
+from .workflow_mapping import MappingBatch
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,11 @@ class IndexedWorkflowKernel:
     def evaluate(self, app_id, ingress, model, flow, outcomes):
         app = self.scenario.applications[app_id]
         plan = indexed_pattern(tuple(flow.nodes), tuple(flow.edges), flow.final_node)
+        if isinstance(outcomes, MappingBatch):
+            permutation = [outcomes.nodes.index(node) for node in plan.nodes]
+            servers = outcomes.servers[:, permutation]
+            candidates = outcomes.candidates[:, permutation]
+            return self.evaluate_arrays(app, ingress, model, flow, servers, candidates)
         count, width = len(outcomes), len(plan.nodes)
         servers = np.zeros((count, width), dtype=np.int32)
         candidates = np.zeros((count, width), dtype=np.int32)
@@ -134,6 +140,12 @@ class IndexedWorkflowKernel:
                 server, candidate = mapping.get(node, ('', None))
                 servers[row, column] = self.server_index.get(server, 0)
                 candidates[row, column] = self.candidate_index.get(candidate, 0)
+
+        return self.evaluate_arrays(app, ingress, model, flow, servers, candidates)
+
+    def evaluate_arrays(self, app, ingress, model, flow, servers, candidates):
+        plan = indexed_pattern(tuple(flow.nodes), tuple(flow.edges), flow.final_node)
+        count, width = servers.shape
 
         node_index, llm_response, llm_ttft, llm_tbt, llm_valid = self._llm(app)
         response = np.full((count, width), self.overload, dtype=np.float64)
@@ -214,3 +226,52 @@ class IndexedWorkflowKernel:
             slo = ((e2e <= float(contract.deadline_s)) & (ttft <= float(contract.ttft_s))
                    & (tbt <= float(contract.tbt_s)) & stage_ok)
         return BatchValues(valid, slo & valid, e2e, ttft, tbt, completions, stages)
+
+    def compact(self, app, requests):
+        """Application-only numeric context, with shared arrays pickled once/task.
+
+        Dynamic tables are rebuilt on EVERY evaluation after the full global
+        loads have been computed. No backend, environment or policy is sent.
+        """
+        self._network()
+        first_returns = {}
+        for ingress, model, flow in requests:
+            output = max(1.0, app.nodes[flow.final_node].output_tokens[model])
+            token_data = app.exit_payload(flow.id, model) / output
+            for server in self.servers[1:]:
+                key = (server, ingress, token_data)
+                if key not in first_returns and self.network_valid[self.server_index[server], self.server_index[ingress]]:
+                    first_returns[key] = self.evaluator._first_token_delay(*key)
+        return CompactKernel(self.overload, self.servers, self.server_index,
+            self.tool_index, self.tool_response, self.tool_valid,
+            self.network_delay, self.network_valid, self._llm(app), first_returns)
+
+
+@dataclass
+class CompactKernel:
+    overload: float
+    servers: tuple
+    server_index: dict
+    tool_index: dict
+    tool_response: np.ndarray
+    tool_valid: np.ndarray
+    network_delay: np.ndarray
+    network_valid: np.ndarray
+    llm_tables: tuple
+    first_returns: dict
+
+    # Reuse exactly the reference array recurrence, not a second approximation.
+    evaluate_arrays = IndexedWorkflowKernel.evaluate_arrays
+
+    @property
+    def evaluator(self):
+        return self
+
+    def _llm(self, app):
+        return self.llm_tables
+
+    def _network(self):
+        pass
+
+    def _first_token_delay(self, source, target, data):
+        return self.first_returns[(source, target, data)]

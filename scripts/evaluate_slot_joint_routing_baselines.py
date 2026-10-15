@@ -8,6 +8,7 @@ same scenario, trajectory seed, variation, and mapping-sample count.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from dataclasses import fields
 import hashlib
 import json
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from agent_orch.objective import ObjectiveSpec
 from agent_orch.schema.loader import ScenarioLoader
+from agent_orch.performance.workflow_runtime import WorkflowOptions, WorkflowRuntime
 
 from run_slot_joint import (
     _evaluate_routing_baselines, _write_json, environment_options,
@@ -23,16 +25,20 @@ from run_slot_joint import (
 )
 
 
-def main() -> None:
+def _main(stack) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--mapping-samples", type=int, required=True)
+    parser.add_argument("--workflow-engine", choices=("reference", "array"))
+    parser.add_argument("--workflow-workers", choices=(1, 2, 4), type=int)
     args = parser.parse_args()
     if args.mapping_samples <= 0:
         raise ValueError("mapping-samples must be positive")
 
     manifest = json.loads((args.run / "manifest.json").read_text(encoding="utf-8"))
     options = environment_options(manifest)
+    runtime_options = WorkflowOptions.resolve(manifest, args.workflow_engine, args.workflow_workers)
+    options["workflow_runtime"] = stack.enter_context(WorkflowRuntime(runtime_options))
     scenario_path = Path(manifest["scenario"])
     if hashlib.sha256(scenario_path.read_bytes()).hexdigest() != manifest["scenario_hash"]:
         raise ValueError("Scenario changed since training")
@@ -55,6 +61,7 @@ def main() -> None:
     )
     _write_json(output, {
         "protocol": manifest["protocol"],
+        "workflow_runtime": runtime_options.to_dict(),
         "physical_routing": options["routing_method"],
         "scenario_hash": manifest["scenario_hash"],
         "trajectory_digest": trajectory.digest(),
@@ -65,6 +72,11 @@ def main() -> None:
         "policies": results,
     })
     print(f"routing baselines written to {output}")
+
+
+def main():
+    with ExitStack() as stack:
+        return _main(stack)
 
 
 if __name__ == "__main__":

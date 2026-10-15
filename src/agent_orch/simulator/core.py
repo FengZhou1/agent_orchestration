@@ -22,11 +22,11 @@ from agent_orch.workload import ArrivalTrace
 
 
 class Simulator:
-    def __init__(self, scenario: Scenario, max_mapping_samples: int = 4096):
+    def __init__(self, scenario: Scenario, max_mapping_samples: int = 4096, *, workflow_runtime=None):
         self.scenario = scenario
         self.backend = AnalyticalBackend(scenario)
         self.workflow = WorkflowEvaluator(
-            scenario, self.backend, max_mapping_samples=max_mapping_samples
+            scenario, self.backend, max_mapping_samples=max_mapping_samples, runtime=workflow_runtime
         )
         self.decoder = ActionDecoder(scenario)
         self.slot = 0
@@ -165,6 +165,9 @@ class Simulator:
         self.last_timings = {"validation": validated - started,
             "analytical": analyzed - validated, "unserved_check": checked - analyzed,
             "workflow": evaluated - checked, "metrics": time.perf_counter() - evaluated}
+        self.last_timings.update({f"workflow_{key}": value
+            for key, value in self.workflow.runtime.last_timings.items()})
+        self.last_workflow_cache = dict(self.workflow.runtime.last_cache)
         return transition
 
     # Compatibility alias for non-RL baselines.  The environment invokes

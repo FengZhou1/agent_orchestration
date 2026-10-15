@@ -78,6 +78,7 @@ class BaseOrchestrationEnv(gym.Env):
         potential_cost_weight: float = 0.0,
         deployment_periods: int = 1,
         trace_offset_span: int | None = None,
+        workflow_runtime=None,
     ):
         super().__init__()
         self.scenario = scenario
@@ -92,7 +93,7 @@ class BaseOrchestrationEnv(gym.Env):
         self.trace_offset = 0
         self.layout = StructuredActionLayout.build(scenario)
         self.planner = CapacityPlanner(scenario)
-        self.simulator = Simulator(scenario, max_mapping_samples=mapping_samples)
+        self.simulator = Simulator(scenario, max_mapping_samples=mapping_samples, workflow_runtime=workflow_runtime)
         self.simulator.set_arrival_trace(arrival_trace)
         self.physical_router = CapacityProportionalRouter(scenario)
         self.deployment_library = resolve_deployment_library(

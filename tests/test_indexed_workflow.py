@@ -7,6 +7,7 @@ import pytest
 from agent_orch.performance.analytical import AnalyticalBackend, AnalyticalResult
 from agent_orch.performance.workflow import WorkflowEvaluator
 from agent_orch.performance.workflow_batch import IndexedWorkflowKernel
+from agent_orch.performance.workflow_mapping import MappingBatch
 from agent_orch.schema.models import (
     LLMClassPerformance, NodeType, PatternFlow, RoutingDecision, SLOSpec, SLOType, WorkflowNode,
 )
@@ -66,7 +67,18 @@ def compare(scene, app, model, ingress, flow, result, routing, outcomes):
     actual = batch.evaluate(None, routing, result)
     assert actual == expected
     assert batch._completion_probability == scalar._completion_probability
-    values = IndexedWorkflowKernel(batch, result).evaluate(app.id, ingress, model, flow, outcomes)
+    kernel = IndexedWorkflowKernel(batch, result)
+    values = kernel.evaluate(app.id, ingress, model, flow, outcomes)
+    servers = np.asarray([[kernel.server_index.get(mapping.get(n, ('', None))[0], 0)
+                           for n in flow.nodes] for mapping, _ in outcomes], dtype=np.int32).reshape(len(outcomes), len(flow.nodes))
+    candidates = np.asarray([[kernel.candidate_index.get(mapping.get(n, ('', None))[1], 0)
+                              for n in flow.nodes] for mapping, _ in outcomes], dtype=np.int32).reshape(len(outcomes), len(flow.nodes))
+    direct = kernel.evaluate(app.id, ingress, model, flow,
+        MappingBatch(tuple(flow.nodes), servers, candidates, np.asarray([p for _, p in outcomes])))
+    compact = kernel.compact(app, [(ingress, model, flow)]).evaluate_arrays(app, ingress, model, flow, servers, candidates)
+    for alternative in (direct, compact):
+        for name in ('valid', 'slo', 'e2e', 'ttft', 'tbt', 'completions'):
+            np.testing.assert_array_equal(getattr(values, name), getattr(alternative, name))
     for row, (mapping, _) in enumerate(outcomes):
         if not scalar._mapping_complete(app.id, ingress, flow, mapping, result):
             assert not values.valid[row]
@@ -97,7 +109,7 @@ def test_batch_matches_scalar_at_exact_and_adjacent_slo_boundaries(parallel_case
 
 
 @pytest.mark.parametrize('failure', ['missing', 'unknown_server', 'tool', 'llm', 'kv', 'network', 'nonfinite', 'intermediate_ttft',
-                                    'llm_nan_util', 'tool_nan_util'])
+                                    'llm_nan_util', 'tool_nan_util', 'disconnected'])
 def test_completion_and_failure_boundaries(parallel_case, failure):
     scene, app, model, ingress, flow, result, routing, outcomes = parallel_case
     if failure == 'missing':
@@ -116,6 +128,8 @@ def test_completion_and_failure_boundaries(parallel_case, failure):
                                    {'llm_kv_stable': {candidate: False}}))
     elif failure == 'network':
         result = replace(result, link_load_mbps={(l.source, l.target): l.capacity_mbps for l in scene.links})
+    elif failure == 'disconnected':
+        scene = replace(scene, links=())
     elif failure == 'llm_nan_util':
         result = replace(result, llm_utilization={next(iter(result.llm_utilization)): math.nan})
     else:

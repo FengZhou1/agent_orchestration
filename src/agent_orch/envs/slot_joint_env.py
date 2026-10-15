@@ -36,11 +36,14 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         routing_method: str = "capacity_proportional",
         replay_frozen_deployment_steps: bool = False,
         warmup_deployments: FixedWarmupDeployments | None = None,
+        workflow_runtime=None,
         **kwargs: Any,
     ) -> None:
         if scenario.id != trajectory.scenario_id or not trajectory.slots:
             raise ValueError("A nonempty trajectory for this scenario is required")
         self.base_scenario = scenario
+        from agent_orch.performance.workflow_runtime import WorkflowRuntime
+        self.workflow_runtime = workflow_runtime or WorkflowRuntime()
         self._timing_totals: dict[str, float] = {}
         self.on_evaluation_phase = None
         self.trajectory = trajectory
@@ -77,6 +80,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         super().__init__(
             scenario, *args, max_slots=len(trajectory), arrival_trace=None,
             deployment_periods=1, potential_shaping=False, **kwargs,
+            workflow_runtime=self.workflow_runtime,
         )
         # A shared categorical head represents a binary LLM switch or the
         # replica count of one (tool, server) pool, depending on the target.
@@ -137,7 +141,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         previous = self.simulator.previous_deployment
         last_metrics = self.simulator.last_metrics
         samples = self.simulator.workflow.max_mapping_samples
-        self.simulator = Simulator(slot_scenario, max_mapping_samples=samples)
+        self.simulator = Simulator(slot_scenario, max_mapping_samples=samples, workflow_runtime=self.workflow_runtime)
         self.simulator.slot = self._period_index
         self.simulator.previous_deployment = previous
         self.simulator.last_metrics = last_metrics
@@ -207,7 +211,8 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
             policy = GreedyPolicy(scenario, seed=0)
             deployment = policy.deployment()
             simulator = Simulator(
-                scenario, max_mapping_samples=self.simulator.workflow.max_mapping_samples
+                scenario, max_mapping_samples=self.simulator.workflow.max_mapping_samples,
+                workflow_runtime=self.workflow_runtime,
             )
             simulator.slot = slot
             if previous is not None:
@@ -248,6 +253,7 @@ class SlotSequentialJointEnv(BaseOrchestrationEnv):
         self.simulator = Simulator(
             self.base_scenario,
             max_mapping_samples=self.simulator.workflow.max_mapping_samples,
+            workflow_runtime=self.workflow_runtime,
         )
         observation, info = super().reset(seed=seed, options=options)
         self.trace_offset = 0
