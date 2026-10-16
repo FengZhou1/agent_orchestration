@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import asdict
 import json
 from pathlib import Path
 
 from agent_orch.deployment.warmup import (FixedWarmupDeployments, WarmupSpec,
-    generate_warmup_deployments, physical_signature)
+    generate_warmup_deployments, physical_signature, reuse_layouts_fixed_exogenous)
 from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.simulator import Simulator
@@ -31,6 +32,9 @@ def main():
     scenario = ScenarioLoader.load(args.scenario)
     trajectory = SlotTrajectory.from_dict(json.loads((args.bundle / "train_trajectory.json").read_text(encoding="utf-8")))
     bank = FixedWarmupDeployments.load(args.bundle / "warmup_deployments.json", scenario, trajectory)
+    manifest_path = args.bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    source_info = manifest.get("source_layouts")
     original = (bank.scenario_hash, bank.trajectory_digest, bank.digest())
     signatures = [physical_signature(trajectory.scenario_at(t, scenario), bank.deployment_at(t)) for t in range(len(trajectory))]
     config_exposure = Counter()
@@ -46,8 +50,18 @@ def main():
     regenerated = None
     if args.regenerate:
         print("[verify] regenerating all contexts from the saved inputs and rules", flush=True)
-        second = generate_warmup_deployments(scenario, trajectory, bank.seed, WarmupSpec(**bank.spec),
-            lambda e: print(f"[verify] regenerated slot {e['slot']+1}/{len(trajectory)}", flush=True))
+        progress = lambda e: print(f"[verify] regenerated slot {e['slot']+1}/{len(trajectory)}", flush=True)
+        if source_info:
+            source_path = Path(source_info["directory"])
+            source_trajectory = SlotTrajectory.from_dict(json.loads(
+                (source_path / "train_trajectory.json").read_text(encoding="utf-8")))
+            source = FixedWarmupDeployments.load(source_path / "warmup_deployments.json", scenario, source_trajectory)
+            if (source.digest() != source_info["bank_digest"]
+                    or source_trajectory.digest() != source_info["trajectory_digest"]):
+                raise ValueError("Source layouts changed since the controlled bundle was built")
+            second = reuse_layouts_fixed_exogenous(scenario, trajectory, source, source_trajectory, progress)
+        else:
+            second = generate_warmup_deployments(scenario, trajectory, bank.seed, WarmupSpec(**bank.spec), progress)
         regenerated = second.digest() == bank.digest()
         if not regenerated: raise AssertionError("Regeneration did not reproduce the original digest")
     rows = []
@@ -76,8 +90,17 @@ def main():
     bank.validate(scenario, trajectory)
     if original != (bank.scenario_hash, bank.trajectory_digest, bank.digest()):
         raise AssertionError("Diagnostic probes mutated the frozen inputs")
+    snapshots = [asdict(snapshot) for snapshot in trajectory.slots]
+    unique_inputs = {key: len({json.dumps(row[key], sort_keys=True) for row in snapshots})
+                     for key in snapshots[0]}
     args.output.write_text(json.dumps({"status": "verified", "slots": len(trajectory),
         "warmup_deployment_digest": bank.digest(), "trajectory_digest": trajectory.digest(),
+        "exogenous_mode": "fixed_base" if trajectory.variation.is_fixed_base else "sampled",
+        "source_layouts": source_info,
+        "unique_exogenous_values": unique_inputs,
+        "all_fixed_contexts_equal_scenario_base": (
+            all(trajectory.scenario_at(t, scenario) == scenario for t in range(len(trajectory)))
+            if trajectory.variation.is_fixed_base else None),
         "resources_and_positive_workload_coverage": "pass_all_slots",
         "unique_physical_deployments": len(set(signatures)),
         "deterministic_regeneration": regenerated, "config_instance_counts": dict(config_exposure),

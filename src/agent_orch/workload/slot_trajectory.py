@@ -8,6 +8,7 @@ analytical simulator does not sample individual requests inside that slot.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+import copy
 import hashlib
 import json
 import math
@@ -28,6 +29,17 @@ class SlotVariationSpec:
     # Physical GPU inventory and SLO contracts are held fixed.  A later,
     # calibrated availability trace may set a nonzero GPU outage probability.
     gpu_unavailable_probability: float = 0.0
+
+    @staticmethod
+    def fixed_base() -> "SlotVariationSpec":
+        """Explicit controlled setting; preserve each application's own rate."""
+        return SlotVariationSpec((1.0, 1.0), (1.0, 1.0), (1.0, 1.0), (1.0, 1.0), 0.0)
+
+    @property
+    def is_fixed_base(self) -> bool:
+        return (self.gpu_unavailable_probability == 0.0 and all(
+            tuple(getattr(self, name)) == (1.0, 1.0)
+            for name in ("arrival_range", "bandwidth_range", "cpu_range", "memory_range")))
 
     def validate(self) -> None:
         for name in (
@@ -143,7 +155,10 @@ class SlotTrajectory:
                            for a in base.applications.values()}
         expected_output = {a.id: {n.id: n.output_tokens for n in a.nodes.values() if n.type is NodeType.LLM}
                            for a in base.applications.values()}
+        fixed = _base_snapshot(base) if self.variation.is_fixed_base else None
         for snapshot in self.slots:
+            if fixed is not None and snapshot != fixed:
+                raise ValueError("Fixed-exogenous trajectory differs from the base conditions")
             if (snapshot.flow_probabilities != expected_flows or
                     snapshot.prompt_tokens != expected_prompt or snapshot.output_tokens != expected_output):
                 raise ValueError("Trajectory token lengths or probabilities differ from the base scenario")
@@ -169,6 +184,18 @@ class SlotTrajectory:
                 raise ValueError("Trajectory has invalid bandwidth")
 
     @staticmethod
+    def fixed(scenario: Scenario, slots: int, seed: int) -> "SlotTrajectory":
+        """Repeat exact base conditions, without sampling or capacity rescaling."""
+        if slots <= 0:
+            raise ValueError("slots must be positive")
+        CapacityPlanner(scenario).initial_deployment()
+        first = _base_snapshot(scenario)
+        result = SlotTrajectory(scenario.id, int(seed), SlotVariationSpec.fixed_base(),
+                                tuple(copy.deepcopy(first) for _ in range(slots)))
+        result.validate_against(scenario)
+        return result
+
+    @staticmethod
     def sample(
         scenario: Scenario,
         slots: int,
@@ -178,6 +205,8 @@ class SlotTrajectory:
         if slots <= 0:
             raise ValueError("slots must be positive")
         variation.validate()
+        if variation.is_fixed_base:
+            return SlotTrajectory.fixed(scenario, slots, seed)
         rng = np.random.default_rng(seed)
         snapshots: list[SlotSnapshot] = []
         for _ in range(slots):
@@ -194,6 +223,20 @@ class SlotTrajectory:
             else:
                 raise ValueError("Could not sample a feasible slot in 100 attempts")
         return SlotTrajectory(scenario.id, int(seed), variation, tuple(snapshots))
+
+
+def _base_snapshot(base: Scenario) -> SlotSnapshot:
+    return SlotSnapshot(
+        {a.id: dict(a.ingress_rates) for a in base.applications.values()},
+        {a.id: {f.id: f.probability for f in a.pattern_flows} for a in base.applications.values()},
+        {a.id: {n.id: dict(n.prompt_tokens) for n in a.nodes.values() if n.type is NodeType.LLM}
+         for a in base.applications.values()},
+        {a.id: {n.id: dict(n.output_tokens) for n in a.nodes.values() if n.type is NodeType.LLM}
+         for a in base.applications.values()},
+        tuple(link.capacity_mbps for link in base.links),
+        {n: {"cpu_cores": s.cpu_cores, "memory_gb": s.memory_gb, "gpu_count": s.gpu_count}
+         for n, s in base.servers.items()},
+    )
 
 
 def _draw(rng: np.random.Generator, bounds: tuple[float, float]) -> float:

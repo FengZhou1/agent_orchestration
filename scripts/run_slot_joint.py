@@ -286,6 +286,8 @@ def _main(stack) -> None:
     parser.add_argument("--warmup-config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--warmup-seed", type=int, default=20261014)
     parser.add_argument("--variation", help="JSON file with SlotVariationSpec fields")
+    parser.add_argument("--fixed-exogenous", action="store_true",
+                        help="Controlled diagnostic: all slots use exact base demand/resources; deployments may differ")
     parser.add_argument("--mapping-samples", type=int)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--update-epochs", type=int)
@@ -306,6 +308,8 @@ def _main(stack) -> None:
     args = parser.parse_args()
     if (args.extend_budget or args.check_resume) and not args.resume:
         raise ValueError("--extend-budget and --check-resume require --resume")
+    if args.fixed_exogenous and (args.variation or args.formal):
+        raise ValueError("--fixed-exogenous is an explicit diagnostic, incompatible with --variation or --formal")
     settings = load_settings(args.settings)
     if args.formal:
         if args.smoke:
@@ -355,6 +359,8 @@ def _main(stack) -> None:
         "parameter_receipt": settings_receipt(settings),
         "smoke": args.smoke,
     }
+    if args.fixed_exogenous:
+        training_settings["exogenous_mode"] = "fixed_base"
     # JSON reload turns dataclass tuples into lists. Compare the same canonical
     # representation on resume instead of rejecting every fresh checkpoint.
     training_settings = json.loads(json.dumps(training_settings))
@@ -368,16 +374,16 @@ def _main(stack) -> None:
             raise ValueError("Scenario provenance differs from the current parameter profile; regenerate "
                              "using the saved pool, not the old infrastructure template")
     scenario_hash = hashlib.sha256(scenario_path.read_bytes()).hexdigest()
-    variation = (
-        SlotVariationSpec(**json.loads(Path(args.variation).read_text(encoding="utf-8")))
-        if args.variation else SlotVariationSpec(**settings["variation"])
-    )
+    approved_variation = (SlotVariationSpec.fixed_base() if args.fixed_exogenous
+                          else SlotVariationSpec(**settings["variation"]))
+    variation = (SlotVariationSpec(**json.loads(Path(args.variation).read_text(encoding="utf-8")))
+                 if args.variation else approved_variation)
     variation.validate()
     # All four model objectives remain visible while SLO attainment is also an
     # explicit constraint.  Weights/target are placeholders pending calibration.
     objective_spec = ObjectiveSpec(**settings["objective"])
     warmup_spec = WarmupSpec.load(args.warmup_config)
-    if not args.smoke and asdict(variation) != asdict(SlotVariationSpec(**settings["variation"])):
+    if not args.smoke and asdict(variation) != asdict(approved_variation):
         raise ValueError("Trajectory overrides require --smoke or an updated settings profile")
     if not args.resume:
         output.mkdir(parents=True, exist_ok=True)
@@ -467,6 +473,7 @@ def _main(stack) -> None:
             "trajectory_seed": trajectory.seed,
             "slots": len(trajectory),
             "variation": asdict(variation),
+            "exogenous_mode": "fixed_base" if variation.is_fixed_base else "sampled",
             "ppo_seed": args.seed,
             "objective": objective_spec.to_dict(),
             "training_settings": training_settings,
@@ -564,6 +571,7 @@ def _main(stack) -> None:
                  "ppo_config": config.to_dict()}
         state["workflow_runtime"] = runtime_options.to_dict()
         state["parameter_receipt"] = settings_receipt(settings)
+        state["exogenous_mode"] = runtime_manifest.get("exogenous_mode", "sampled")
         state["training_budget_extensions"] = runtime_manifest.get("training_budget_extensions", [])
         temporary = checkpoint_path.with_suffix(".tmp.pt")
         torch.save(state, temporary)

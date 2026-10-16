@@ -6,6 +6,7 @@ or PPO output enters generation. Every context is bound to its physical slot.
 from __future__ import annotations
 
 from collections import Counter
+import copy
 from dataclasses import asdict, dataclass, fields, is_dataclass
 import hashlib
 import itertools
@@ -500,3 +501,50 @@ def coverage_report(bank: FixedWarmupDeployments):
             "gpu_used", "available_gpu", "gpu_fraction_actual", "llm_hosts", "tool_hosts",
             "cpu_fraction_max", "memory_fraction_max", "model_capacities_rps", "capacity_risk")}
             for e in entries]}
+
+
+def reuse_layouts_fixed_exogenous(scenario: Scenario, trajectory: SlotTrajectory,
+        source: FixedWarmupDeployments, source_trajectory: SlotTrajectory,
+        on_slot: Callable[[dict], None] | None = None) -> FixedWarmupDeployments:
+    """Rebind, never repair/reselect, saved layouts for the fixed-base control.
+
+    Source provenance is checked against its original trajectory. Capacity and
+    resource diagnostics are recomputed under the new demand, not copied.
+    """
+    source.validate(scenario, source_trajectory)
+    trajectory.validate_against(scenario)
+    if not trajectory.variation.is_fixed_base or len(trajectory) != len(source.entries):
+        raise ValueError("Layout reuse requires fixed-base conditions and the original slot count")
+    current = trajectory.scenario_at(0, scenario)
+    capacities, calls = _capacities(current)
+    source_digest = source.digest()
+    entries, seen = [], set()
+    for slot, original in enumerate(source.entries):
+        deployment = source.deployment_at(slot)
+        validate_placement(current, deployment)  # Fail instead of silently repairing.
+        entry = copy.deepcopy(original)
+        remaining = CapacityPlanner(current).normalized_remaining_resources(deployment)
+        signature = physical_signature(current, deployment)
+        probes = capacity_probes(current, deployment, capacities, calls)
+        entry.update({
+            "attempts": 0, "construction_failures": {}, "repairs_added": [],
+            "signature": signature, "duplicate_physical_layout": signature in seen,
+            "model_capacities_rps": _model_capacities(current, deployment, capacities),
+            "probes": probes, "capacity_risk": not any(p["capacity_screen_pass"] for p in probes),
+            "available_gpu": sum(s.gpu_count for s in current.servers.values()),
+            "cpu_fraction_max": max(1-v[0] for v in remaining.values()),
+            "memory_fraction_max": max(1-v[1] for v in remaining.values()),
+            "source_context": {"bank_digest": source_digest, "trajectory_digest": source_trajectory.digest(),
+                               "slot": slot, "signature": original["signature"],
+                               "attempts": original["attempts"], "repairs_added": original["repairs_added"]},
+        })
+        entry["gpu_fraction_actual"] = entry["gpu_used"] / max(1, entry["available_gpu"])
+        if signature != original["signature"] or entry["deployment"] != original["deployment"]:
+            raise AssertionError("Rebinding changed a physical deployment")
+        seen.add(signature)
+        entries.append(entry)
+        if on_slot: on_slot(entry)
+    result = FixedWarmupDeployments(scenario_digest(scenario), trajectory.digest(), source.seed,
+                                   copy.deepcopy(source.spec), tuple(entries))
+    result.validate(scenario, trajectory)
+    return result
