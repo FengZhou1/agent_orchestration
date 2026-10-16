@@ -305,7 +305,8 @@ def _main(stack) -> None:
                         help="With --resume, validate continuation without training or writing run files")
     parser.add_argument("--workflow-engine", choices=("reference", "array"), default=None)
     parser.add_argument("--workflow-workers", type=int, choices=(1, 2, 4), default=None)
-    parser.add_argument("--progress-bar", action="store_true", help="Optional dynamic bar in addition to per-update lines")
+    parser.add_argument("--progress-bar", action=argparse.BooleanOptionalAction, default=True,
+                        help="Dynamic update/slot/ETA bar (default on); --no-progress-bar keeps only update summaries")
     args = parser.parse_args()
     if (args.extend_budget or args.check_resume) and not args.resume:
         raise ValueError("--extend-budget and --check-resume require --resume")
@@ -587,6 +588,10 @@ def _main(stack) -> None:
                 "model_group_index": env._model_group,
                 "model_groups": len(env.layout.model_groups)}
 
+    recent_update_times = [
+        row.get("collection_time_s", 0.0) + row.get("optimization_time_s", 0.0)
+        for row in (resume_state or {}).get("history", [])[-10:]
+    ]
     with TrainingProgressReporter(
         run_id=output.name, output_dir=output, updates=args.updates,
         rollout_steps=len(trajectory), rollout_unit="slot",
@@ -594,6 +599,7 @@ def _main(stack) -> None:
         device=args.device, initial_update=int(resume_state.get("next_update", 0)) if resume_state else 0,
         append_history=args.resume, print_updates=True, details=decision_progress,
         show_progress=args.progress_bar,
+        initial_update_time_s=float(np.mean(recent_update_times)) if recent_update_times else None,
     ) as progress:
         progress.on_phase(int(resume_state.get("next_update", 0)) if resume_state else 0,
                           "initializing_policy_and_fixed_baseline")

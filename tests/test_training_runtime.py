@@ -7,6 +7,82 @@ import torch
 from agent_orch.agents import TrainingProgressReporter, resolve_device
 
 
+def test_progress_hides_evaluation_phases_but_keeps_update_summary(tmp_path, capsys):
+    with TrainingProgressReporter(
+        run_id="smoke", output_dir=tmp_path, updates=1, rollout_steps=1,
+        rollout_unit="slot", update_epochs=1, minibatch_size=1,
+        device="cpu", show_progress=True, print_updates=True,
+    ) as reporter:
+        reporter.on_phase(0, "collecting")
+        for phase in ("physical_routing", "analytical", "workflow"):
+            reporter.on_evaluation_phase(phase)
+            status = json.loads((tmp_path / "training_status.json").read_text())
+            assert status["phase"] == phase
+        reporter.on_rollout_step(0, 1)
+        reporter.on_optimization_step(0, 1, 1)
+        reporter.on_update({
+            "update": 0.0, "mean_utility": 0.5,
+            "collection_time_s": 2.0, "optimization_time_s": 0.1,
+        })
+    captured = capsys.readouterr()
+    assert captured.out.count("update 1/1") == 1
+    assert "utility=0.500000" in captured.out
+    assert "ETA " in captured.err
+    assert "slot 1/1" in captured.err
+    assert "100.0%" in captured.err
+    for phase in ("physical_routing", "analytical", "workflow", "collecting"):
+        assert phase not in captured.out + captured.err
+
+
+def test_resumed_progress_estimates_eta_from_saved_update_durations(tmp_path):
+    with TrainingProgressReporter(
+        run_id="resume", output_dir=tmp_path, updates=1000, rollout_steps=32,
+        rollout_unit="slot", update_epochs=3, minibatch_size=64,
+        device="cpu", initial_update=40, append_history=True,
+        show_progress=True, status_interval_steps=1, initial_update_time_s=26.0,
+    ) as reporter:
+        status = json.loads((tmp_path / "training_status.json").read_text())
+        assert status["eta_seconds"] == 960 * 26.0
+        assert status["eta_basis"].startswith("recent completed-update")
+        reporter.on_phase(40, "collecting")
+        reporter.on_rollout_step(40, 32)
+        reporter.on_optimization_step(40, 3, 3)
+        reporter.on_update({
+            "update": 40.0, "collection_time_s": 24.0,
+            "optimization_time_s": 6.0,
+        })
+        status = json.loads((tmp_path / "training_status.json").read_text())
+        assert status["eta_seconds"] == pytest.approx(959 * 26.8)
+        assert "41/1000 slot 32/32 ETA" in reporter._bar.postfix
+
+
+def test_repeated_phase_callbacks_do_not_refresh_bar_per_phase(tmp_path, monkeypatch):
+    with TrainingProgressReporter(
+        run_id="no-spam", output_dir=tmp_path, updates=2, rollout_steps=32,
+        update_epochs=1, minibatch_size=32, device="cpu", show_progress=True,
+    ) as reporter:
+        # Freeze only the reporter clock; rendering must not follow every phase.
+        monkeypatch.setattr("agent_orch.agents.progress.time.perf_counter", lambda: reporter._last_bar_refresh)
+        refreshes = []
+        monkeypatch.setattr(reporter._bar, "refresh", lambda: refreshes.append(1))
+        for _ in range(32):
+            for phase in ("physical_routing", "analytical", "workflow"):
+                reporter.on_evaluation_phase(phase)
+        assert refreshes == []
+
+
+@pytest.mark.parametrize("duration", [None, 0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_initial_eta_duration_is_not_used(tmp_path, duration):
+    with TrainingProgressReporter(
+        run_id="resume", output_dir=tmp_path, updates=10, rollout_steps=32,
+        update_epochs=1, minibatch_size=32, device="cpu", show_progress=False,
+        initial_update=3, initial_update_time_s=duration,
+    ) as reporter:
+        status = json.loads((tmp_path / "training_status.json").read_text())
+        assert status["eta_seconds"] is None
+        assert reporter._format_duration(None) == "--:--:--"
+
+
 def test_device_resolution_supports_cpu_and_auto():
     assert resolve_device("cpu") == "cpu"
     assert resolve_device("auto") in {"cpu", "cuda:0"}

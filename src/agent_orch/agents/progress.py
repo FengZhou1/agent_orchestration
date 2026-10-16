@@ -34,6 +34,7 @@ class TrainingProgressReporter:
         print_updates: bool = False,
         details: Callable[[], dict] | None = None,
         heartbeat_s: float = 10.0,
+        initial_update_time_s: float | None = None,
     ) -> None:
         self.run_id = run_id
         self.output_dir = Path(output_dir)
@@ -54,6 +55,14 @@ class TrainingProgressReporter:
         self.details = details
         self.heartbeat_s = heartbeat_s
         self._last_status_time = 0.0
+        self._last_bar_refresh = 0.0
+        self._update_time_s = (
+            initial_update_time_s
+            if initial_update_time_s is not None
+            and math.isfinite(initial_update_time_s)
+            and initial_update_time_s > 0.0
+            else None
+        )
         self.status_path = self.output_dir / status_filename
         self.history_path = self.output_dir / history_filename
 
@@ -78,12 +87,15 @@ class TrainingProgressReporter:
         )
         self._bar = tqdm(
             total=self.total_units,
-            desc=self.run_id,
+            desc="Training",
             unit="step",
             dynamic_ncols=True,
             disable=not self.show_progress,
             initial=self._completed_units,
+            mininterval=1.0,
+            bar_format="{desc} {percentage:5.1f}%|{bar:10}| {postfix}",
         )
+        self._refresh_bar(force=True)
         self._write_status("running")
         return self
 
@@ -102,6 +114,8 @@ class TrainingProgressReporter:
             self._phase = status
             self._write_status(status, error=repr(exc_value))
         if self._bar is not None:
+            self._bar.n = self._completed_units
+            self._refresh_bar(force=True)
             self._bar.close()
         if self._history_handle is not None:
             self._history_handle.flush()
@@ -116,14 +130,8 @@ class TrainingProgressReporter:
             self._optimizer_step = 0
         elif phase == "optimizing":
             self._optimizer_step = 0
-        if self._bar is not None:
-            self._bar.set_description_str(
-                f"{self.run_id} | {phase} {self._update}/{self.updates}",
-                refresh=True,
-            )
+        self._refresh_bar()
         self._write_status("running")
-        if self.print_updates:
-            tqdm.write(f"[{self.run_id}] update {self._update}/{self.updates}: {phase}")
 
     def on_rollout_step(self, update: int, rollout_step: int) -> None:
         self._update = update + 1
@@ -155,6 +163,12 @@ class TrainingProgressReporter:
     def on_update(self, record: dict[str, float]) -> None:
         self._latest_metrics = dict(record)
         self._completed_updates = int(record["update"]) + 1
+        duration = record.get("collection_time_s", 0.0) + record.get("optimization_time_s", 0.0)
+        if math.isfinite(duration) and duration > 0.0:
+            self._update_time_s = (
+                duration if self._update_time_s is None
+                else 0.8 * self._update_time_s + 0.2 * duration
+            )
         persisted = {
             **record,
             "elapsed_time_s": self._elapsed(),
@@ -177,14 +191,7 @@ class TrainingProgressReporter:
                 f"{int(record['update']) + 1}/{self.updates} "
                 f"utility={record.get('mean_utility', 0.):.6f} "
                 f"constraint={record.get('mean_constraint_cost', 0.):.6f} {timings}")
-        if self._bar is not None:
-            self._bar.set_postfix(
-                reward=f"{record.get('mean_reward', 0.0):.3f}",
-                utility=f"{record.get('mean_utility', 0.0):.3f}",
-                constraint=f"{record.get('mean_constraint_cost', 0.0):.3f}",
-                loss=f"{record.get('mean_loss', 0.0):.3f}",
-                refresh=True,
-            )
+        self._refresh_bar(force=True)
         self._write_status("running")
 
     def _advance(self, target: int) -> None:
@@ -192,6 +199,7 @@ class TrainingProgressReporter:
         delta = target - self._completed_units
         self._completed_units = target
         if self._bar is not None and delta:
+            self._refresh_bar()
             self._bar.update(delta)
         if (
             (delta > 0 and self._completed_units % self.status_interval_steps == 0)
@@ -203,10 +211,7 @@ class TrainingProgressReporter:
     def _write_status(self, status: str, error: str | None = None) -> None:
         self._last_status_time = time.perf_counter()
         elapsed = self._elapsed()
-        # Resumed work predates this process's clock and must not inflate rate.
-        rate = max(0, self._completed_units - self._initial_completed_units) / elapsed if elapsed > 0.0 else 0.0
-        remaining = max(0, self.total_units - self._completed_units)
-        eta = remaining / rate if rate > 0.0 else None
+        eta = self._eta_seconds()
         payload = {
             "run_id": self.run_id,
             "status": status,
@@ -229,7 +234,11 @@ class TrainingProgressReporter:
             ),
             "elapsed_time_s": elapsed,
             "eta_seconds": eta,
-            "eta_basis": "current-process work-unit rate; approximate across training stages",
+            "eta_basis": (
+                "recent completed-update duration; approximate across training stages"
+                if self._update_time_s is not None
+                else "current-process work-unit rate; approximate across training stages"
+            ),
             "latest_metrics": self._latest_metrics,
             "updated_at_utc": self._timestamp(),
         }
@@ -263,6 +272,41 @@ class TrainingProgressReporter:
                 temporary.unlink(missing_ok=True)
             except PermissionError:
                 pass
+
+    def _eta_seconds(self) -> float | None:
+        remaining = max(0, self.total_units - self._completed_units)
+        if remaining == 0:
+            return 0.0
+        if self._update_time_s is not None and self.units_per_update > 0:
+            return remaining / self.units_per_update * self._update_time_s
+        # Only work performed in this process contributes to its measured rate.
+        elapsed = self._elapsed()
+        new_units = max(0, self._completed_units - self._initial_completed_units)
+        return remaining * elapsed / new_units if new_units and elapsed > 0.0 else None
+
+    def _refresh_bar(self, *, force: bool = False) -> None:
+        if self._bar is None or not self.show_progress:
+            return
+        now = time.perf_counter()
+        if not force and now - self._last_bar_refresh < 1.0:
+            return
+        self._last_bar_refresh = now
+        update = min(max(1, self._update), self.updates)
+        self._bar.set_postfix_str(
+            f"{update}/{self.updates} {self.rollout_unit} "
+            f"{self._rollout_step}/{self.rollout_steps} "
+            f"ETA {self._format_duration(self._eta_seconds())}",
+            refresh=False,
+        )
+        self._bar.refresh()
+
+    @staticmethod
+    def _format_duration(seconds: float | None) -> str:
+        if seconds is None:
+            return "--:--:--"
+        hours, remainder = divmod(max(0, math.ceil(seconds)), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def _elapsed(self) -> float:
         return max(0.0, time.perf_counter() - self._started)
