@@ -29,6 +29,7 @@ from agent_orch.objective import ObjectiveEvaluator, ObjectiveSpec
 from agent_orch.parameters import (
     DEFAULT_SETTINGS, audit_scenario, load_settings, make_ppo_config,
     require_consistent, require_formal_ready, settings_receipt,
+    parameter_receipts_match,
 )
 from agent_orch.routing import CapacityProportionalRouter
 from agent_orch.schema.loader import ScenarioLoader
@@ -370,7 +371,7 @@ def _main(stack) -> None:
     parameter_audit = audit_scenario(scenario, settings)
     if not args.smoke:
         require_consistent(parameter_audit)
-        if scenario.metadata.get("parameter_receipt") != settings_receipt(settings):
+        if not parameter_receipts_match(scenario.metadata.get("parameter_receipt"), settings_receipt(settings)):
             raise ValueError("Scenario provenance differs from the current parameter profile; regenerate "
                              "using the saved pool, not the old infrastructure template")
     scenario_hash = hashlib.sha256(scenario_path.read_bytes()).hexdigest()
@@ -415,8 +416,9 @@ def _main(stack) -> None:
         if manifest["variation"] != json.loads(json.dumps(asdict(variation))) or manifest["ppo_seed"] != args.seed:
             raise ValueError("Variation or PPO seed differs from checkpoint")
         old_settings = manifest["training_settings"]
-        if ({key: value for key, value in old_settings.items() if key != "phase_schedule"}
-                != {key: value for key, value in training_settings.items() if key != "phase_schedule"}):
+        if (not parameter_receipts_match(old_settings.get("parameter_receipt"), training_settings["parameter_receipt"])
+                or {key: value for key, value in old_settings.items() if key not in ("phase_schedule", "parameter_receipt")}
+                != {key: value for key, value in training_settings.items() if key not in ("phase_schedule", "parameter_receipt")}):
             raise ValueError("Training settings differ from checkpoint")
         budget_changed = validate_resume_schedule(
             old_settings.get("phase_schedule"), phase_schedule,

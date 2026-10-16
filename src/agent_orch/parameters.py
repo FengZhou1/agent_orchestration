@@ -64,6 +64,21 @@ def settings_receipt(settings):
                                      if settings["slo_contracts"] else None)}
 
 
+def parameter_receipts_match(saved, current):
+    """Machine paths are provenance notes; every scientific file hash must match.
+
+    Do not re-stamp frozen workloads just because their checkout moved between
+    Windows and Linux. Missing/unknown hash fields still fail closed.
+    """
+    fields = {"settings_sha256", "register_sha256", "generator_sha256",
+              "model_catalog_sha256", "slo_contracts_sha256"}
+    if not isinstance(saved, dict) or not isinstance(current, dict):
+        return False
+    if any(set(receipt) - {"settings_path"} != fields for receipt in (saved, current)):
+        return False
+    return all(saved[key] == current[key] for key in fields)
+
+
 def configured_contracts(settings):
     import json
     from agent_orch.workload.slo_calibration import validate_contracts

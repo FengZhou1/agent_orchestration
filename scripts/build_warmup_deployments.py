@@ -9,7 +9,8 @@ from pathlib import Path
 
 from agent_orch.deployment.warmup import (DEFAULT_CONFIG, WarmupSpec,
     FixedWarmupDeployments, generate_warmup_deployments, coverage_report, reuse_layouts_fixed_exogenous)
-from agent_orch.parameters import DEFAULT_SETTINGS, audit_scenario, load_settings, require_consistent, settings_receipt
+from agent_orch.parameters import (DEFAULT_SETTINGS, audit_scenario, load_settings,
+    require_consistent, settings_receipt, parameter_receipts_match)
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload import SlotTrajectory, SlotVariationSpec
 
@@ -48,7 +49,7 @@ def main():
     audit = audit_scenario(scenario, settings)
     if not args.smoke:
         require_consistent(audit)
-        if scenario.metadata.get("parameter_receipt") != settings_receipt(settings):
+        if not parameter_receipts_match(scenario.metadata.get("parameter_receipt"), settings_receipt(settings)):
             raise ValueError("Regenerate scenario with current parameter provenance")
     if args.output.exists():
         raise FileExistsError("Choose a new bundle directory; no overwrites")

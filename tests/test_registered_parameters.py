@@ -14,6 +14,7 @@ from agent_orch.envs.layout import StructuredActionLayout
 from agent_orch.parameters import (
     audit_scenario, load_settings, make_ppo_config, ppo_config_from_manifest,
     require_consistent, require_formal_ready,
+    parameter_receipts_match, settings_receipt,
 )
 from agent_orch.schema.loader import ScenarioLoader
 from agent_orch.workload.agent_pool import (
@@ -26,6 +27,18 @@ from agent_orch.workload.slot_trajectory import SlotTrajectory
 @pytest.fixture(scope="module")
 def settings():
     return load_settings()
+
+
+def test_receipt_paths_are_portable_but_hashes_are_not(settings):
+    receipt = settings_receipt(settings)
+    moved = {**receipt, "settings_path": "/another/checkout/configs/experiment_settings.yaml"}
+    assert parameter_receipts_match(receipt, moved)
+    assert parameter_receipts_match(moved, receipt)
+    for key in receipt.keys() - {"settings_path"}:
+        assert not parameter_receipts_match(receipt, {**moved, key: "changed"})
+        assert not parameter_receipts_match(receipt, {k: v for k, v in moved.items() if k != key})
+    assert not parameter_receipts_match(receipt, {**moved, "unknown_hash": "x"})
+    assert not parameter_receipts_match(None, receipt)
 
 
 @pytest.fixture(scope="module")
