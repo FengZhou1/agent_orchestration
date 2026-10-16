@@ -2,7 +2,7 @@
 
 - ARS academic-research-suite / experiment-agent；用户指定服务器上的实验部署与启动。
 - 输入为原冻结场景及部署布局，不重新生成不同应用、不载入训练权重。
-- 状态：已启动并确认至少5轮PPO更新及检查点保存；尚未完成1000轮，不声明收敛。
+- 状态：最初从零启动；已在第54轮检查点暂停，仅更新进度显示后，从第55轮续跑并确认新检查点保存。尚未完成1000轮，不声明收敛。
 
 # 远端固定条件模型选择实验
 
@@ -60,8 +60,8 @@ cd ~/zf/agent_orchestration
 tmux attach -t agent_fixed_n20a20_s0
 # Ctrl+B，再按D：只脱离会话，不中断训练。
 
-# 或直接追踪日志：
-tail -f results/remote_logs/composition_fixed_n20_a20_s0_20261016.log
+# 或直接追踪续跑日志（含进度条的回车刷新；查看动态条优先使用tmux）：
+tail -f results/remote_logs/composition_fixed_n20_a20_s0_progress_resume_20261016T0500.log
 
 # 结构化状态与最近训练记录：
 cat results/composition_n20_a20_32slots_fixed_base_s0/training_status.json
@@ -90,3 +90,19 @@ python -u scripts/run_slot_joint.py \
 ```
 
 恢复前可再加`--check-resume`做只读核验。仅完成PPO更新后，程序还会进行原训练轨迹上的最终评价和基线计算；不要只看到`training_status.json`训练更新完成，就认定整个脚本已退出。以末尾`Completed ...`及进程退出状态共同确认。
+
+## 6. 进度条修改与已核验续跑（2026-10-16 13:00，北京时间）
+
+按用户要求，不再逐槽打印`physical_routing`、`analytical`、`workflow`阶段行。源码提交`166330c`改为默认显示单行进度、轮次、当轮完成槽数与ETA，保留每轮一次指标和分项计时汇总；阶段详情仍在结构化状态文件中。续跑ETA使用检查点最近十轮采集及更新耗时初始化，再随实际耗时调整，不把已完成轮数当作新进程的速度。
+
+本轮操作及核验记录：
+
+- 第54轮检查点完整保存后发送SIGINT，未丢弃已完成轮次；刚开始的第55轮从保存的随机数状态重放。
+- 原检查点、manifest、两种历史、状态及旧日志备份到运行目录下`reporting_restart_20261016T045947Z/`。原日志未覆盖。
+- `--resume --check-resume`通过，且核验前后运行文件哈希不变；之后使用原完整指令，仅添加`--resume --progress-bar`，仍为1000轮模型选择、32槽、array单进程。
+- 续跑PID为`2777718`，会话仍为`agent_fixed_n20a20_s0`；PID仅是此次启动记录，当前状态须重新查询。
+- 核验时新检查点已保存55轮、正在第56轮；前54轮历史逐项相同，JSONL旧前缀逐字节保留，无重复轮次，manifest逐字节相同。Adam步数从20,898递增到21,285，未重置优化器；输入摘要、PPO配置、阶段计划、固定部署库与参数来源均与原检查点一致。
+- 新日志已显示ETA且没有逐阶段刷屏。当时估计剩余约6小时57分，仅为动态估计，不含训练后评价。
+- 本机428项已跟踪测试通过；远端相关测试63通过、1项因CUDA可用而跳过。原有未跟踪`test_physical_routing_probe.py`依赖已不存在的旧模块，导致不加排除的全目录收集失败；本轮未修改该旧探针。测试中另有既有NetworkX提示及Windows SwanLab退出编码警告，不影响测试退出码。
+
+完整暂停、续跑与核验收据在上述备份子目录的`pause_receipt.json`、`resume_check.txt`、`resume_receipt.json`、`verification.json`。本轮不修改算法或科学参数，不引入教师/蒸馏，不自动推送GitHub。
